@@ -414,6 +414,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			if hash := diff.ComputeExcludedModelsHash(compat.ExcludedModels); hash != "" {
+				attrs["excluded_models_hash"] = hash
+			}
+			if compat.AutoDiscoverModels {
+				attrs["auto_discover_models"] = "true"
+			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:                  id,
@@ -461,6 +467,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
+			}
+			if hash := diff.ComputeExcludedModelsHash(compat.ExcludedModels); hash != "" {
+				attrs["excluded_models_hash"] = hash
+			}
+			if compat.AutoDiscoverModels {
+				attrs["auto_discover_models"] = "true"
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
