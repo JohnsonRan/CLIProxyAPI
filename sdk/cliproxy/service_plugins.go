@@ -201,7 +201,7 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 		return
 	}
 
-	compatCache := s.newOpenAICompatibilityRegistrationCache()
+	compatCache := s.newOpenAICompatibilityRegistrationCache(ctx)
 	for _, latest := range s.coreManager.List() {
 		if latest == nil || latest.ID == "" {
 			continue
@@ -233,7 +233,7 @@ func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRe
 		otherTasks = append(otherTasks, task)
 	}
 
-	compatCache := s.newOpenAICompatibilityRegistrationCache()
+	compatCache := s.newOpenAICompatibilityRegistrationCache(ctx)
 	s.runModelRegistrationTaskPhase(ctx, configAPIKeyTasks, compatCache)
 	s.runModelRegistrationTaskPhase(ctx, otherTasks, compatCache)
 }

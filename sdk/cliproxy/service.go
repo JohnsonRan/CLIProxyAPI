@@ -80,6 +80,12 @@ type Service struct {
 	// kvStoreManaged tracks whether this service instance owns local KVStore lifecycle.
 	kvStoreManaged atomic.Bool
 
+	// compatDiscoveryOnce guards lazy creation of compatDiscoveryState.
+	compatDiscoveryOnce sync.Once
+
+	// compatDiscoveryState caches models discovered from OpenAI-compatible providers.
+	compatDiscoveryState *compatDiscoveryState
+
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error
 

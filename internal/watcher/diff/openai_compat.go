@@ -101,6 +101,12 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if openAICompatConnectionPoolChanged(oldEntry, newEntry) {
 		details = append(details, "connection-pool updated")
 	}
+	if oldEntry.AutoDiscoverModels != newEntry.AutoDiscoverModels {
+		details = append(details, fmt.Sprintf("auto-discover-models %t -> %t", oldEntry.AutoDiscoverModels, newEntry.AutoDiscoverModels))
+	}
+	if ComputeExcludedModelsHash(oldEntry.ExcludedModels) != ComputeExcludedModelsHash(newEntry.ExcludedModels) {
+		details = append(details, fmt.Sprintf("excluded-models %d -> %d", len(oldEntry.ExcludedModels), len(newEntry.ExcludedModels)))
+	}
 	if len(details) == 0 {
 		return ""
 	}

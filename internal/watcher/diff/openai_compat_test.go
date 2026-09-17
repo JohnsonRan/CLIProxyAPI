@@ -43,6 +43,19 @@ func TestDiffOpenAICompatibility(t *testing.T) {
 	expectContains(t, changes, "provider updated: provider-a (api-keys 1 -> 2, models 1 -> 2, headers updated)")
 }
 
+func TestDiffOpenAICompatibilityDiscoveryAndConnectionPool(t *testing.T) {
+	oldList := []config.OpenAICompatibility{{Name: "compat"}}
+	newList := []config.OpenAICompatibility{{
+		Name:               "compat",
+		AutoDiscoverModels: true,
+		ExcludedModels:     []string{"hidden"},
+		ConnectionPool:     &config.ProxyConnectionPoolConfig{},
+	}}
+
+	changes := DiffOpenAICompatibility(oldList, newList)
+	expectContains(t, changes, "provider updated: compat (connection-pool updated, auto-discover-models false -> true, excluded-models 0 -> 1)")
+}
+
 func TestDiffOpenAICompatibilityPromptCacheKey(t *testing.T) {
 	oldList := []config.OpenAICompatibility{{Name: "provider-a", SupportPromptCacheKey: false}}
 	newList := []config.OpenAICompatibility{{Name: "provider-a", SupportPromptCacheKey: true}}
