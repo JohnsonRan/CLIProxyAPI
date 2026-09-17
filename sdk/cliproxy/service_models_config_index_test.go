@@ -14,7 +14,7 @@ func TestOpenAICompatibilityRegistrationCacheUsesConfigIndex(t *testing.T) {
 		{Name: "shared", Models: []config.OpenAICompatibilityModel{{Name: "first"}}},
 		{Name: "shared", Models: []config.OpenAICompatibilityModel{{Name: "second"}}},
 	}}}
-	cache := service.newOpenAICompatibilityRegistrationCache()
+	cache := service.newOpenAICompatibilityRegistrationCache(context.Background())
 	auth := &coreauth.Auth{Attributes: map[string]string{
 		coreauth.AttributeSource:      "config:shared[token-1]",
 		coreauth.AttributeConfigIndex: "1",
@@ -401,7 +401,7 @@ func TestRegisterModelsForAuthOpenAICompatStaleConfigIndexFallsBack(t *testing.T
 			{Name: "other", BaseURL: "https://other.example.com/v1", Models: []config.OpenAICompatibilityModel{{Name: "wrong-model"}}},
 			{Name: "target", BaseURL: "https://target.example.com/v1", Models: []config.OpenAICompatibilityModel{{Name: "right-model"}}},
 		}}}
-		cache := service.newOpenAICompatibilityRegistrationCache()
+		cache := service.newOpenAICompatibilityRegistrationCache(context.Background())
 		auth := &coreauth.Auth{
 			ID:       authID,
 			Provider: "target",
@@ -431,7 +431,7 @@ func TestRegisterModelsForAuthOpenAICompatStaleConfigIndexFallsBack(t *testing.T
 			{Name: "shared", BaseURL: "https://other.example.com/v1", Models: []config.OpenAICompatibilityModel{{Name: "wrong-model"}}},
 			{Name: "shared", BaseURL: "https://target.example.com/v1", Models: []config.OpenAICompatibilityModel{{Name: "right-model"}}},
 		}}}
-		cache := service.newOpenAICompatibilityRegistrationCache()
+		cache := service.newOpenAICompatibilityRegistrationCache(context.Background())
 		auth := &coreauth.Auth{
 			ID:       authID,
 			Provider: "shared",
@@ -489,7 +489,7 @@ func TestRegisterModelsForAuthOpenAICompatStaleConfigIndexFallsBack(t *testing.T
 		service := &Service{cfg: &config.Config{OpenAICompatibility: []config.OpenAICompatibility{
 			{Name: "shared", BaseURL: "https://remaining.example.com/v1", Models: []config.OpenAICompatibilityModel{{Name: "wrong-model"}}},
 		}}}
-		cache := service.newOpenAICompatibilityRegistrationCache()
+		cache := service.newOpenAICompatibilityRegistrationCache(context.Background())
 		auth := &coreauth.Auth{
 			ID:       authID,
 			Provider: "shared",
@@ -518,7 +518,7 @@ func TestRegisterModelsForAuthOpenAICompatStaleConfigIndexFallsBack(t *testing.T
 			{Name: "shared", BaseURL: "https://example.com/TenantA", Models: []config.OpenAICompatibilityModel{{Name: "wrong-model"}}},
 			{Name: "shared", BaseURL: "https://example.com/tenanta", Models: []config.OpenAICompatibilityModel{{Name: "right-model"}}},
 		}}}
-		cache := service.newOpenAICompatibilityRegistrationCache()
+		cache := service.newOpenAICompatibilityRegistrationCache(context.Background())
 		auth := &coreauth.Auth{
 			ID:       authID,
 			Provider: "shared",
