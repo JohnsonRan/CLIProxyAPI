@@ -75,7 +75,7 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	if opts.Alt != "responses/compact" && !isCodexOpenAIImageRequest(opts) && codexWebsocketsEnabledForConfig(auth, e.httpExec.cfg) {
 		return e.wsExec.Execute(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
@@ -88,7 +88,7 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	if opts.Alt != "responses/compact" && !isCodexOpenAIImageRequest(opts) && codexWebsocketsEnabledForConfig(auth, e.httpExec.cfg) {
 		return e.wsExec.ExecuteStream(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
@@ -140,6 +140,10 @@ func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan erro
 }
 
 func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {
+	return codexWebsocketsEnabledForConfig(auth, nil)
+}
+
+func codexWebsocketsEnabledForConfig(auth *cliproxyauth.Auth, cfg *config.Config) bool {
 	if auth == nil {
 		return false
 	}
@@ -151,22 +155,25 @@ func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {
 			}
 		}
 	}
-	if len(auth.Metadata) == 0 {
-		return false
-	}
-	raw, ok := auth.Metadata["websockets"]
-	if !ok || raw == nil {
-		return false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case string:
-		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
-		if errParse == nil {
-			return parsed
+	if len(auth.Metadata) > 0 {
+		raw, ok := auth.Metadata["websockets"]
+		if ok && raw != nil {
+			switch v := raw.(type) {
+			case bool:
+				return v
+			case string:
+				parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
+				if errParse == nil {
+					return parsed
+				}
+			default:
+			}
 		}
-	default:
+	}
+	if cfg != nil && cfg.Codex.EnableWebsocketUpstream &&
+		strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") &&
+		auth.AuthKind() == cliproxyauth.AuthKindOAuth {
+		return true
 	}
 	return false
 }

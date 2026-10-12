@@ -3290,3 +3290,71 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
 		t.Fatalf("expected reason=send_error in log output, got: %s", logOutput)
 	}
 }
+
+func TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var wsUpgrades atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade error: %v", errUpgrade)
+			return
+		}
+		wsUpgrades.Add(1)
+		defer func() { _ = conn.Close() }()
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read message error: %v", errRead)
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_ws_from_http","model":"gpt-5.4","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"via ws"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			DisableImageGeneration: config.DisableImageGenerationAll,
+		},
+		Codex: config.CodexConfig{
+			EnableWebsocketUpstream: true,
+		},
+	}
+	exec := NewCodexAutoExecutor(cfg)
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-oauth-ws",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"access_token": "oauth-token",
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","stream":true,"stream_options":{"include_usage":true},"input":[{"type":"message","role":"user","content":"hello from HTTP SSE client"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+		Stream:         true,
+	}
+
+	// Note: context.Background() has DownstreamWebsocket(ctx) == false (HTTP/SSE downstream).
+	streamRes, errStream := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	var out bytes.Buffer
+	for chunk := range streamRes.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error = %v", chunk.Err)
+		}
+		out.Write(chunk.Payload)
+	}
+	if wsUpgrades.Load() != 1 {
+		t.Fatalf("wsUpgrades = %d, want 1", wsUpgrades.Load())
+	}
+	if !strings.Contains(out.String(), "resp_ws_from_http") {
+		t.Fatalf("expected SSE output from websocket upstream, got: %s", out.String())
+	}
+}

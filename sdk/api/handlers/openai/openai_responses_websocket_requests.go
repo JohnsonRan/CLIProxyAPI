@@ -27,7 +27,8 @@ func normalizeResponsesWebsocketRequestWithLastResponseID(rawJSON []byte, lastRe
 }
 
 func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, lastResponseID string, lastResponsePendingToolCallIDs []string, allowIncrementalInputWithPreviousResponseID bool, allowCompactionReplayBypass bool) ([]byte, []byte, *interfaces.ErrorMessage) {
-	requestType := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "type").String())
+	rawJSON = coerceResponsesWebsocketStringInput(rawJSON)
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	switch requestType {
 	case wsRequestTypeCreate:
 		// log.Infof("responses websocket: response.create request")
@@ -44,6 +45,34 @@ func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, last
 			Error:      fmt.Errorf("unsupported websocket request type: %s", requestType),
 		}
 	}
+}
+
+func resolveResponsesWebsocketRequestType(rawJSON []byte) string {
+	typeResult := ojson.GetBytesNoCopy(rawJSON, "type")
+	if typeResult.Exists() {
+		return strings.TrimSpace(typeResult.String())
+	}
+	parsed := ojson.ParseBytes(rawJSON)
+	if parsed.IsObject() && (parsed.Get("model").Exists() || parsed.Get("input").Exists() || parsed.Get("previous_response_id").Exists()) {
+		return wsRequestTypeCreate
+	}
+	return ""
+}
+
+func coerceResponsesWebsocketStringInput(rawJSON []byte) []byte {
+	input := ojson.GetBytesNoCopy(rawJSON, "input")
+	if !input.Exists() || input.Type != ojson.String {
+		return rawJSON
+	}
+	doc := ojson.NewDoc(rawJSON)
+	msgDoc := ojson.NewDoc([]byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`))
+	if err := msgDoc.Set("0.content.0.text", input.String()); err != nil {
+		return rawJSON
+	}
+	if err := doc.SetRawBytes("input", msgDoc.Bytes()); err != nil {
+		return rawJSON
+	}
+	return doc.Bytes()
 }
 
 func normalizeResponseCreateRequestDoc(doc *ojson.Doc) ([]byte, []byte, *interfaces.ErrorMessage) {
@@ -148,7 +177,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	var mergedInput []byte
 	if allowCompactionReplayBypass && inputContainsFullTranscript(nextInput) {
 		log.Infof("responses websocket: full transcript detected, skipping stale merge (input items=%d)", len(nextInput.Array()))
-		mergedInput = []byte(nextInput.Raw)
+		mergedInput = responsesWebsocketInputWithInheritedAdditionalTools(nextInput, lastRequest)
 	} else {
 		appendInputRaw := nextInput.Raw
 		if inputContainsFullTranscript(nextInput) {
@@ -178,9 +207,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 }
 
 func shouldReplaceWebsocketTranscript(rawJSON []byte, nextInput ojson.Result) bool {
-	var fieldsBuf [2]ojson.Result
-	fields := ojson.GetManyBytesNoCopy(fieldsBuf[:0], rawJSON, "type", "previous_response_id")
-	requestType := strings.TrimSpace(fields[0].String())
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	if requestType != wsRequestTypeCreate && requestType != wsRequestTypeAppend {
 		return false
 	}
@@ -306,6 +333,11 @@ func normalizeResponseTranscriptReplacementDoc(doc *ojson.Doc, lastRequest []byt
 			_ = doc.SetRawBytes("instructions", []byte(instructions.Raw))
 		}
 	}
+	inheritResponsesWebsocketRequestSettingsDoc(doc, lastRequest)
+	input := doc.Get("input")
+	if input.IsArray() {
+		_ = doc.SetRawBytes("input", responsesWebsocketInputWithInheritedAdditionalTools(input, lastRequest))
+	}
 	_ = doc.Set("stream", true)
 }
 
@@ -313,6 +345,50 @@ func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) 
 	doc := ojson.NewDoc(rawJSON)
 	normalizeResponseTranscriptReplacementDoc(doc, lastRequest)
 	return doc.Bytes()
+}
+
+func inheritResponsesWebsocketRequestSettingsDoc(doc *ojson.Doc, lastRequest []byte) {
+	if len(lastRequest) == 0 {
+		return
+	}
+	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+		if !doc.Get(field).Exists() {
+			if prev := ojson.GetBytesNoCopy(lastRequest, field); prev.Exists() && prev.Type != ojson.Null {
+				_ = doc.SetRawBytes(field, []byte(prev.Raw))
+			}
+		}
+	}
+}
+
+func responsesWebsocketInputWithInheritedAdditionalTools(input ojson.Result, lastRequest []byte) []byte {
+	if !input.IsArray() {
+		return []byte(input.Raw)
+	}
+	for _, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "additional_tools" {
+			return []byte(input.Raw)
+		}
+	}
+
+	previousInput := ojson.GetBytesNoCopy(lastRequest, "input")
+	if !previousInput.IsArray() {
+		return []byte(input.Raw)
+	}
+
+	items := make([]string, 0, len(previousInput.Array())+len(input.Array()))
+	for _, item := range previousInput.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "additional_tools" {
+			items = append(items, item.Raw)
+		}
+	}
+	if len(items) == 0 {
+		return []byte(input.Raw)
+	}
+	for _, item := range input.Array() {
+		items = append(items, item.Raw)
+	}
+	return []byte("[" + strings.Join(items, ",") + "]")
+}
 }
 
 type responsesWebsocketInputItem struct {
@@ -858,9 +934,8 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 		}
 	}
 
-	var fieldsBuf [2]ojson.Result
-	fields := ojson.GetManyBytesNoCopy(fieldsBuf[:0], rawJSON, "type", "model")
-	requestType := strings.TrimSpace(fields[0].String())
+	rawJSON = coerceResponsesWebsocketStringInput(rawJSON)
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	switch requestType {
 	case wsRequestTypeCreate, wsRequestTypeAppend:
 	default:
@@ -871,7 +946,10 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 	}
 
 	doc := ojson.NewDoc(rawJSON)
-	if strings.TrimSpace(fields[1].String()) == "" {
+	if !doc.Get("type").Exists() {
+		_ = doc.Set("type", requestType)
+	}
+	if strings.TrimSpace(doc.Get("model").String()) == "" {
 		modelName = strings.TrimSpace(modelName)
 		if modelName == "" {
 			return nil, &interfaces.ErrorMessage{

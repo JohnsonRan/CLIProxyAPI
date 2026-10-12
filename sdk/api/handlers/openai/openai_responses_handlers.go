@@ -77,6 +77,8 @@ type responsesSSEFramer struct {
 	dataFrames           int
 	writeErr             error
 	canComplete          func() bool
+	previousResponseID   string
+	onCompleted          func([]byte)
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
@@ -334,6 +336,17 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 		f.recordOutputItem(payload)
 	case "response.completed":
 		repaired := f.repairCompletedPayload(payload)
+		if f.previousResponseID != "" {
+			prevField := gjson.GetBytes(repaired, "response.previous_response_id")
+			if !prevField.Exists() || prevField.Type == gjson.Null || strings.TrimSpace(prevField.String()) == "" {
+				if updated, errSet := sjson.SetBytes(repaired, "response.previous_response_id", f.previousResponseID); errSet == nil {
+					repaired = updated
+				}
+			}
+		}
+		if f.onCompleted != nil {
+			f.onCompleted(repaired)
+		}
 		if !bytes.Equal(repaired, payload) {
 			return responsesSSEFrameWithData(frame, repaired)
 		}
@@ -903,6 +916,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	}
 
 	rawJSON = h.prepareCodexRequestPayload(c, rawJSON)
+	rawJSON = h.prepareHTTPResponsesIncrementalRequest(c, rawJSON)
 
 	// Check if the client requested a streaming response.
 	streamResult := ojson.GetBytesNoCopy(rawJSON, "stream")
@@ -976,6 +990,8 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 
 	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	var selectedAuthID string
+	cliCtx = h.enrichHTTPIncrementalContext(c, cliCtx, &selectedAuthID)
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
@@ -985,6 +1001,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		cliCancel(errMsg.Error)
 		return
 	}
+	resp = h.finalizeHTTPNonStreamIncrementalResponse(c, rawJSON, resp, selectedAuthID)
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
@@ -1015,6 +1032,8 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	deliveryCtx, finishDelivery := usage.WithStreamDelivery(context.Background())
 	defer finishDelivery(context.Canceled)
 	cliCtx, cancelExecution := h.GetContextWithCancel(h, c, deliveryCtx)
+	var selectedAuthID string
+	cliCtx = h.enrichHTTPIncrementalContext(c, cliCtx, &selectedAuthID)
 	cliCancel := func(err error) {
 		finishDelivery(err)
 		cancelExecution(err)
@@ -1063,7 +1082,15 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	if isCodexClient {
 		failureEvent = "response.failed"
 	}
-	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient, canComplete: func() bool { return usage.StreamDeliverySupported(cliCtx) }}
+	framer := &responsesSSEFramer{
+		failureEvent:       failureEvent,
+		isCodexClient:      isCodexClient,
+		canComplete:        func() bool { return usage.StreamDeliverySupported(cliCtx) },
+		previousResponseID: httpIncrementalPreviousResponseIDFromContext(c),
+		onCompleted: func(completedPayload []byte) {
+			h.recordHTTPStreamIncrementalCompleted(rawJSON, completedPayload, selectedAuthID)
+		},
+	}
 	var initialOutput bytes.Buffer
 
 	// Peek at the first complete SSE data frame.
