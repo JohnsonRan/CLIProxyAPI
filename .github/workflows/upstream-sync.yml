@@ -1,0 +1,94 @@
+name: 'Upstream Sync'
+
+on:
+  schedule:
+    # Scheduled at 20:18 UTC (04:18 Asia/Shanghai, UTC+8), avoiding minute 0 and multiples of 5.
+    - cron: '18 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  sync-main-with-squash-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Rebuild main from upstream and squash branches
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          git fetch upstream main --tags
+          git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank
+          git reset --hard upstream/main
+
+          if ! git merge --squash origin/ci; then
+            mapfile -d '' -t conflicts < <(git diff --name-only --diff-filter=U -z)
+            if (( ${#conflicts[@]} != 1 )) || [[ ${conflicts[0]} != README.md ]]; then
+              printf '::error::Unexpected ci squash conflicts:'
+              printf ' %q' "${conflicts[@]}"
+              printf '\n'
+              exit 1
+            fi
+            git restore --source=origin/ci --staged --worktree -- README.md
+          fi
+          if ! git diff --quiet --diff-filter=U --; then
+            echo '::error::Unresolved conflicts remain after applying ci branch'
+            exit 1
+          fi
+          git commit -m "merge ci branch"
+
+          git merge --squash origin/patch/http-compression
+          git commit -m "merge patch/http-compression branch"
+
+          git merge --squash origin/patch/responses-ws-sse-incremental
+          git commit -m "merge patch/responses-ws-sse-incremental branch"
+
+          git merge --squash origin/patch/p2-runtime-optimizations
+          git commit -m "merge patch/p2-runtime-optimizations branch"
+
+          git merge --squash origin/patch/p0-oauth-and-executors
+          git commit -m "merge patch/p0-oauth-and-executors branch"
+
+          git merge --squash origin/patch/embeddings-and-rerank
+          git commit -m "merge patch/embeddings-and-rerank branch"
+
+      - name: Validate integrated build and patch tests
+        run: |
+          set -euo pipefail
+          go build -o test-output ./cmd/server && rm -f test-output
+          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/auth/codex/...
+          go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
+          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503" ./internal/runtime/executor
+
+      - name: Push rebuilt main
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_WORKFLOW_TOKEN }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PUSH_TOKEN="${SYNC_TOKEN:-${FALLBACK_TOKEN}}"
+          if [[ -z "${PUSH_TOKEN}" ]]; then
+            echo "::error::Neither SYNC_WORKFLOW_TOKEN nor GITHUB_TOKEN is available"
+            exit 1
+          fi
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease origin HEAD:main
