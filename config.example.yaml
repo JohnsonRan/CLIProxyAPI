@@ -334,6 +334,11 @@ upstream:
     response-steering: false
     # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
     disable-codex-cloaking: false
+    # Compress the request body sent to the official ChatGPT Codex backend (chatgpt.com)
+    # for /responses and /responses/compact. "zstd" (default when unset or "auto") matches
+    # the official Codex CLI (zstd level 3); "gzip" and "br" are also supported; "off"
+    # sends uncompressed identity bodies. Custom codex-api-key base URLs are never compressed.
+    upstream-request-compression: "zstd"
     # Hold back the frames that carry nothing the client has seen - the handshake (response.created,
     # response.in_progress, the websocket metadata frames), keepalive heartbeats, and the *.added
     # announcements of an item or part that is still empty - until the upstream emits its first

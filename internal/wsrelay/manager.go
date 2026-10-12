@@ -54,8 +54,9 @@ func NewManager(opts Options) *Manager {
 		path:     path,
 		sessions: make(map[string]*session),
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
+			ReadBufferSize:    1024,
+			WriteBufferSize:   1024,
+			EnableCompression: true,
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},

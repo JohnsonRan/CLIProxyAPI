@@ -4,7 +4,11 @@
 package middleware
 
 import (
+	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
@@ -381,30 +386,29 @@ func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit
 	}
 	encoding = strings.TrimSpace(encoding)
 	if encoding == "" || strings.EqualFold(encoding, "identity") {
-		return raw
+		encoding = detectMagicCapturedRequestEncoding(raw)
+		if encoding == "" {
+			return raw
+		}
 	}
 
 	parts := strings.Split(encoding, ",")
 	body := raw
 	for i := len(parts) - 1; i >= 0; i-- {
 		enc := strings.ToLower(strings.TrimSpace(parts[i]))
-		switch enc {
-		case "", "identity":
+		if enc == "" || enc == "identity" {
 			continue
-		case "zstd":
-			decoded, truncated, errDecode := decodeCapturedZstdRequestBodyWithLimit(body, limit)
-			if errDecode != nil {
-				return raw
-			}
-			body = decoded
-			if truncated {
-				if len(body) > 0 && !bytes.HasSuffix(body, []byte("\n")) {
-					body = append(body, '\n')
-				}
-				return append(body, "[DECOMPRESSED REQUEST BODY TRUNCATED]"...)
-			}
-		default:
+		}
+		decoded, truncated, errDecode := decodeSingleCapturedRequestBodyWithLimit(body, enc, limit)
+		if errDecode != nil {
 			return raw
+		}
+		body = decoded
+		if truncated {
+			if len(body) > 0 && !bytes.HasSuffix(body, []byte("\n")) {
+				body = append(body, '\n')
+			}
+			return append(body, "[DECOMPRESSED REQUEST BODY TRUNCATED]"...)
 		}
 	}
 	return body
@@ -413,49 +417,97 @@ func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit
 func decodeCapturedRequestBody(raw []byte, encoding string) ([]byte, error) {
 	encoding = strings.TrimSpace(encoding)
 	if encoding == "" || strings.EqualFold(encoding, "identity") {
-		return raw, nil
+		encoding = detectMagicCapturedRequestEncoding(raw)
+		if encoding == "" {
+			return raw, nil
+		}
 	}
 
 	parts := strings.Split(encoding, ",")
 	body := raw
 	for i := len(parts) - 1; i >= 0; i-- {
 		enc := strings.ToLower(strings.TrimSpace(parts[i]))
-		switch enc {
-		case "", "identity":
+		if enc == "" || enc == "identity" {
 			continue
-		case "zstd":
-			decoded, errDecode := decodeCapturedZstdRequestBody(body)
-			if errDecode != nil {
-				return nil, errDecode
-			}
-			body = decoded
-		default:
-			return nil, fmt.Errorf("unsupported request content encoding: %s", enc)
 		}
+		decoded, errDecode := decodeSingleCapturedRequestBody(body, enc)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		body = decoded
 	}
 	return body, nil
 }
 
-func decodeCapturedZstdRequestBody(raw []byte) ([]byte, error) {
-	decoder, errNewReader := zstd.NewReader(bytes.NewReader(raw))
-	if errNewReader != nil {
-		return nil, fmt.Errorf("failed to create zstd request decoder: %w", errNewReader)
+func detectMagicCapturedRequestEncoding(raw []byte) string {
+	switch {
+	case len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b:
+		return "gzip"
+	case len(raw) >= 4 && raw[0] == 0x28 && raw[1] == 0xb5 && raw[2] == 0x2f && raw[3] == 0xfd:
+		return "zstd"
+	default:
+		return ""
 	}
-	defer decoder.Close()
+}
+
+func newCapturedRequestDecoder(raw []byte, enc string) (io.ReadCloser, error) {
+	switch enc {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip request decoder: %w", err)
+		}
+		return zr, nil
+	case "br":
+		return io.NopCloser(brotli.NewReader(bytes.NewReader(raw))), nil
+	case "zstd":
+		decoder, err := zstd.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd request decoder: %w", err)
+		}
+		return decoder.IOReadCloser(), nil
+	case "deflate":
+		buffered := bufio.NewReader(bytes.NewReader(raw))
+		if header, errPeek := buffered.Peek(2); errPeek == nil && len(header) >= 2 {
+			cmf, flg := header[0], header[1]
+			if cmf&0x0f == 8 && cmf>>4 <= 7 && (uint16(cmf)<<8|uint16(flg))%31 == 0 {
+				zr, errZlib := zlib.NewReader(buffered)
+				if errZlib != nil {
+					return nil, fmt.Errorf("failed to create deflate request decoder: %w", errZlib)
+				}
+				return zr, nil
+			}
+		}
+		return flate.NewReader(buffered), nil
+	default:
+		return nil, fmt.Errorf("unsupported request content encoding: %s", enc)
+	}
+}
+
+func decodeSingleCapturedRequestBody(raw []byte, enc string) ([]byte, error) {
+	decoder, errNewReader := newCapturedRequestDecoder(raw, enc)
+	if errNewReader != nil {
+		return nil, errNewReader
+	}
+	defer func() {
+		_ = decoder.Close()
+	}()
 
 	decoded, errRead := io.ReadAll(decoder)
 	if errRead != nil {
-		return nil, fmt.Errorf("failed to decode zstd request body: %w", errRead)
+		return nil, fmt.Errorf("failed to decode %s request body: %w", enc, errRead)
 	}
 	return decoded, nil
 }
 
-func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bool, error) {
-	decoder, errNewReader := zstd.NewReader(bytes.NewReader(raw))
+func decodeSingleCapturedRequestBodyWithLimit(raw []byte, enc string, limit int64) ([]byte, bool, error) {
+	decoder, errNewReader := newCapturedRequestDecoder(raw, enc)
 	if errNewReader != nil {
-		return nil, false, fmt.Errorf("failed to create zstd request decoder: %w", errNewReader)
+		return nil, false, errNewReader
 	}
-	defer decoder.Close()
+	defer func() {
+		_ = decoder.Close()
+	}()
 
 	var reader io.Reader = decoder
 	if limit > 0 && limit < math.MaxInt64 {
@@ -463,12 +515,20 @@ func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bo
 	}
 	decoded, errRead := io.ReadAll(reader)
 	if errRead != nil {
-		return nil, false, fmt.Errorf("failed to decode zstd request body: %w", errRead)
+		return nil, false, fmt.Errorf("failed to decode %s request body: %w", enc, errRead)
 	}
 	if int64(len(decoded)) > limit {
 		return decoded[:limit], true, nil
 	}
 	return decoded, false, nil
+}
+
+func decodeCapturedZstdRequestBody(raw []byte) ([]byte, error) {
+	return decodeSingleCapturedRequestBody(raw, "zstd")
+}
+
+func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bool, error) {
+	return decodeSingleCapturedRequestBodyWithLimit(raw, "zstd", limit)
 }
 
 // shouldLogRequest determines whether the request should be logged.
