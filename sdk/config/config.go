@@ -14,6 +14,7 @@ type ModelCatalogs = internalconfig.ModelCatalogs
 
 type ClientConfig = internalconfig.ClientConfig
 type ClaudeClientConfig = internalconfig.ClaudeClientConfig
+type ClientKeyScope = internalconfig.ClientKeyScope
 type CodexClientConfig = internalconfig.CodexClientConfig
 type CodexWebSearchResultCacheConfig = internalconfig.CodexWebSearchResultCacheConfig
 type StreamingConfig = internalconfig.StreamingConfig
