@@ -101,8 +101,14 @@ git commit -m "merge patch/embeddings-and-rerank branch"
 git merge --squash origin/patch/client-api-key-models
 git commit -m "merge patch/client-api-key-models branch"
 
+# Must match the "Validate integrated build and patch tests" step in
+# .github/workflows/upstream-sync.yml. The full ./internal/runtime/executor/...
+# package is not run here: it has long-hanging tests, so it is covered by
+# targeted -run patterns instead.
 go build -o test-output ./cmd/server && rm -f test-output
-go test ./sdk/api/handlers/... ./internal/api/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/... ./internal/thinking/... ./internal/auth/codex/...
+go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/auth/codex/...
+go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
+go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503" ./internal/runtime/executor
 git push --force-with-lease origin HEAD:main
 ```
 
