@@ -71,6 +71,9 @@ func (s *Server) setupRoutes() {
 		})
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/completions", openaiHandlers.Completions)
+		v1.POST("/embeddings", openaiHandlers.Embeddings)
+		v1.POST("/embedding", openaiHandlers.Embeddings)
+		v1.POST("/rerank", openaiHandlers.Rerank)
 		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
 		v1.POST("/images/edits", openaiHandlers.ImagesEdits)
 		v1.POST("/videos", openaiHandlers.XAIVideosGenerations)
@@ -134,6 +137,9 @@ func (s *Server) setupRoutes() {
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", s.geminiGetHandler(geminiHandlers))
 	}
+
+	// Top-level rerank route alias (for Cohere/SiliconFlow direct /rerank clients)
+	s.engine.POST("/rerank", AuthMiddleware(s.accessManager), openaiHandlers.Rerank)
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
