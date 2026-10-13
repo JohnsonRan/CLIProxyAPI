@@ -6,7 +6,7 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
 
 - **Upstream baseline**: `https://github.com/router-for-me/CLIProxyAPI.git` (`main`)
 - **`ci`**: Downstream maintenance overlay carrying this `MAINTAIN.md`, downstream `README.md` notice, `.github/workflows/upstream-sync.yml`, and `.github/workflows/ghcr-docker.yml`. Never mix product runtime changes into `ci`.
-- **`patch/<name>`**: Independent product patch branches, each branched directly from `upstream/main` and kept suitable for standalone review or upstream PR submission.
+- **`patch/<name>`**: Independent product patch branches, each branched directly from `upstream/main` and kept suitable for standalone review and independent build/test.
 - **`main`**: Integrated release branch rebuilt from `upstream/main` with one countable squash commit per branch (`merge ci branch` followed by each `merge patch/<name> branch` in fixed order). Never commit fixes only to `main`.
 
 ## Active Patch Branches (Fixed Integration Order)
@@ -116,3 +116,8 @@ git push --force-with-lease origin HEAD:main
 
 - `.github/workflows/upstream-sync.yml`: Runs daily at `20:18 UTC` (`04:18 Asia/Shanghai`) and via `workflow_dispatch` to rebuild `main` from `upstream/main`, validate the integrated candidate, and push safely with `--force-with-lease`.
 - `.github/workflows/ghcr-docker.yml`: Builds and publishes multi-arch (`linux/amd64`, `linux/arm64`) Docker images to `ghcr.io/johnsonran/cli-proxy-api` on `main` pushes, `v*` tags, successful `Upstream Sync` runs, and `workflow_dispatch`.
+
+## Downstream Policy
+
+- **No upstream pull requests.** This fork never opens pull requests against the upstream repository; the `Related Upstream Work` entries in the patch list below record upstream context only, not submissions from this fork. Patches are maintained downstream indefinitely and are retired only when upstream lands an equivalent implementation on its own, detected by re-running the rebuild and finding that a patch has become empty or conflicting.
+- **`main` is intentionally unprotected.** The scheduled sync rebuilds and force-pushes `main`, so neither `main` branch carries branch protection. Safety comes from `--force-with-lease`, the `upstream-sync-main` concurrency group, fail-closed conflict handling, and validation before the push. Protect the `patch/*` and `ci` branches against deletion instead; `main` is a derived artifact that nothing else may be based on.
