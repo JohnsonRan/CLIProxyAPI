@@ -1773,6 +1773,36 @@ func hasStructuredUsageDetail(d usage.Detail) bool {
 		d.Speed != "" || d.InferenceGeo != ""
 }
 
+// ParseRerankUsage reads rerank token counts. OpenAI-style usage wins. Providers
+// that omit it, including SiliconFlow, put counts under meta.tokens or meta.billed_units.
+func ParseRerankUsage(data []byte) usage.Detail {
+	detail := ParseOpenAIUsage(data)
+	if hasUsageDetail(detail) {
+		return detail
+	}
+	root := ojson.ParseBytes(data)
+	for _, path := range []string{"meta.tokens", "meta.billed_units"} {
+		node := root.Get(path)
+		if !node.Exists() || !node.IsObject() {
+			continue
+		}
+		input := node.Get("input_tokens")
+		output := node.Get("output_tokens")
+		total := node.Get("total_tokens")
+		if !input.Exists() && !output.Exists() && !total.Exists() {
+			continue
+		}
+		detail.InputTokens = input.Int()
+		detail.OutputTokens = output.Int()
+		detail.TotalTokens = total.Int()
+		if detail.TotalTokens == 0 && (input.Exists() || output.Exists()) {
+			detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+		}
+		return detail
+	}
+	return detail
+}
+
 func hasOpenAIStyleUsageTokenFields(usageNode ojson.Result) bool {
 	if !usageNode.Exists() || !usageNode.IsObject() {
 		return false
