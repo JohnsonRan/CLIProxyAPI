@@ -69,6 +69,7 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
      - Filter model lists in `WriteModelListResponse` (`/v1/models` across OpenAI, Codex client catalog, Claude, Grok, and Gemini formats) and model detail endpoints (`/v1/models/*model`, `/v1beta/models/*action`), returning 404 for unauthorized models.
      - Enforce model usability authorization in `executeWithAuthManagerFormats`, `executeStreamWithAuthManagerFormats`, `executeCountWithAuthManager`, `ExecuteProtocolWithAuthManager`, and Codex Realtime (`/v1/realtime`, `/v1/realtime/calls`, `/v1/realtime/client_secrets`), returning 403 Forbidden with `code: model_not_allowed` for unauthorized models.
      - Document usage in `config.example.yaml` and add unit and integration tests.
+     - Expose `GET /v8/management/models` (`GetModelCatalog`) so management clients can list servable models without client-key filtering.
    - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568), PR [#4030](https://github.com/router-for-me/CLIProxyAPI/pull/4030), PR [#5517](https://github.com/router-for-me/CLIProxyAPI/pull/5517).
 
 ## Rebuild & Validation Procedure
