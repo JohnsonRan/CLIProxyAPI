@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
@@ -388,4 +389,30 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 		decision.Model = strings.TrimSpace(resp.TargetModel)
 	}
 	return decision
+}
+
+func (h *BaseAPIHandler) validateClientModelAccess(ctx context.Context, modelName string) *interfaces.ErrorMessage {
+	if h == nil || h.Cfg == nil {
+		return nil
+	}
+	apiKey := coreusage.APIKeyFromContext(ctx)
+	if !h.Cfg.HasClientModelRestrictions(apiKey) {
+		return nil
+	}
+	if h.Cfg.IsModelAllowedForClient(apiKey, modelName) {
+		return nil
+	}
+	return clientModelNotAllowedError(modelName)
+}
+
+func clientModelNotAllowedError(modelName string) *interfaces.ErrorMessage {
+	body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`
+	body, errSet := sjson.Set(body, "error.message", fmt.Sprintf("model %q is not allowed for this API key", modelName))
+	if errSet != nil {
+		body = `{"error":{"message":"model is not allowed for this API key","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode: http.StatusForbidden,
+		Error:      errors.New(body),
+	}
 }

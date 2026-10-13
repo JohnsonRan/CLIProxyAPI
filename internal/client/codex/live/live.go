@@ -206,6 +206,11 @@ func (h *Handler) Handle(c *gin.Context) {
 		writeLiveError(c, http.StatusBadRequest, errPayload.Error())
 		return
 	}
+	callerKey := c.GetString("userApiKey")
+	if h.cfg != nil && h.cfg.HasClientModelRestrictions(callerKey) && !h.cfg.IsModelAllowedForClient(callerKey, model) {
+		writeLiveError(c, http.StatusForbidden, fmt.Sprintf("model %q is not allowed for this API key", model))
+		return
+	}
 	runtimeConfig, mediaRelay, mediaRelayErr := h.currentRuntime()
 	if mediaRelayErr != nil {
 		writeLiveError(c, http.StatusServiceUnavailable, mediaRelayErr.Error())
