@@ -1036,6 +1036,7 @@ func (e *OpenAICompatExecutor) executeRerank(ctx context.Context, auth *cliproxy
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 	reporter.ObserveResponseModel(body)
+	reporter.Publish(ctx, helps.ParseRerankUsage(body))
 
 	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
 	return resp, nil
