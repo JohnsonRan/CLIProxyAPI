@@ -61,11 +61,21 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
      - Translate OpenAI `/v1/embeddings` requests to Google Generative Language `:embedContent` (single) and `:batchEmbedContents` (batch) in `GeminiExecutor` (`internal/runtime/executor/gemini_executor.go`, `internal/runtime/executor/helps/gemini_embedding.go`).
    - **Related Upstream Work**: Issue [#5961](https://github.com/router-for-me/CLIProxyAPI/issues/5961), Issue [#3641](https://github.com/router-for-me/CLIProxyAPI/issues/3641), Issue [#1084](https://github.com/router-for-me/CLIProxyAPI/issues/1084), PR [#1191](https://github.com/router-for-me/CLIProxyAPI/pull/1191).
 
+6. **`patch/client-api-key-models`**
+   - **Goal**: Configure native (non-plugin) visible and usable model access control globally and per client API key.
+   - **Scope**:
+     - Add `ClientKeyConfig` (`api-key`, `models`, `allowed-models`, `excluded-models`), `ClientModels`, and `ClientExcludedModels` to `SDKConfig` (`internal/config/sdk_config.go`, `client_models.go`, `config_v8.go`, `config_load.go`, `parse.go`, `sdk/config/config.go`).
+     - Support global default models under `access.models` / `access.allowed-models` / `access.excluded-models` and per-key overrides/wildcards in `access.api-keys` (both scalar string and mapping entries).
+     - Filter model lists in `WriteModelListResponse` (`/v1/models` across OpenAI, Codex client catalog, Claude, Grok, and Gemini formats) and model detail endpoints (`/v1/models/*model`, `/v1beta/models/*action`), returning 404 for unauthorized models.
+     - Enforce model usability authorization in `executeWithAuthManagerFormats`, `executeStreamWithAuthManagerFormats`, `executeCountWithAuthManager`, `ExecuteProtocolWithAuthManager`, and Codex Realtime (`/v1/realtime`, `/v1/realtime/calls`, `/v1/realtime/client_secrets`), returning 403 Forbidden with `code: model_not_allowed` for unauthorized models.
+     - Document usage in `config.example.yaml` and add unit and integration tests.
+   - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568), PR [#4030](https://github.com/router-for-me/CLIProxyAPI/pull/4030), PR [#5517](https://github.com/router-for-me/CLIProxyAPI/pull/5517).
+
 ## Rebuild & Validation Procedure
 
 ```bash
 git fetch upstream main --tags
-git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank
+git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank patch/client-api-key-models
 
 git checkout -B main upstream/main
 
@@ -86,6 +96,9 @@ git commit -m "merge patch/p0-oauth-and-executors branch"
 
 git merge --squash origin/patch/embeddings-and-rerank
 git commit -m "merge patch/embeddings-and-rerank branch"
+
+git merge --squash origin/patch/client-api-key-models
+git commit -m "merge patch/client-api-key-models branch"
 
 go build -o test-output ./cmd/server && rm -f test-output
 go test ./sdk/api/handlers/... ./internal/api/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/... ./internal/thinking/... ./internal/auth/codex/...

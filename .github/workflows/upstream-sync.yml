@@ -37,7 +37,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
           git fetch upstream main --tags
-          git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank
+          git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank patch/client-api-key-models
           git reset --hard upstream/main
 
           if ! git merge --squash origin/ci; then
@@ -70,6 +70,9 @@ jobs:
 
           git merge --squash origin/patch/embeddings-and-rerank
           git commit -m "merge patch/embeddings-and-rerank branch"
+
+          git merge --squash origin/patch/client-api-key-models
+          git commit -m "merge patch/client-api-key-models branch"
 
       - name: Validate integrated build and patch tests
         run: |
