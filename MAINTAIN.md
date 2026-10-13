@@ -57,6 +57,7 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
      - Mount `/v1/embeddings`, `/v1/embedding`, `/v1/rerank`, and top-level `/rerank` routes in `internal/api/server_routes.go`.
      - Implement `Embeddings` and `Rerank` request validation and non-streaming execution in `OpenAIAPIHandler` (`sdk/api/handlers/openai/openai_handlers.go`).
      - Route embedding and rerank requests in `OpenAICompatExecutor` (`internal/runtime/executor/openai_compat_executor.go`) to upstream `${baseURL}/embeddings` and `${baseURL}/rerank`.
+     - Publish successful rerank calls to the usage queue, reading OpenAI `usage` or `meta.tokens` / `meta.billed_units`.
      - Translate OpenAI `/v1/embeddings` requests to Google Generative Language `:embedContent` (single) and `:batchEmbedContents` (batch) in `GeminiExecutor` (`internal/runtime/executor/gemini_executor.go`, `internal/runtime/executor/helps/gemini_embedding.go`).
    - **Related Upstream Work**: Issue [#5961](https://github.com/router-for-me/CLIProxyAPI/issues/5961), Issue [#3641](https://github.com/router-for-me/CLIProxyAPI/issues/3641), Issue [#1084](https://github.com/router-for-me/CLIProxyAPI/issues/1084), PR [#1191](https://github.com/router-for-me/CLIProxyAPI/pull/1191).
 
