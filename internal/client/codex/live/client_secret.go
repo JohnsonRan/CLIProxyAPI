@@ -270,6 +270,11 @@ func (h *Handler) createClientSecret(c *gin.Context, session json.RawMessage, ex
 	issuerProvider, _ := c.Get("accessProvider")
 	issuerPrincipalValue, _ := issuerPrincipal.(string)
 	issuerProviderValue, _ := issuerProvider.(string)
+	modelName := modelFromJSON(clientSession)
+	if h.cfg != nil && h.cfg.HasClientModelRestrictions(issuerPrincipalValue) && !h.cfg.IsModelAllowedForClient(issuerPrincipalValue, modelName) {
+		writeRealtimeError(c, http.StatusForbidden, fmt.Sprintf("model %q is not allowed for this API key", modelName), "invalid_request_error", "model_not_allowed")
+		return
+	}
 	token, authorization, expiresAt, errCreate := h.clientSecrets.create(upstreamSession, lifetime, issuerPrincipalValue, issuerProviderValue)
 	if errCreate != nil {
 		if errors.Is(errCreate, errClientSecretCapacity) {

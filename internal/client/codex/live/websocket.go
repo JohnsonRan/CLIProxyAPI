@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -44,6 +45,11 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	requestedModel := strings.TrimSpace(c.Query("model"))
 	if requestedModel == "" {
 		requestedModel = defaultStandardRealtimeModel
+	}
+	apiKey := c.GetString("userApiKey")
+	if h.cfg != nil && h.cfg.HasClientModelRestrictions(apiKey) && !h.cfg.IsModelAllowedForClient(apiKey, requestedModel) {
+		writeRealtimeError(c, http.StatusForbidden, fmt.Sprintf("model %q is not allowed for this API key", requestedModel), "invalid_request_error", "model_not_allowed")
+		return
 	}
 	selectionModel := codexRealtimeModel(requestedModel)
 	tokenSession := clientSecretSession(c)
