@@ -32,6 +32,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
@@ -1000,6 +1001,19 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 
 	action := strings.TrimPrefix(c.Param("action"), "/")
 	action = strings.TrimSpace(action)
+	apiKey := c.GetString("userApiKey")
+	if apiKey == "" && c.Request != nil {
+		apiKey = coreusage.APIKeyFromContext(c.Request.Context())
+	}
+	if s != nil && s.cfg != nil && s.cfg.HasClientModelRestrictions(apiKey) && !s.cfg.IsModelAllowedForClient(apiKey, action) {
+		c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Not Found",
+				Type:    "not_found",
+			},
+		})
+		return
+	}
 	for _, entry := range entries {
 		if homeGeminiModelMatches(entry, action) {
 			c.JSON(http.StatusOK, formatHomeGeminiModel(entry))

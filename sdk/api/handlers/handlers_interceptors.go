@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
@@ -698,6 +699,8 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		}
 	}
 
+	body = h.filterVisibleModelsJSON(c, body)
+
 	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
 		c.Writer.Header().Del("Content-Length")
 		var catalog struct {
@@ -740,4 +743,101 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 	c.Set("API_RESPONSE", cloneBytes(body))
 	c.Status(http.StatusOK)
 	_, _ = c.Writer.Write(body)
+}
+
+func (h *BaseAPIHandler) filterVisibleModelsJSON(c *gin.Context, body []byte) []byte {
+	if h == nil || h.Cfg == nil || len(body) == 0 {
+		return body
+	}
+	apiKey := ""
+	if c != nil {
+		apiKey = c.GetString("userApiKey")
+		if apiKey == "" && c.Request != nil {
+			apiKey = coreusage.APIKeyFromContext(c.Request.Context())
+		}
+	}
+	if !h.Cfg.HasClientModelRestrictions(apiKey) {
+		return body
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return body
+	}
+
+	modified := false
+
+	// Filter "data" array if present (OpenAI, Claude)
+	if dataRaw, ok := root["data"]; ok {
+		var dataList []json.RawMessage
+		if err := json.Unmarshal(dataRaw, &dataList); err == nil {
+			filteredList := make([]json.RawMessage, 0, len(dataList))
+			for _, item := range dataList {
+				id := extractModelIDFromRawMessage(item)
+				if id == "" || h.Cfg.IsModelAllowedForClient(apiKey, id) {
+					filteredList = append(filteredList, item)
+				} else {
+					modified = true
+				}
+			}
+			if modified {
+				filteredBytes, errMarshal := json.Marshal(filteredList)
+				if errMarshal == nil {
+					root["data"] = filteredBytes
+				}
+			}
+		}
+	}
+
+	// Filter "models" array if present (Codex, Gemini, Grok)
+	if modelsRaw, ok := root["models"]; ok {
+		var modelsList []json.RawMessage
+		if err := json.Unmarshal(modelsRaw, &modelsList); err == nil {
+			filteredList := make([]json.RawMessage, 0, len(modelsList))
+			for _, item := range modelsList {
+				id := extractModelIDFromRawMessage(item)
+				if id == "" || h.Cfg.IsModelAllowedForClient(apiKey, id) {
+					filteredList = append(filteredList, item)
+				} else {
+					modified = true
+				}
+			}
+			if modified {
+				filteredBytes, errMarshal := json.Marshal(filteredList)
+				if errMarshal == nil {
+					root["models"] = filteredBytes
+				}
+			}
+		}
+	}
+
+	if !modified {
+		return body
+	}
+	newBody, err := json.Marshal(root)
+	if err != nil {
+		return body
+	}
+	return newBody
+}
+
+func extractModelIDFromRawMessage(raw json.RawMessage) string {
+	var entry struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return ""
+	}
+	if entry.ID != "" {
+		return entry.ID
+	}
+	if entry.Slug != "" {
+		return entry.Slug
+	}
+	if entry.Name != "" {
+		return entry.Name
+	}
+	return ""
 }
