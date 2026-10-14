@@ -3,6 +3,8 @@ package openai
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +16,10 @@ import (
 )
 
 const (
-	responsesHTTPStateCacheMaxEntries         = 1024
+	responsesHTTPStateCacheMaxEntries = 1024
+	// responsesHTTPStateCacheMaxBytes bounds the transcripts kept for HTTP
+	// continuation; long Codex sessions carry megabytes per entry.
+	responsesHTTPStateCacheMaxBytes           = 256 << 20
 	responsesHTTPStateCacheTTL                = 30 * time.Minute
 	responsesHTTPPreviousResponseIDContextKey = "responsesHTTPPreviousResponseID"
 	responsesHTTPPinnedAuthIDContextKey       = "responsesHTTPPinnedAuthID"
@@ -22,6 +27,9 @@ const (
 )
 
 type responsesHTTPStateEntry struct {
+	// owner identifies the client credential that created the response; only
+	// the same caller may continue it.
+	owner              string
 	request            []byte
 	responseOutput     []byte
 	pendingToolCallIDs []string
@@ -29,30 +37,54 @@ type responsesHTTPStateEntry struct {
 	updatedAt          time.Time
 }
 
+func (e responsesHTTPStateEntry) size() int {
+	size := len(e.owner) + len(e.request) + len(e.responseOutput) + len(e.authID)
+	for _, id := range e.pendingToolCallIDs {
+		size += len(id)
+	}
+	return size
+}
+
 type responsesHTTPStateCache struct {
 	mu         sync.Mutex
 	ttl        time.Duration
 	maxEntries int
+	maxBytes   int
+	totalBytes int
 	nowFunc    func() time.Time
 	entries    map[string]responsesHTTPStateEntry
 	order      []string
 }
 
-var defaultResponsesHTTPStateCache = newResponsesHTTPStateCache(responsesHTTPStateCacheTTL, responsesHTTPStateCacheMaxEntries)
+var defaultResponsesHTTPStateCache = newResponsesHTTPStateCache(responsesHTTPStateCacheTTL, responsesHTTPStateCacheMaxEntries, responsesHTTPStateCacheMaxBytes)
 
-func newResponsesHTTPStateCache(ttl time.Duration, maxEntries int) *responsesHTTPStateCache {
+func newResponsesHTTPStateCache(ttl time.Duration, maxEntries int, maxBytes int) *responsesHTTPStateCache {
 	if ttl <= 0 {
 		ttl = responsesHTTPStateCacheTTL
 	}
 	if maxEntries <= 0 {
 		maxEntries = responsesHTTPStateCacheMaxEntries
 	}
+	if maxBytes <= 0 {
+		maxBytes = responsesHTTPStateCacheMaxBytes
+	}
 	return &responsesHTTPStateCache{
 		ttl:        ttl,
 		maxEntries: maxEntries,
+		maxBytes:   maxBytes,
 		nowFunc:    time.Now,
 		entries:    make(map[string]responsesHTTPStateEntry),
 	}
+}
+
+// responsesHTTPStateOwner derives the cache owner from the authenticated client
+// credential, so a leaked response id cannot continue another caller's session.
+func responsesHTTPStateOwner(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.GetString("accessProvider") + "\x00" + c.GetString("userApiKey")))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *responsesHTTPStateCache) now() time.Time {
@@ -72,25 +104,46 @@ func (c *responsesHTTPStateCache) put(responseID string, entry responsesHTTPStat
 	entry.request = bytes.Clone(entry.request)
 	entry.responseOutput = bytes.Clone(entry.responseOutput)
 	entry.pendingToolCallIDs = append([]string(nil), entry.pendingToolCallIDs...)
+	entrySize := entry.size()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.cleanupLocked(now)
-	if _, exists := c.entries[responseID]; !exists {
-		c.order = append(c.order, responseID)
+	if previous, exists := c.entries[responseID]; exists {
+		c.removeLocked(responseID, previous)
 	}
+	if entrySize > c.maxBytes {
+		return
+	}
+	c.order = append(c.order, responseID)
 	c.entries[responseID] = entry
+	c.totalBytes += entrySize
 
-	for len(c.order) > c.maxEntries {
+	for len(c.order) > 0 && (len(c.order) > c.maxEntries || c.totalBytes > c.maxBytes) {
 		evict := c.order[0]
 		c.order[0] = ""
 		c.order = c.order[1:]
-		delete(c.entries, evict)
+		if evicted, ok := c.entries[evict]; ok {
+			delete(c.entries, evict)
+			c.totalBytes -= evicted.size()
+		}
 	}
 }
 
-func (c *responsesHTTPStateCache) get(responseID string) (responsesHTTPStateEntry, bool) {
+// removeLocked drops responseID from the entries, the byte total, and the order.
+func (c *responsesHTTPStateCache) removeLocked(responseID string, entry responsesHTTPStateEntry) {
+	delete(c.entries, responseID)
+	c.totalBytes -= entry.size()
+	for i, key := range c.order {
+		if key == responseID {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (c *responsesHTTPStateCache) get(responseID string, owner string) (responsesHTTPStateEntry, bool) {
 	responseID = strings.TrimSpace(responseID)
 	if c == nil || responseID == "" {
 		return responsesHTTPStateEntry{}, false
@@ -102,12 +155,13 @@ func (c *responsesHTTPStateCache) get(responseID string) (responsesHTTPStateEntr
 
 	c.cleanupLocked(now)
 	entry, ok := c.entries[responseID]
-	if !ok {
+	if !ok || entry.owner != owner {
 		return responsesHTTPStateEntry{}, false
 	}
 	entry.updatedAt = now
 	c.entries[responseID] = entry
 	return responsesHTTPStateEntry{
+		owner:              entry.owner,
 		request:            bytes.Clone(entry.request),
 		responseOutput:     bytes.Clone(entry.responseOutput),
 		pendingToolCallIDs: append([]string(nil), entry.pendingToolCallIDs...),
@@ -128,6 +182,7 @@ func (c *responsesHTTPStateCache) cleanupLocked(now time.Time) {
 		}
 		if now.Sub(entry.updatedAt) > c.ttl {
 			delete(c.entries, key)
+			c.totalBytes -= entry.size()
 			continue
 		}
 		kept = append(kept, key)
@@ -146,7 +201,7 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 	if c != nil {
 		c.Set(responsesHTTPPreviousResponseIDContextKey, prevID)
 	}
-	entry, ok := defaultResponsesHTTPStateCache.get(prevID)
+	entry, ok := defaultResponsesHTTPStateCache.get(prevID, responsesHTTPStateOwner(c))
 	if !ok {
 		return rawJSON
 	}
@@ -230,6 +285,7 @@ func (h *OpenAIResponsesAPIHandler) finalizeHTTPNonStreamIncrementalResponse(c *
 	pendingCallIDs := extractPendingToolCallIDsFromOutput(outputRaw)
 	canonicalReq := canonicalHTTPIncrementalRequestSnapshot(requestJSON)
 	defaultResponsesHTTPStateCache.put(responseID, responsesHTTPStateEntry{
+		owner:              responsesHTTPStateOwner(c),
 		request:            canonicalReq,
 		responseOutput:     outputRaw,
 		pendingToolCallIDs: pendingCallIDs,
@@ -238,7 +294,7 @@ func (h *OpenAIResponsesAPIHandler) finalizeHTTPNonStreamIncrementalResponse(c *
 	return resp
 }
 
-func (h *OpenAIResponsesAPIHandler) recordHTTPStreamIncrementalCompleted(requestJSON []byte, completedPayload []byte, selectedAuthID string) {
+func (h *OpenAIResponsesAPIHandler) recordHTTPStreamIncrementalCompleted(owner string, requestJSON []byte, completedPayload []byte, selectedAuthID string) {
 	if len(completedPayload) == 0 {
 		return
 	}
@@ -253,6 +309,7 @@ func (h *OpenAIResponsesAPIHandler) recordHTTPStreamIncrementalCompleted(request
 	pendingCallIDs := extractPendingToolCallIDsFromOutput(outputRaw)
 	canonicalReq := canonicalHTTPIncrementalRequestSnapshot(requestJSON)
 	defaultResponsesHTTPStateCache.put(responseID, responsesHTTPStateEntry{
+		owner:              owner,
 		request:            canonicalReq,
 		responseOutput:     outputRaw,
 		pendingToolCallIDs: pendingCallIDs,
