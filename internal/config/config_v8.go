@@ -835,9 +835,54 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 		deleteYAMLPath(root, family.old)
 		setYAMLPath(root, "api-keys."+family.current, groups)
 	}
-	deleteYAMLPath(root, "client-keys")
+	foldClientKeysIntoAPIKeys(root)
 	preserveV8Comments(root, layout)
 	return nil
+}
+
+// foldClientKeysIntoAPIKeys writes model rules back onto their api-keys entries.
+// flattenV8 splits mapping entries of access.api-keys into plain api-keys plus an
+// internal client-keys list; without folding, every struct-based save would drop
+// the per-key rules and silently lift those keys' model restrictions.
+func foldClientKeysIntoAPIKeys(root *yaml.Node) {
+	clientKeys := yamlPath(root, "client-keys")
+	deleteYAMLPath(root, "client-keys")
+	keys := yamlPath(root, "access.api-keys")
+	if keys == nil {
+		keys = yamlPath(root, "api-keys")
+	}
+	if clientKeys == nil || clientKeys.Kind != yaml.SequenceNode || keys == nil || keys.Kind != yaml.SequenceNode {
+		return
+	}
+	rules := make(map[string]*yaml.Node, len(clientKeys.Content))
+	for _, entry := range clientKeys.Content {
+		if entry == nil || entry.Kind != yaml.MappingNode {
+			continue
+		}
+		var parsed ClientKeyConfig
+		if errDecode := entry.Decode(&parsed); errDecode != nil {
+			continue
+		}
+		key := strings.TrimSpace(parsed.APIKey)
+		if key == "" || (len(parsed.AllowedModelList()) == 0 && len(parsed.ExcludedModels) == 0) {
+			continue
+		}
+		rules[key] = entry
+	}
+	for index, item := range keys.Content {
+		if item == nil || item.Kind != yaml.ScalarNode {
+			continue
+		}
+		entry, ok := rules[strings.TrimSpace(item.Value)]
+		if !ok {
+			continue
+		}
+		folded := deepCopyNode(entry)
+		folded.HeadComment = item.HeadComment
+		folded.LineComment = item.LineComment
+		folded.FootComment = item.FootComment
+		keys.Content[index] = folded
+	}
 }
 
 func preserveV8Comments(dst, src *yaml.Node) {
