@@ -88,7 +88,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 14. **`patch/embeddings-and-rerank`**
     - **Goal**: OpenAI-compatible `/v1/embeddings`, `/v1/embedding`, `/v1/rerank`, and `/rerank` for OpenAI-compatible and Gemini providers.
-    - **Scope**: Routes, handlers, `OpenAICompatExecutor` embeddings/rerank execution, Gemini `:embedContent`/`:batchEmbedContents` translation, and rerank usage publication (OpenAI `usage` or `meta.tokens`/`meta.billed_units`). The model-level `embedding` and `rerank` flags are metadata for the panel's connectivity test; routing does not read them.
+    - **Scope**: Routes, handlers, `OpenAICompatExecutor` embeddings/rerank execution, Gemini `:embedContent`/`:batchEmbedContents` translation, and rerank usage publication (OpenAI `usage` or `meta.tokens`/`meta.billed_units`). The model-level `embedding` and `rerank` flags are metadata for the panel's connectivity test and set the listed output modality to `embeddings` / `rerank` unless `output-modalities` is configured; routing does not read them.
     - **Related Upstream Work**: Issue [#5961](https://github.com/router-for-me/CLIProxyAPI/issues/5961), Issue [#3641](https://github.com/router-for-me/CLIProxyAPI/issues/3641), Issue [#1084](https://github.com/router-for-me/CLIProxyAPI/issues/1084), PR [#1191](https://github.com/router-for-me/CLIProxyAPI/pull/1191).
 
 15. **`patch/client-api-key-models`**
@@ -112,10 +112,20 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 17. **`patch/systemone-endpoint`**
     - **Goal**: Serve TypeSafe System One decision models (Jev) on `POST /v1/systemone` (request/response shape: https://docs.typesafe.ai/api).
-    - **Scope**: `SystemOne` handler (`sdk/api/handlers/openai/openai_systemone_handlers.go`) validates `model`, `state` and `questions` and routes by model with entry protocol `systemone`. `OpenAICompatExecutor.executeSystemOne` (`internal/runtime/executor/openai_compat_executor_systemone.go`) forwards the body unchanged to `<base-url>/systemone`, rewriting only the upstream model name before payload rules (protocol `systemone`) run last; upstream status/body are preserved and `usage.input_tokens`/`output_tokens` are recorded. Configure as an `openai-compatibility` provider: TypeSafe `https://api.typesafe.ai/v1` (`jev-latest`) or Command Code `https://api.commandcode.ai/provider/v1` (`typesafe/jev`). The model field `systemone: true` (`OpenAICompatibilityModel.SystemOne`) is metadata for management clients; routing does not read it.
+    - **Scope**: `SystemOne` handler (`sdk/api/handlers/openai/openai_systemone_handlers.go`) validates `model`, `state` and `questions` and routes by model with entry protocol `systemone`. `OpenAICompatExecutor.executeSystemOne` (`internal/runtime/executor/openai_compat_executor_systemone.go`) forwards the body unchanged to `<base-url>/systemone`, rewriting only the upstream model name before payload rules (protocol `systemone`) run last; upstream status/body are preserved and `usage.input_tokens`/`output_tokens` are recorded. Configure as an `openai-compatibility` provider: TypeSafe `https://api.typesafe.ai/v1` (`jev-latest`) or Command Code `https://api.commandcode.ai/provider/v1` (`typesafe/jev`). The model field `systemone: true` (`OpenAICompatibilityModel.SystemOne`) is metadata for management clients and sets the listed output modality to `decisions` unless `output-modalities` is configured; routing does not read it.
     - **Cross-repo**: The panel patch `patch/systemone-endpoint` exposes the `systemone` flag and tests flagged models against `/systemone`.
     - **Related Upstream Work**: Issue [#6012](https://github.com/router-for-me/CLIProxyAPI/issues/6012) (closed as completed without code on `main`), PR [#6589](https://github.com/router-for-me/CLIProxyAPI/pull/6589) (open, unreviewed; generic native plugin routes plus the external `EcoRayDev/cpa-plugin-typesafe` plugin). This fork carries the smaller built-in passthrough instead.
     - **Retire when**: Upstream serves `/v1/systemone` natively, or PR #6589 lands and the plugin route is adopted here.
+
+18. **`patch/model-capabilities`**
+    - **Goal**: Let clients tell chat models apart from embedding, rerank and decision models from the model list alone.
+    - **Scope**:
+      - `/v1/models` entries carry OpenRouter-style `architecture.input_modalities`, `architecture.output_modalities`, `architecture.modality` and `context_length` from the registry (`internal/registry/model_architecture.go`). Unknown modalities are omitted, never guessed.
+      - Output modalities use OpenRouter names: `text`, `image`, `embeddings`, `rerank`, `decisions`. Built-in models take them from `models.json`; configured `image: true` models default to `[image]`; patches 14 and 17 map `embedding`, `rerank` and `systemone`. Explicit `output-modalities` always wins. Keep config flags named after endpoints (`systemone`, not `decisions`); only the listing uses the modality vocabulary.
+      - The Codex client catalog (`/v1/models?client_version=...`) marks models whose outputs are only `embeddings`, `rerank` or `decisions` with `visibility: hide`, like image and speech models.
+    - **Cross-repo**: `JohnsonRan/pi-cliproxyapi-provider` registers models by `architecture.output_modalities` (decisions as Pi classifiers).
+    - **Related Upstream Work**: PR [#5646](https://github.com/router-for-me/CLIProxyAPI/pull/5646) (open, unreviewed; separate `?capabilities=true` schema bundled with unrelated token-count and refresh changes, no embeddings/rerank/decisions), PR [#5801](https://github.com/router-for-me/CLIProxyAPI/pull/5801) (capability propagation across aliases).
+    - **Retire when**: Upstream lists output modalities in `/v1/models`; then move the flag mappings onto upstream's field names.
 
 ## Retired Patch Branches
 
@@ -126,7 +136,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities)
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
@@ -143,8 +153,8 @@ done
 # package is not run here: it has long-hanging tests, so it is covered by
 # targeted -run patterns instead.
 go build -o test-output ./cmd/server && rm -f test-output
-go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/...
-go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
+go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/...
+go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels" ./sdk/cliproxy
 go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne" ./internal/runtime/executor
 go test -run "TestSystemOneRoute" ./internal/api
 git push --force-with-lease origin HEAD:main
