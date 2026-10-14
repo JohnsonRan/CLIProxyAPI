@@ -6,12 +6,14 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -22,11 +24,13 @@ import (
 
 // OAuth configuration constants for OpenAI Codex
 const (
-	AuthURL             = "https://auth.openai.com/oauth/authorize"
-	TokenURL            = "https://auth.openai.com/oauth/token"
-	ClientID            = "app_EMoamEEZ73f0CkXaXp7hrann"
-	RedirectURI         = "http://localhost:1455/auth/callback"
-	codexRefreshTimeout = 30 * time.Second
+	AuthURL               = "https://auth.openai.com/oauth/authorize"
+	TokenURL              = "https://auth.openai.com/oauth/token"
+	ClientID              = "app_EMoamEEZ73f0CkXaXp7hrann"
+	RedirectURI           = "http://localhost:1455/auth/callback"
+	codexRefreshTimeout   = 30 * time.Second
+	codexRefreshResultTTL = 5 * time.Minute
+	defaultCodexUserAgent = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
 )
 
 // CodexAuth handles the OpenAI OAuth2 authentication flow.
@@ -37,7 +41,52 @@ type CodexAuth struct {
 	siwcAgentNameHint string
 }
 
-var codexRefreshGroup singleflight.Group
+type codexRefreshResult struct {
+	tokenData CodexTokenData
+	expiresAt time.Time
+}
+
+var (
+	codexRefreshGroup   singleflight.Group
+	codexRefreshResults sync.Map
+	codexRefreshNow     = time.Now
+)
+
+func codexRefreshKey(refreshToken string) string {
+	sum := sha256.Sum256([]byte(refreshToken))
+	return string(sum[:])
+}
+
+func cachedCodexRefreshResult(key string) *CodexTokenData {
+	value, ok := codexRefreshResults.Load(key)
+	if !ok {
+		return nil
+	}
+	result, ok := value.(codexRefreshResult)
+	if !ok || !result.expiresAt.After(codexRefreshNow()) {
+		codexRefreshResults.Delete(key)
+		return nil
+	}
+	tokenData := result.tokenData
+	return &tokenData
+}
+
+func cacheCodexRefreshResult(key string, tokenData *CodexTokenData) {
+	if tokenData == nil {
+		return
+	}
+	now := codexRefreshNow()
+	codexRefreshResults.Range(func(k, v any) bool {
+		if entry, ok := v.(codexRefreshResult); !ok || !entry.expiresAt.After(now) {
+			codexRefreshResults.Delete(k)
+		}
+		return true
+	})
+	codexRefreshResults.Store(key, codexRefreshResult{
+		tokenData: *tokenData,
+		expiresAt: now.Add(codexRefreshResultTTL),
+	})
+}
 
 // NewCodexAuth creates a new CodexAuth service instance.
 // It initializes an HTTP client with proxy settings from the provided configuration.
@@ -124,6 +173,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", defaultCodexUserAgent)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -201,11 +251,23 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	refreshKey := codexRefreshKey(refreshToken)
+	if tokenData := cachedCodexRefreshResult(refreshKey); tokenData != nil {
+		return tokenData, nil
+	}
 
-	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
+	result, err, _ := codexRefreshGroup.Do(refreshKey, func() (interface{}, error) {
+		if tokenData := cachedCodexRefreshResult(refreshKey); tokenData != nil {
+			return tokenData, nil
+		}
 		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), codexRefreshTimeout)
 		defer cancelRefresh()
-		return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
+		tokenData, errRefresh := o.refreshTokensSingleFlight(refreshCtx, refreshToken)
+		if errRefresh != nil {
+			return nil, errRefresh
+		}
+		cacheCodexRefreshResult(refreshKey, tokenData)
+		return tokenData, nil
 	})
 	if err != nil {
 		return nil, err
@@ -214,7 +276,8 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 	if !ok || tokenData == nil {
 		return nil, fmt.Errorf("token refresh failed: invalid single-flight result")
 	}
-	return tokenData, nil
+	cloned := *tokenData
+	return &cloned, nil
 }
 
 func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
@@ -232,6 +295,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", defaultCodexUserAgent)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -348,7 +412,17 @@ func isNonRetryableRefreshErr(err error) bool {
 		return false
 	}
 	raw := strings.ToLower(err.Error())
-	return strings.Contains(raw, "refresh_token_reused")
+	for _, terminal := range []string{
+		"refresh_token_reused",
+		"refresh_token_invalidated",
+		"token_invalidated",
+		"invalid_grant",
+	} {
+		if strings.Contains(raw, terminal) {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.
