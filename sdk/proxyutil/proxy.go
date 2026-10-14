@@ -132,7 +132,12 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Honor the dial context so a canceled request or an unreachable
+				// proxy does not hold the dial open until the OS TCP timeout.
+				if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+					return contextDialer.DialContext(ctx, network, addr)
+				}
 				return dialer.Dial(network, addr)
 			}
 			return transport, setting.Mode, nil
