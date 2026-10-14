@@ -240,6 +240,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 	stripDefaultKimiClaudeCodeAttributionDoc(auth, url, fp.ProfileClaudeCodeCLI, doc)
+	helps.ApplyClaudeSearchRecoveryDoc(ctx, doc)
 	applyClaudePreservedThinkingBindingDoc(doc)
 	// Keep built-in cleanup before the final user payload rules.
 	stripPromptCacheOptionsDoc(doc)
@@ -340,6 +341,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
+		}
+		if httpResp.StatusCode == http.StatusBadRequest && helps.CanRecoverClaudeSearch(ctx) {
+			if _, recoverable := helps.RecoverClaudeSearchHistory(bodyForUpstream, b); recoverable {
+				helps.LogWithRequestID(ctx).Warn("Retrying Claude request with readable rejected-turn web-search history after encrypted search replay rejection")
+				return e.ExecuteStream(helps.WithClaudeSearchRecovery(ctx, b, bodyForUpstream), auth, req, opts)
+			}
 		}
 		if fastRequest {
 			return nil, newClaudeFastDirectResponseError(httpResp, b)
