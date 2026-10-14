@@ -102,6 +102,14 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Cross-repo**: Required by the panel patch `patch/client-api-key-models`.
     - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568), PR [#4030](https://github.com/router-for-me/CLIProxyAPI/pull/4030), PR [#5517](https://github.com/router-for-me/CLIProxyAPI/pull/5517).
 
+16. **`patch/proxy-transport-reuse`**
+    - **Goal**: Reuse proxied upstream connections and make SOCKS5 dials cancellable.
+    - **Scope**:
+      - `cachedProxyTransport` (`internal/runtime/executor/helps/proxy_helpers.go`) keeps one `http.Transport` per proxy URL in a bounded LRU for `NewProxyAwareHTTPClient` and the non-Anthropic/non-ChatGPT fallback of `NewUtlsHTTPClient`. Before, every request with a request, credential, or global proxy URL built a new transport: a fresh TCP, proxy, and TLS handshake per call, with the discarded idle sockets left open for 90 seconds. The per-proxy scope matches upstream's uTLS round-tripper caches and conductor round-tripper provider.
+      - SOCKS5 transports (`sdk/proxyutil/proxy.go`) dial through the dialer's `DialContext`, so a canceled request or an unresponsive proxy no longer blocks until the OS TCP timeout.
+    - **Related Upstream Work**: PR [#1826](https://github.com/router-for-me/CLIProxyAPI/pull/1826) (closed by the maintainer: "No plans to support this"), PR [#4592](https://github.com/router-for-me/CLIProxyAPI/pull/4592) (closed unmerged), PR [#4604](https://github.com/router-for-me/CLIProxyAPI/pull/4604) (withdrawn by its author as fork-specific), PR [#2707](https://github.com/router-for-me/CLIProxyAPI/pull/2707) (closed unmerged; raised `MaxIdleConnsPerHost` instead).
+    - **Retire when**: Upstream stops building proxy transports per request. Upstream declined the earlier attempts, so expect to carry this indefinitely.
+
 ## Retired Patch Branches
 
 - `patch/p2-runtime-optimizations` was split into patches 3–8 on 2026-10-14.
@@ -111,7 +119,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse)
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
@@ -128,7 +136,7 @@ done
 # package is not run here: it has long-hanging tests, so it is covered by
 # targeted -run patterns instead.
 go build -o test-output ./cmd/server && rm -f test-output
-go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/...
+go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/...
 go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
 go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank" ./internal/runtime/executor
 git push --force-with-lease origin HEAD:main
