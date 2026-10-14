@@ -13,6 +13,24 @@ concurrency:
   group: upstream-sync-main
   cancel-in-progress: false
 
+env:
+  # Fixed integration order. Keep in sync with MAINTAIN.md.
+  PATCH_BRANCHES: >-
+    patch/http-compression
+    patch/responses-ws-sse-incremental
+    patch/chatgpt-utls-pool
+    patch/runtime-memory-bounds
+    patch/startup-model-registration
+    patch/claude-api-key-policy
+    patch/management-panel-update
+    patch/downstream-panel-source
+    patch/fix-interrupt-test-race
+    patch/claude-thinking-off
+    patch/claude-search-recovery
+    patch/codex-oauth-resilience
+    patch/embeddings-and-rerank
+    patch/client-api-key-models
+
 jobs:
   sync-main-with-squash-branches:
     runs-on: ubuntu-latest
@@ -37,7 +55,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
           git fetch upstream main --tags
-          git fetch origin ci patch/http-compression patch/responses-ws-sse-incremental patch/p2-runtime-optimizations patch/p0-oauth-and-executors patch/embeddings-and-rerank patch/client-api-key-models
+          read -r -a patches <<< "${PATCH_BRANCHES}"
+          git fetch origin ci "${patches[@]}"
+          echo "PREVIOUS_MAIN=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
           git reset --hard upstream/main
 
           if ! git merge --squash origin/ci; then
@@ -56,33 +76,39 @@ jobs:
           fi
           git commit -m "merge ci branch"
 
-          git merge --squash origin/patch/http-compression
-          git commit -m "merge patch/http-compression branch"
-
-          git merge --squash origin/patch/responses-ws-sse-incremental
-          git commit -m "merge patch/responses-ws-sse-incremental branch"
-
-          git merge --squash origin/patch/p2-runtime-optimizations
-          git commit -m "merge patch/p2-runtime-optimizations branch"
-
-          git merge --squash origin/patch/p0-oauth-and-executors
-          git commit -m "merge patch/p0-oauth-and-executors branch"
-
-          git merge --squash origin/patch/embeddings-and-rerank
-          git commit -m "merge patch/embeddings-and-rerank branch"
-
-          git merge --squash origin/patch/client-api-key-models
-          git commit -m "merge patch/client-api-key-models branch"
+          for branch in "${patches[@]}"; do
+            if ! git merge --squash "origin/${branch}"; then
+              echo "::error::${branch} does not merge onto the candidate; fix it on the patch branch"
+              exit 1
+            fi
+            if git diff --cached --quiet; then
+              echo "::error::${branch} is empty on the current upstream; confirm whether upstream absorbed it and retire it"
+              exit 1
+            fi
+            git commit -m "merge ${branch} branch"
+          done
 
       - name: Validate integrated build and patch tests
         run: |
           set -euo pipefail
           go build -o test-output ./cmd/server && rm -f test-output
-          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/auth/codex/...
+          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/...
           go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
-          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503" ./internal/runtime/executor
+          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank" ./internal/runtime/executor
+
+      - name: Skip unchanged result
+        id: changed
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse 'HEAD^{tree}')" == "$(git rev-parse "${PREVIOUS_MAIN}^{tree}")" ]]; then
+            echo "Rebuilt tree matches main; nothing to publish."
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Push rebuilt main
+        if: steps.changed.outputs.push == 'true'
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_WORKFLOW_TOKEN }}
           FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,4 +120,4 @@ jobs:
             exit 1
           fi
           git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push --force-with-lease origin HEAD:main
+          git push --force-with-lease="main:${PREVIOUS_MAIN}" origin HEAD:main
