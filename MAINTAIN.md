@@ -110,6 +110,12 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: PR [#1826](https://github.com/router-for-me/CLIProxyAPI/pull/1826) (closed by the maintainer: "No plans to support this"), PR [#4592](https://github.com/router-for-me/CLIProxyAPI/pull/4592) (closed unmerged), PR [#4604](https://github.com/router-for-me/CLIProxyAPI/pull/4604) (withdrawn by its author as fork-specific), PR [#2707](https://github.com/router-for-me/CLIProxyAPI/pull/2707) (closed unmerged; raised `MaxIdleConnsPerHost` instead).
     - **Retire when**: Upstream stops building proxy transports per request. Upstream declined the earlier attempts, so expect to carry this indefinitely.
 
+17. **`patch/systemone-endpoint`**
+    - **Goal**: Serve TypeSafe System One decision models (Jev) on `POST /v1/systemone` (request/response shape: https://docs.typesafe.ai/api).
+    - **Scope**: `SystemOne` handler (`sdk/api/handlers/openai/openai_systemone_handlers.go`) validates `model`, `state` and `questions` and routes by model with entry protocol `systemone`. `OpenAICompatExecutor.executeSystemOne` (`internal/runtime/executor/openai_compat_executor_systemone.go`) forwards the body unchanged to `<base-url>/systemone`, rewriting only the upstream model name before payload rules (protocol `systemone`) run last; upstream status/body are preserved and `usage.input_tokens`/`output_tokens` are recorded. Configure as an `openai-compatibility` provider: TypeSafe `https://api.typesafe.ai/v1` (`jev-latest`) or Command Code `https://api.commandcode.ai/provider/v1` (`typesafe/jev`).
+    - **Related Upstream Work**: Issue [#6012](https://github.com/router-for-me/CLIProxyAPI/issues/6012) (closed as completed without code on `main`), PR [#6589](https://github.com/router-for-me/CLIProxyAPI/pull/6589) (open, unreviewed; generic native plugin routes plus the external `EcoRayDev/cpa-plugin-typesafe` plugin). This fork carries the smaller built-in passthrough instead.
+    - **Retire when**: Upstream serves `/v1/systemone` natively, or PR #6589 lands and the plugin route is adopted here.
+
 ## Retired Patch Branches
 
 - `patch/p2-runtime-optimizations` was split into patches 3–8 on 2026-10-14.
@@ -119,7 +125,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint)
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
@@ -138,7 +144,8 @@ done
 go build -o test-output ./cmd/server && rm -f test-output
 go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/...
 go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening" ./sdk/cliproxy
-go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank" ./internal/runtime/executor
+go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne" ./internal/runtime/executor
+go test -run "TestSystemOneRoute" ./internal/api
 git push --force-with-lease origin HEAD:main
 ```
 
