@@ -65,6 +65,8 @@ func TestRefreshTokens_UsesIndependentTimeout(t *testing.T) {
 
 func resetCodexRefreshGroupForTest() {
 	codexRefreshGroup = singleflight.Group{}
+	codexRefreshResults = sync.Map{}
+	codexRefreshNow = time.Now
 }
 
 func TestRefreshTokensWithRetry_NonRetryableOnlyAttemptsOnce(t *testing.T) {
@@ -340,6 +342,12 @@ func TestRefreshTokensWithRetry_TerminalGrantErrorsOnlyAttemptOnce(t *testing.T)
 			wantCalls:  1,
 		},
 		{
+			name:       "token_invalidated",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":"token_invalidated"}`,
+			wantCalls:  1,
+		},
+		{
 			name:       "transient_503_retries",
 			statusCode: http.StatusServiceUnavailable,
 			body:       `{"error":"service_unavailable"}`,
@@ -373,5 +381,93 @@ func TestRefreshTokensWithRetry_TerminalGrantErrorsOnlyAttemptOnce(t *testing.T)
 				t.Fatalf("%s: RefreshTokensWithRetry attempts = %d, want %d", tc.name, got, tc.wantCalls)
 			}
 		})
+	}
+}
+
+func TestRefreshTokens_ReusesCompletedRefreshResultForLateCallers(t *testing.T) {
+	resetCodexRefreshGroupForTest()
+	defer resetCodexRefreshGroupForTest()
+
+	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	codexRefreshNow = func() time.Time { return now }
+
+	var calls int32
+	auth := &CodexAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if atomic.AddInt32(&calls, 1) > 1 {
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","code":"refresh_token_reused"}`)),
+						Header:     make(http.Header),
+						Request:    req,
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	first, errFirst := auth.RefreshTokens(context.Background(), "rotating-token")
+	if errFirst != nil {
+		t.Fatalf("first refresh failed: %v", errFirst)
+	}
+	second, errSecond := auth.RefreshTokens(context.Background(), "rotating-token")
+	if errSecond != nil {
+		t.Fatalf("late caller refresh failed: %v", errSecond)
+	}
+	if second.AccessToken != first.AccessToken || second.RefreshToken != "rotated-refresh" {
+		t.Fatalf("late caller token = %#v, want %#v", second, first)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+
+	now = now.Add(codexRefreshResultTTL + time.Second)
+	if _, errExpired := auth.RefreshTokens(context.Background(), "rotating-token"); errExpired == nil {
+		t.Fatal("expected upstream call after TTL expiry")
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("upstream calls after TTL expiry = %d, want 2", got)
+	}
+}
+
+func TestCodexAuthSetsOfficialUserAgentOnExchangeAndRefresh(t *testing.T) {
+	resetCodexRefreshGroupForTest()
+	defer resetCodexRefreshGroupForTest()
+
+	var seenUAs []string
+	auth := &CodexAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				seenUAs = append(seenUAs, req.Header.Get("User-Agent"))
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":3600}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	if _, err := auth.ExchangeCodeForTokensWithRedirect(context.Background(), "code", RedirectURI, &PKCECodes{CodeVerifier: "verifier"}); err != nil {
+		t.Fatalf("ExchangeCodeForTokensWithRedirect failed: %v", err)
+	}
+	if _, err := auth.RefreshTokens(context.Background(), "ua-refresh-token"); err != nil {
+		t.Fatalf("RefreshTokens failed: %v", err)
+	}
+	if len(seenUAs) != 2 {
+		t.Fatalf("seenUAs len = %d, want 2", len(seenUAs))
+	}
+	for i, ua := range seenUAs {
+		if ua != defaultCodexUserAgent {
+			t.Fatalf("request %d User-Agent = %q, want %q", i, ua, defaultCodexUserAgent)
+		}
 	}
 }
