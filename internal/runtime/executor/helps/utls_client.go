@@ -135,6 +135,35 @@ func (t *utlsRoundTripper) connectWithRetry(ctx context.Context, host, addr stri
 	return nil, fmt.Errorf("utls: connection attempts exhausted")
 }
 
+// utlsH2IdleTimeout closes pooled HTTP/2 connections that carry no streams,
+// matching net/http's default idle connection lifetime.
+const utlsH2IdleTimeout = 90 * time.Second
+
+// retireH2Conn stops conn from taking new requests and closes it once its
+// in-flight streams finish, without interrupting them.
+func retireH2Conn(conn *http2.ClientConn) {
+	if conn == nil {
+		return
+	}
+	go func() {
+		if errShutdown := conn.Shutdown(context.Background()); errShutdown != nil {
+			_ = conn.Close()
+		}
+	}()
+}
+
+// h2ConnUsable reports whether conn can carry a new request. CanTakeNewRequest
+// alone still reports true for a connection that was closed before its first
+// request, so the closing state is checked as well.
+func h2ConnUsable(conn *http2.ClientConn) bool {
+	state := conn.State()
+	return !state.Closed && !state.Closing && conn.CanTakeNewRequest()
+}
+
+func (t *utlsRoundTripper) newH2ClientConn(conn net.Conn) (*http2.ClientConn, error) {
+	return (&http2.Transport{IdleConnTimeout: utlsH2IdleTimeout}).NewClientConn(conn)
+}
+
 func (t *utlsRoundTripper) CloseIdleConnections() {
 	if t == nil {
 		return
@@ -149,7 +178,7 @@ func (t *utlsRoundTripper) CloseIdleConnections() {
 	}
 	t.poolMu.Unlock()
 	for _, conn := range conns {
-		_ = conn.Close()
+		retireH2Conn(conn)
 	}
 }
 
@@ -158,14 +187,16 @@ func (t *utlsRoundTripper) getPooledH2Conn(addr string) *http2.ClientConn {
 		return nil
 	}
 	t.poolMu.Lock()
-	defer t.poolMu.Unlock()
 	conn := t.h2Pool[addr]
-	if conn != nil && conn.CanTakeNewRequest() {
+	if conn != nil && h2ConnUsable(conn) {
+		t.poolMu.Unlock()
 		return conn
 	}
 	if conn != nil {
 		delete(t.h2Pool, addr)
 	}
+	t.poolMu.Unlock()
+	retireH2Conn(conn)
 	return nil
 }
 
@@ -177,8 +208,59 @@ func (t *utlsRoundTripper) putPooledH2Conn(addr string, conn *http2.ClientConn) 
 	if t.h2Pool == nil {
 		t.h2Pool = make(map[string]*http2.ClientConn)
 	}
+	previous := t.h2Pool[addr]
 	t.h2Pool[addr] = conn
 	t.poolMu.Unlock()
+	if previous != conn {
+		retireH2Conn(previous)
+	}
+}
+
+// dropPooledH2Conn removes conn from the pool if it is still the pooled entry
+// and retires it.
+func (t *utlsRoundTripper) dropPooledH2Conn(addr string, conn *http2.ClientConn) {
+	if t == nil || conn == nil {
+		return
+	}
+	t.poolMu.Lock()
+	if t.h2Pool[addr] == conn {
+		delete(t.h2Pool, addr)
+	}
+	t.poolMu.Unlock()
+	retireH2Conn(conn)
+}
+
+// prepareRetryOnFreshH2Conn decides whether a request that failed on a pooled
+// connection may be sent again on a new one. Only failures where the server
+// cannot have processed the request qualify: the connection became unusable
+// before the stream started, or the server refused the stream. The body is
+// rewound through GetBody; requests whose body cannot be replayed are not retried.
+func prepareRetryOnFreshH2Conn(req *http.Request, err error) (*http.Request, bool) {
+	if req == nil || err == nil || req.Context().Err() != nil {
+		return nil, false
+	}
+	var streamErr http2.StreamError
+	refused := errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeRefusedStream
+	message := err.Error()
+	unusable := strings.Contains(message, "client conn not usable") ||
+		strings.Contains(message, "client conn is closed") ||
+		strings.Contains(message, "graceful shutdown GOAWAY")
+	if !refused && !unusable {
+		return nil, false
+	}
+	if req.Body == nil || req.Body == http.NoBody {
+		return req, true
+	}
+	if req.GetBody == nil {
+		return nil, false
+	}
+	body, errBody := req.GetBody()
+	if errBody != nil {
+		return nil, false
+	}
+	retry := req.Clone(req.Context())
+	retry.Body = body
+	return retry, true
 }
 
 type closeConnectionBody struct {
@@ -277,6 +359,15 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 			}
 			return resp, nil
 		}
+		t.dropPooledH2Conn(addr, h2Conn)
+		if err == nil {
+			return nil, fmt.Errorf("utls: upstream returned an empty response")
+		}
+		retry, ok := prepareRetryOnFreshH2Conn(req, err)
+		if !ok {
+			return nil, err
+		}
+		req = retry
 	}
 
 	tlsConn, err := t.connectWithRetry(req.Context(), hostname, addr)
@@ -284,7 +375,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	if t.poolH2 && tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
-		h2Conn, errClientConn := (&http2.Transport{}).NewClientConn(tlsConn)
+		h2Conn, errClientConn := t.newH2ClientConn(tlsConn)
 		if errClientConn != nil {
 			_ = tlsConn.Close()
 			return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
@@ -292,12 +383,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		t.putPooledH2Conn(addr, h2Conn)
 		resp, errRT := h2Conn.RoundTrip(req)
 		if errRT != nil {
-			t.poolMu.Lock()
-			if t.h2Pool[addr] == h2Conn {
-				delete(t.h2Pool, addr)
-			}
-			t.poolMu.Unlock()
-			_ = h2Conn.Close()
+			t.dropPooledH2Conn(addr, h2Conn)
 			return nil, errRT
 		}
 		if resp == nil {
