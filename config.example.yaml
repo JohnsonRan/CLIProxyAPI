@@ -923,8 +923,8 @@ upstream:
 #           display-name: "Kimi K2"         # optional catalog display name
 #           max-context-length: 1048576    # optional: override Codex client context window metadata
 #           image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits (not chat/responses image input)
-#           embedding: false               # optional: marks an embedding model; the management panel tests it via /v1/embeddings. Routing does not depend on it.
-#           rerank: false                  # optional: marks a reranker; the management panel tests it via /v1/rerank. Routing does not depend on it.
+#           embedding: false               # optional: marks an embedding model; the management panel tests it via /v1/embeddings. Listed with output modality embeddings unless output-modalities is set. Routing does not depend on it.
+#           rerank: false                  # optional: marks a reranker; the management panel tests it via /v1/rerank. Listed with output modality rerank unless output-modalities is set. Routing does not depend on it.
 #           input-modalities: [text, image] # optional: declare /v1/chat/completions and /v1/responses multimodal input for Codex clients. Use [text] for upstreams that reject multimodal tool result content.
 #           output-modalities: [text]       # optional: declare output modalities when known
 #           is-compat: false                # optional: preserve Claude thinking blocks for compatible upstreams
