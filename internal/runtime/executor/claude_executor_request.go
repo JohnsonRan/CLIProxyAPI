@@ -817,6 +817,11 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
 	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
+	if statusCode == http.StatusBadRequest && claudeBodyIndicatesLowCreditBalance(body) {
+		err.code = http.StatusPaymentRequired
+		err.credentialScoped = true
+		return err
+	}
 	if statusCode == http.StatusTooManyRequests {
 		if !modelLevelCooling && helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers) {
 			return claudeRateLimitError{statusErr: err, credentialScoped: true}
@@ -828,6 +833,14 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 		return claudeRateLimitError{statusErr: err, credentialScoped: false}
 	}
 	return err
+}
+
+func claudeBodyIndicatesLowCreditBalance(body []byte) bool {
+	message := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	if message == "" {
+		message = strings.ToLower(string(body))
+	}
+	return strings.Contains(message, "credit balance is too low")
 }
 
 // claudeBodyIndicatesFastModeCredits matches Anthropic's fast-mode entitlement

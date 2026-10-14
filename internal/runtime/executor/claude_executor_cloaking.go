@@ -1703,7 +1703,9 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 	}
 
 	fp := resolveClaudeFingerprintPolicy(cfg, auth, apiKey)
-	cloakConfigured := cloakCfg != nil || attrMode != "" || attrStrict || len(attrWords) > 0 || attrCache
+	attrModeNorm := strings.ToLower(strings.TrimSpace(attrMode))
+	hasExplicitAttrCloak := (attrModeNorm != "" && attrModeNorm != "auto") || attrStrict || len(attrWords) > 0 || attrCache
+	cloakConfigured := hasExplicitCloakConfig(cloakCfg) || hasExplicitAttrCloak
 	trimmedMode := strings.ToLower(strings.TrimSpace(cloakMode))
 	uncloak := !fp.ProfileClaudeCodeCLI && (explicitMode == "never" || explicitMode == "uncloak")
 	policy := claudeWirePolicy{
@@ -1730,6 +1732,17 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 		// settings. Other API keys and delegated providers keep the caller shape.
 	}
 	return policy, settings
+}
+
+func hasExplicitCloakConfig(cloakCfg *config.CloakConfig) bool {
+	if cloakCfg == nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(cloakCfg.Mode))
+	if mode != "" && mode != "auto" {
+		return true
+	}
+	return cloakCfg.StrictMode || len(cloakCfg.SensitiveWords) > 0 || (cloakCfg.CacheUserID != nil && *cloakCfg.CacheUserID)
 }
 
 // applyCloaking applies the shared Messages/count_tokens wire policy. The

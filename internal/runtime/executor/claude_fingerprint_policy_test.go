@@ -1534,3 +1534,43 @@ func TestClaudeExecutor_GlobalDisableClaudeCloakModePreservesConfirmedCallerIden
 		t.Fatalf("Anthropic-Beta = %q, want preserved claude-code-20250219", got)
 	}
 }
+
+func TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"", "auto"} {
+		cfg := &config.Config{
+			ClaudeKey: []config.ClaudeKey{{
+				APIKey: "sk-ant-usr-test-key",
+				Cloak:  &config.CloakConfig{Mode: mode, StrictMode: false},
+			}},
+		}
+		auth := &cliproxyauth.Auth{
+			Attributes: map[string]string{"api_key": "sk-ant-usr-test-key"},
+		}
+		policy, _ := resolveClaudeWirePolicy(cfg, auth, "sk-ant-usr-test-key", false)
+		if policy.Cloak {
+			t.Fatalf("resolveClaudeWirePolicy(mode=%q) Cloak = true, want false for official API key without explicit cloak settings", mode)
+		}
+	}
+}
+
+func TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}`)
+	err := classifyClaudeUpstreamErrorWithCooling(http.StatusBadRequest, nil, body, false)
+	sc, ok := err.(interface {
+		StatusCode() int
+		IsCredentialScoped() bool
+	})
+	if !ok {
+		t.Fatalf("classified error %T does not implement StatusCode/IsCredentialScoped", err)
+	}
+	if sc.StatusCode() != http.StatusPaymentRequired {
+		t.Fatalf("StatusCode() = %d, want %d", sc.StatusCode(), http.StatusPaymentRequired)
+	}
+	if !sc.IsCredentialScoped() {
+		t.Fatal("IsCredentialScoped() = false, want true")
+	}
+}
