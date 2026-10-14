@@ -890,6 +890,7 @@ upstream:
 #     # the request unchanged to <base-url>/systemone (https://docs.typesafe.ai/api). Add a
 #     # provider like the one above with base-url "https://api.typesafe.ai/v1" and model
 #     # "jev-latest", or Command Code "https://api.commandcode.ai/provider/v1" and "typesafe/jev".
+#     # Set "systemone: true" on such models so management connectivity tests use /systemone.
 
 # END API KEY EXAMPLES
 
