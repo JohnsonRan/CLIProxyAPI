@@ -23,6 +23,7 @@ env:
     patch/startup-model-registration
     patch/claude-api-key-policy
     patch/management-panel-update
+    patch/management-ua-shim
     patch/downstream-panel-source
     patch/fix-interrupt-test-race
     patch/claude-thinking-off

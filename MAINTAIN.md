@@ -55,37 +55,43 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
    - **Goal**: Let the management panel install the latest panel asset on demand.
    - **Scope**: `POST /v8/management/server/update-panel` (`internal/api/handlers/management/panel_update.go`) calls `managementasset.ForceUpdateManagementHTML`, which shares the auto-updater's singleflight key, verifies the release digest, and returns `409 control_panel_disabled` when `remote-management.disable-control-panel` is set.
    - **Cross-repo**: Required by the panel patch `patch/update-management-panel`.
-   - **Note**: This branch no longer injects the User-Agent stabilizer into `management.html`; the panel patch `patch/secure-storage-stable-key` owns that fix. Publish a panel release containing it before a core `main` without the injection, or browsers that already ran the injected migration lose their saved login.
+   - **Note**: The User-Agent shim moved to `patch/management-ua-shim`.
 
-8. **`patch/downstream-panel-source`**
+8. **`patch/management-ua-shim`** (transitional)
+   - **Goal**: Keep saved panel logins readable across browser updates when serving panel builds that key their localStorage obfuscation on the full User-Agent.
+   - **Scope**: `internal/managementasset/ua_shim.go` injects a script into such `management.html` builds that re-keys stored values onto a version-free User-Agent once (`cpa_obfuscation_ua_migrated` marker) and pins `navigator.userAgent`. `serveManagementControlPanel` serves unchanged files through `http.ServeFile`.
+   - **Cross-repo**: The panel patch `patch/secure-storage-stable-key` fixes the key in the panel itself and ships the marker, so this shim leaves those builds alone.
+   - **Retire when**: Users no longer run panel builds without `patch/secure-storage-stable-key`, including upstream panels selected through `remote-management.panel-github-repository`. Removing it earlier makes those panels unreadable for browsers it already migrated.
+
+9. **`patch/downstream-panel-source`**
    - **Goal**: Serve this fork's management panel by default.
    - **Scope**: `DefaultPanelGitHubRepository`, the default release lookup in `internal/managementasset/updater.go`, and `config.example.yaml` point at `JohnsonRan/Cli-Proxy-API-Management-Center`. An explicit `remote-management.panel-github-repository` still wins. The last-resort fallback page (`cpamc.router-for.me`) stays upstream's.
 
-9. **`patch/fix-interrupt-test-race`**
+10. **`patch/fix-interrupt-test-race`**
    - **Goal**: Deflake `TestResponsesInterruptStopsHTTPUpstream`, which sampled a cancellation flag once and failed about one run in thirty.
    - **Scope**: Test-only (`sdk/api/handlers/openai/openai_responses_interrupt_test.go`). Retire when upstream fixes the test.
 
-10. **`patch/claude-thinking-off`**
+11. **`patch/claude-thinking-off`**
     - **Goal**: Turn Claude thinking off the way each model accepts.
     - **Scope**: `claude-sonnet-5-5` uses `thinking.type: "between_tools"`; `claude-opus-5-5`, `claude-fable-5`, `claude-fable-5-1` cannot turn thinking off and fall back to their lowest adaptive level with `display: "omitted"`; dated and bracketed Claude variants resolve to their catalog entry. The facts live in `internal/registry/claude_thinking_facts.go` and are overlaid on every loaded catalog, because the release workflow and the runtime updater replace `models.json` with the remote catalog.
     - **Related Upstream Work**: PR [#6571](https://github.com/router-for-me/CLIProxyAPI/pull/6571), PR [#6570](https://github.com/router-for-me/CLIProxyAPI/pull/6570).
 
-11. **`patch/claude-search-recovery`**
+12. **`patch/claude-search-recovery`**
     - **Goal**: Recover Claude conversations after OAuth credential failover when an earlier turn's encrypted `web_search_tool_result` is rejected with HTTP 400.
     - **Scope**: `internal/runtime/executor/helps/claude_search_recovery.go` and the Claude execute/stream paths, applied before user payload rules.
     - **Related Upstream Work**: PR [#6576](https://github.com/router-for-me/CLIProxyAPI/pull/6576).
 
-12. **`patch/codex-oauth-resilience`**
+13. **`patch/codex-oauth-resilience`**
     - **Goal**: Codex OAuth refresh resilience.
     - **Scope**: Cache completed refreshes for 5 minutes for late concurrent callers, stop retrying terminal `invalid_grant`/`refresh_token_invalidated`, send the Codex `User-Agent` on exchange/refresh (`internal/auth/codex/openai_auth.go`); classify `401 Your IP is not authorized` as a retryable `503 ip_temporarily_restricted` so it does not force a refresh.
     - **Related Upstream Work**: PR [#6447](https://github.com/router-for-me/CLIProxyAPI/pull/6447), PR [#6437](https://github.com/router-for-me/CLIProxyAPI/pull/6437), PR [#6165](https://github.com/router-for-me/CLIProxyAPI/pull/6165), PR [#5766](https://github.com/router-for-me/CLIProxyAPI/pull/5766), PR [#5850](https://github.com/router-for-me/CLIProxyAPI/pull/5850).
 
-13. **`patch/embeddings-and-rerank`**
+14. **`patch/embeddings-and-rerank`**
     - **Goal**: OpenAI-compatible `/v1/embeddings`, `/v1/embedding`, `/v1/rerank`, and `/rerank` for OpenAI-compatible and Gemini providers.
     - **Scope**: Routes, handlers, `OpenAICompatExecutor` embeddings/rerank execution, Gemini `:embedContent`/`:batchEmbedContents` translation, and rerank usage publication (OpenAI `usage` or `meta.tokens`/`meta.billed_units`). The model-level `embedding` and `rerank` flags are metadata for the panel's connectivity test; routing does not read them.
     - **Related Upstream Work**: Issue [#5961](https://github.com/router-for-me/CLIProxyAPI/issues/5961), Issue [#3641](https://github.com/router-for-me/CLIProxyAPI/issues/3641), Issue [#1084](https://github.com/router-for-me/CLIProxyAPI/issues/1084), PR [#1191](https://github.com/router-for-me/CLIProxyAPI/pull/1191).
 
-14. **`patch/client-api-key-models`**
+15. **`patch/client-api-key-models`**
     - **Goal**: Visible and usable model access control globally and per client API key.
     - **Scope**:
       - `access.models` / `access.allowed-models` / `access.excluded-models` and per-key mapping entries in `access.api-keys`.
@@ -98,14 +104,14 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 ## Retired Patch Branches
 
-- `patch/p2-runtime-optimizations` was split into patches 3–7 on 2026-10-14.
-- `patch/p0-oauth-and-executors` was split into patches 10–12 on 2026-10-14. Its multi-line Codex SSE assembly was dropped because upstream implemented `CodexSSEScanner` (Issue [#6575](https://github.com/router-for-me/CLIProxyAPI/issues/6575)).
+- `patch/p2-runtime-optimizations` was split into patches 3–8 on 2026-10-14.
+- `patch/p0-oauth-and-executors` was split into patches 11–13 on 2026-10-14. Its multi-line Codex SSE assembly was dropped because upstream implemented `CodexSSEScanner` (Issue [#6575](https://github.com/router-for-me/CLIProxyAPI/issues/6575)).
 
 ## Rebuild & Validation Procedure
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models)
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
