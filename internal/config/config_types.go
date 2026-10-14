@@ -946,11 +946,13 @@ type OpenAICompatibilityModel struct {
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 
 	// Embedding marks this model as an embedding model. It is metadata for
-	// management clients (connectivity tests use /v1/embeddings); routing does not read it.
+	// management clients (connectivity tests use /v1/embeddings) and lists the model with
+	// output modality "embeddings"; routing does not read it.
 	Embedding bool `yaml:"embedding,omitempty" json:"embedding,omitempty"`
 
 	// Rerank marks this model as a reranker. It is metadata for management
-	// clients (connectivity tests use /v1/rerank); routing does not read it.
+	// clients (connectivity tests use /v1/rerank) and lists the model with output
+	// modality "rerank"; routing does not read it.
 	Rerank bool `yaml:"rerank,omitempty" json:"rerank,omitempty"`
 
 	// InputModalities declares chat/responses input capabilities (e.g. text, image) for Codex and other clients.
