@@ -1755,6 +1755,9 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if len(model.SupportedParameters) > 0 {
 			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
 		}
+		if architecture := openAIModelArchitecture(model); architecture != nil {
+			result["architecture"] = architecture
+		}
 		return result
 
 	case "claude":

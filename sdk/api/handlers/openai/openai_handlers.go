@@ -81,7 +81,8 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.Models()
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
+	// Keep the OpenAI fields (id, object, created, owned_by) plus the
+	// OpenRouter-style capability fields clients use to classify models.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -97,6 +98,14 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		// Add owned_by field if it exists
 		if ownedBy, exists := model["owned_by"]; exists {
 			filteredModel["owned_by"] = ownedBy
+		}
+
+		if contextLength, exists := model["context_length"]; exists {
+			filteredModel["context_length"] = contextLength
+		}
+
+		if architecture, exists := model["architecture"]; exists {
+			filteredModel["architecture"] = architecture
 		}
 
 		filteredModels[i] = filteredModel

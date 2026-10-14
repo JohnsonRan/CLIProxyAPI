@@ -850,6 +850,9 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		modelType := "openai-compatibility"
 		if model.Image {
 			modelType = registry.OpenAIImageModelType
+			if len(model.OutputModalities) == 0 {
+				model.OutputModalities = []string{registry.OutputModalityImage}
+			}
 		}
 		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
 		if info == nil {
