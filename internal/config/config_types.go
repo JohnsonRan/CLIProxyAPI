@@ -961,7 +961,8 @@ type OpenAICompatibilityModel struct {
 	UseMaxCompletionTokens bool `yaml:"use-max-completion-tokens,omitempty" json:"use-max-completion-tokens,omitempty"`
 
 	// SystemOne marks this model as a TypeSafe System One decision model. It is metadata
-	// for management clients (connectivity tests use /v1/systemone); routing does not read it.
+	// for management clients (connectivity tests use /v1/systemone) and lists the model
+	// with output modality "decisions"; routing does not read it.
 	SystemOne bool `yaml:"systemone,omitempty" json:"systemone,omitempty"`
 
 	// Thinking configures the thinking/reasoning capability for this model.

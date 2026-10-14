@@ -855,6 +855,10 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if info == nil {
 			continue
 		}
+		// System One models answer with decisions (OpenRouter output modality name).
+		if model.SystemOne && len(model.OutputModalities) == 0 {
+			model.OutputModalities = []string{"decisions"}
+		}
 		thinkingSupport := model.Thinking
 		if thinkingSupport == nil && !model.Image {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
