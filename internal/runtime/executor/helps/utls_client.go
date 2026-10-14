@@ -348,8 +348,8 @@ func claudeCodeDialer(proxyURL string) proxy.Dialer {
 }
 
 // pooledClaudeCodeTransport returns the credential-scoped Claude Code uTLS transport
-// when the credential opted into pooling, or nil so the caller keeps the historical
-// shared per-proxy transport. Per credential pooling matters here because this
+// for an explicit proxy setting or credential opt-in, or nil so the caller keeps
+// the historical shared per-proxy transport. Per credential pooling matters because this
 // transport is otherwise shared by every key that uses the same proxy, which mixes
 // distinct identities on one connection and ignores the key's pool settings.
 func pooledClaudeCodeTransport(proxyURL string, cfg *config.Config, auth *cliproxyauth.Auth) *http.Transport {
