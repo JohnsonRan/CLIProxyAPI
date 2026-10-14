@@ -217,19 +217,16 @@ func pooledProxyTransport(proxyURL string, cfg *config.Config, auth *cliproxyaut
 	if pooled {
 		return tr
 	}
-	// Off unless this credential carries a connection-pool block. There is
-	// deliberately no global switch: pooling one api key must never change the
-	// transport lifecycle of another provider or OAuth identity. Without the
-	// block every request keeps the historical behavior of a fresh transport.
+	// Explicitly disabled pooling keeps the one-transport-per-request behavior.
 	return buildProxyTransport(proxyURL)
 }
 
-// pooledTransport resolves one credential's pool for a transport kind. pooled is
-// false when the credential did not opt in or its proxy setting cannot be pooled, so
-// the caller keeps its historical transport.
+// pooledTransport resolves one credential's pool for a transport kind. Explicit
+// proxy settings pool by default; credential overrides keep priority.
 func pooledTransport(kind proxyPoolKind, proxyURL string, cfg *config.Config, auth *cliproxyauth.Auth, build func() (*http.Transport, error)) (*http.Transport, bool) {
 	settings, enabled := resolveProxyPoolSettings(auth)
-	if !enabled {
+	// Keep downstream proxy reuse without bypassing an explicit opt-out.
+	if !enabled && (proxyPoolOverride(auth) != nil || strings.TrimSpace(proxyURL) == "") {
 		return nil, false
 	}
 	setting, errParse := proxyutil.Parse(proxyURL)

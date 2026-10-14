@@ -15,9 +15,8 @@ func boolPtr(v bool) *bool { return &v }
 
 func intPtr(v int) *int { return &v }
 
-// TestProxyPoolRequiresCredentialOptIn pins the per-api-key switch: there is no global
-// switch, so only a credential carrying a connection-pool block is pooled.
-func TestProxyPoolRequiresCredentialOptIn(t *testing.T) {
+// Without an explicit proxy setting, pooling still requires a credential opt-in.
+func TestProxyPoolRequiresCredentialOptInWithoutProxyURL(t *testing.T) {
 	ResetProxyTransports()
 	t.Cleanup(ResetProxyTransports)
 
@@ -25,26 +24,21 @@ func TestProxyPoolRequiresCredentialOptIn(t *testing.T) {
 	optedIn := poolOptInAuth("ollama-key")
 	plain := &cliproxyauth.Auth{ID: "other-key"}
 
-	pooled := pooledProxyTransport("direct", cfg, optedIn)
+	pooled := pooledProxyTransport("", cfg, optedIn)
 	if pooled == nil {
 		t.Fatal("opted-in credential got no transport")
 	}
 	if pooled.IdleConnTimeout != proxyPoolDefaultIdleConnTimeout {
 		t.Fatalf("IdleConnTimeout = %s, want default %s", pooled.IdleConnTimeout, proxyPoolDefaultIdleConnTimeout)
 	}
-	if pooledProxyTransport("direct", cfg, optedIn) != pooled {
+	if pooledProxyTransport("", cfg, optedIn) != pooled {
 		t.Fatal("opted-in credential does not reuse its pool")
 	}
-	if pooledProxyTransport("direct", cfg, plain) == pooled {
-		t.Fatal("credential without the block shared the pool")
-	}
-	first := pooledProxyTransport("direct", cfg, plain)
-	second := pooledProxyTransport("direct", cfg, plain)
-	if first == second {
-		t.Fatal("credential without the block must not be pooled")
+	if pooledProxyTransport("", cfg, plain) != nil {
+		t.Fatal("credential without the block must keep the default transport")
 	}
 	// A nil config still honours the credential block: pooling no longer needs a config.
-	if tr := pooledProxyTransport("direct", nil, optedIn); tr == nil || tr != pooled {
+	if tr := pooledProxyTransport("", nil, optedIn); tr == nil || tr != pooled {
 		t.Fatal("nil config must still honour the credential block")
 	}
 }

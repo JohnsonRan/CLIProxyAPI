@@ -50,7 +50,7 @@ func TestProxyPoolSettingsAndConcurrentBuild(t *testing.T) {
 	if bad == nil || bad.IdleConnTimeout != proxyPoolDefaultIdleConnTimeout || pooledProxyTransport("direct", cfg, invalid) != bad {
 		t.Fatal("invalid duration must use cached default")
 	}
-	if pooledProxyTransport("direct", nil, nil) == pooledProxyTransport("direct", nil, nil) {
-		t.Fatal("a credential without the block must retain unpooled behavior")
+	if direct := pooledProxyTransport("direct", nil, nil); direct == nil || pooledProxyTransport("none", nil, nil) != direct {
+		t.Fatal("explicit direct settings must reuse the anonymous pool by default")
 	}
 }
