@@ -1041,13 +1041,15 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	if isCodexClient {
 		failureEvent = "response.failed"
 	}
+	// Resolve the owner on the handler goroutine; the completion callback may outlive c.
+	stateOwner := responsesHTTPStateOwner(c)
 	framer := &responsesSSEFramer{
 		failureEvent:       failureEvent,
 		isCodexClient:      isCodexClient,
 		canComplete:        func() bool { return usage.StreamDeliverySupported(cliCtx) },
 		previousResponseID: httpIncrementalPreviousResponseIDFromContext(c),
 		onCompleted: func(completedPayload []byte) {
-			h.recordHTTPStreamIncrementalCompleted(rawJSON, completedPayload, selectedAuthID)
+			h.recordHTTPStreamIncrementalCompleted(stateOwner, rawJSON, completedPayload, selectedAuthID)
 		},
 	}
 	var initialOutput bytes.Buffer
