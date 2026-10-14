@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -97,39 +98,12 @@ func DecodeResponseBodyWithStatus(body io.ReadCloser, contentEncoding string) (i
 	}
 	contentEncoding = strings.TrimSpace(contentEncoding)
 	if contentEncoding == "" {
-		pb := &peekableResponseBody{Reader: bufio.NewReader(body), closer: body}
-		magic, peekErr := pb.Peek(4)
-		if peekErr == nil || (peekErr == io.EOF && len(magic) >= 2) {
-			switch {
-			case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-				gzipReader, gzErr := gzip.NewReader(pb)
-				if gzErr != nil {
-					_ = pb.Close()
-					return nil, false, fmt.Errorf("magic-byte gzip: failed to create reader: %w", gzErr)
-				}
-				return &compositeResponseReadCloser{
-					Reader: gzipReader,
-					closers: []func() error{
-						gzipReader.Close,
-						pb.Close,
-					},
-				}, true, nil
-			case len(magic) >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
-				decoder, zdErr := zstd.NewReader(pb)
-				if zdErr != nil {
-					_ = pb.Close()
-					return nil, false, fmt.Errorf("magic-byte zstd: failed to create reader: %w", zdErr)
-				}
-				return &compositeResponseReadCloser{
-					Reader: decoder,
-					closers: []func() error{
-						func() error { decoder.Close(); return nil },
-						pb.Close,
-					},
-				}, true, nil
-			}
-		}
-		return pb, false, nil
+		// Detect magic bytes on the first Read rather than here: a streaming upstream
+		// may send headers long before its first byte, and blocking now would stall
+		// the caller (and its bootstrap timers) until data arrives.
+		return &magicSniffResponseBody{
+			body: &peekableResponseBody{Reader: bufio.NewReader(body), closer: body},
+		}, false, nil
 	}
 
 	encodings := strings.Split(contentEncoding, ",")
@@ -196,6 +170,71 @@ func DecodeResponseBodyWithStatus(body io.ReadCloser, contentEncoding string) (i
 	}
 	closers = append(closers, body.Close)
 	return &compositeResponseReadCloser{Reader: reader, closers: closers}, true, nil
+}
+
+// magicSniffResponseBody decodes a body that arrived without Content-Encoding but
+// starts with gzip or zstd magic bytes, as some misbehaving upstreams send.
+// Detection happens on the first Read and only waits for more than the first
+// buffered byte when that byte can start a gzip or zstd frame.
+type magicSniffResponseBody struct {
+	body    *peekableResponseBody
+	once    sync.Once
+	mu      sync.Mutex
+	reader  io.Reader
+	decoder func()
+	err     error
+}
+
+func (m *magicSniffResponseBody) detect() {
+	reader := io.Reader(m.body)
+	var closeDecoder func()
+	defer func() {
+		m.mu.Lock()
+		m.reader = reader
+		m.decoder = closeDecoder
+		m.mu.Unlock()
+	}()
+	first, _ := m.body.Peek(1)
+	if len(first) == 0 || (first[0] != 0x1f && first[0] != 0x28) {
+		return
+	}
+	head, _ := m.body.Peek(4)
+	switch {
+	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
+		gzipReader, errGzip := gzip.NewReader(m.body)
+		if errGzip != nil {
+			m.err = fmt.Errorf("magic-byte gzip: failed to create reader: %w", errGzip)
+			return
+		}
+		reader = gzipReader
+		closeDecoder = func() { _ = gzipReader.Close() }
+	case len(head) >= 4 && head[0] == 0x28 && head[1] == 0xb5 && head[2] == 0x2f && head[3] == 0xfd:
+		decoder, errZstd := zstd.NewReader(m.body)
+		if errZstd != nil {
+			m.err = fmt.Errorf("magic-byte zstd: failed to create reader: %w", errZstd)
+			return
+		}
+		reader = decoder
+		closeDecoder = decoder.Close
+	}
+}
+
+func (m *magicSniffResponseBody) Read(p []byte) (int, error) {
+	m.once.Do(m.detect)
+	if m.err != nil {
+		return 0, m.err
+	}
+	return m.reader.Read(p)
+}
+
+func (m *magicSniffResponseBody) Close() error {
+	m.mu.Lock()
+	decoder := m.decoder
+	m.mu.Unlock()
+	if decoder != nil {
+		decoder()
+	}
+	return m.body.Close()
 }
 
 func newUpstreamDeflateReader(reader io.Reader) (io.ReadCloser, error) {
