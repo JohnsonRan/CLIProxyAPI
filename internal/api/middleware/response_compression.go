@@ -20,6 +20,21 @@ type flushWriteCloser interface {
 	Flush() error
 }
 
+// Long-lived SSE streams hold one encoder each, so keep per-encoder memory small.
+// The default zstd window (8 MiB) costs about 17 MiB per stream and the default
+// brotli window (4 MiB) several MiB; 1 MiB and 256 KiB windows lose little ratio
+// on JSON and SSE.
+var brotliResponseWriterOptions = brotli.WriterOptions{Quality: 5, LGWin: 18}
+
+func zstdResponseEncoderOptions() []zstd.EOption {
+	return []zstd.EOption{
+		zstd.WithEncoderLevel(zstd.SpeedDefault),
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(1 << 20),
+		zstd.WithLowerEncoderMem(true),
+	}
+}
+
 var (
 	gzipResponseWriterPool = sync.Pool{
 		New: func() any {
@@ -29,15 +44,12 @@ var (
 	}
 	brotliResponseWriterPool = sync.Pool{
 		New: func() any {
-			return brotli.NewWriterLevel(io.Discard, brotli.DefaultCompression)
+			return brotli.NewWriterOptions(io.Discard, brotliResponseWriterOptions)
 		},
 	}
 	zstdResponseWriterPool = sync.Pool{
 		New: func() any {
-			w, _ := zstd.NewWriter(io.Discard,
-				zstd.WithEncoderLevel(zstd.SpeedDefault),
-				zstd.WithEncoderConcurrency(1),
-			)
+			w, _ := zstd.NewWriter(io.Discard, zstdResponseEncoderOptions()...)
 			return w
 		},
 	}
@@ -241,7 +253,20 @@ func (w *compressResponseWriter) effectiveStatusCode() int {
 }
 
 func isNonCompressibleStatus(code int) bool {
-	return (code >= 100 && code < 200) || code == http.StatusNoContent || code == http.StatusNotModified
+	return (code >= 100 && code < 200) || code == http.StatusNoContent || code == http.StatusNotModified ||
+		code == http.StatusPartialContent
+}
+
+// isIncompressibleContentType reports media that is already compressed, where
+// recompressing only costs CPU and memory.
+func isIncompressibleContentType(contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	for _, prefix := range []string{"image/", "video/", "audio/", "application/zip", "application/gzip", "application/zstd", "application/octet-stream"} {
+		if strings.HasPrefix(contentType, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *compressResponseWriter) prepareCompressionHeaders(code int) {
@@ -284,13 +309,25 @@ func (w *compressResponseWriter) ensureEncoder() error {
 	if w.passthrough || w.encoder != nil {
 		return nil
 	}
+	// gin sets Content-Type after WriteHeader, so check it on the first write,
+	// while headers can still change.
+	if isIncompressibleContentType(w.Header().Get("Content-Type")) {
+		w.passthrough = true
+		w.Header().Del("Content-Encoding")
+		return nil
+	}
+	// The compressed bytes are a different representation, so a strong validator
+	// no longer matches them.
+	if etag := w.Header().Get("ETag"); etag != "" && !strings.HasPrefix(etag, "W/") {
+		w.Header().Set("ETag", "W/"+etag)
+	}
 
 	switch w.encoding {
 	case "zstd":
 		enc, ok := zstdResponseWriterPool.Get().(*zstd.Encoder)
 		if !ok || enc == nil {
 			var err error
-			enc, err = zstd.NewWriter(w.ResponseWriter, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+			enc, err = zstd.NewWriter(w.ResponseWriter, zstdResponseEncoderOptions()...)
 			if err != nil {
 				w.passthrough = true
 				w.Header().Del("Content-Encoding")
@@ -307,7 +344,7 @@ func (w *compressResponseWriter) ensureEncoder() error {
 	case "br":
 		bw, ok := brotliResponseWriterPool.Get().(*brotli.Writer)
 		if !ok || bw == nil {
-			bw = brotli.NewWriterLevel(w.ResponseWriter, brotli.DefaultCompression)
+			bw = brotli.NewWriterOptions(w.ResponseWriter, brotliResponseWriterOptions)
 		} else {
 			bw.Reset(w.ResponseWriter)
 		}

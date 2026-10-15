@@ -156,3 +156,44 @@ func TestResponseCompressionMiddlewareJSONAndSSE(t *testing.T) {
 		}
 	})
 }
+
+func TestResponseCompressionSkipsBinaryAndWeakensETag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(ResponseCompressionMiddleware())
+	router.GET("/video", func(c *gin.Context) {
+		c.Header("ETag", `"v1"`)
+		c.Data(http.StatusOK, "video/mp4", bytes.Repeat([]byte("v"), 4096))
+	})
+	router.GET("/partial", func(c *gin.Context) {
+		c.Data(http.StatusPartialContent, "text/html", bytes.Repeat([]byte("p"), 4096))
+	})
+	router.GET("/json", func(c *gin.Context) {
+		c.Header("ETag", `"j1"`)
+		c.JSON(http.StatusOK, gin.H{"data": strings.Repeat("x", 4096)})
+	})
+
+	for _, path := range []string{"/video", "/partial"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept-Encoding", "zstd")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Fatalf("%s Content-Encoding = %q, want uncompressed", path, got)
+		}
+		if rec.Body.Len() != 4096 {
+			t.Fatalf("%s body length = %d, want 4096", path, rec.Body.Len())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/json", nil)
+	req.Header.Set("Accept-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Encoding"); got != "zstd" {
+		t.Fatalf("json Content-Encoding = %q, want zstd", got)
+	}
+	if got := rec.Header().Get("ETag"); got != `W/"j1"` {
+		t.Fatalf("json ETag = %q, want weak validator", got)
+	}
+}
