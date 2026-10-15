@@ -269,7 +269,7 @@ func (e *GeminiExecutor) executeEmbeddings(ctx context.Context, auth *cliproxyau
 
 	action, body, isBatch, errConvert := helps.ConvertOpenAIEmbeddingToGemini(baseModel, req.Payload)
 	if errConvert != nil {
-		return resp, errConvert
+		return resp, statusErr{code: http.StatusBadRequest, msg: errConvert.Error()}
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
