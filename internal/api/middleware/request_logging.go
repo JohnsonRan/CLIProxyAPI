@@ -29,6 +29,9 @@ import (
 const (
 	maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20  // 1 MiB
 	maxDeferredErrorRequestBodyBytes     int64 = 32 << 20 // 32 MiB
+	// maxCapturedZstdWindowBytes stops a tiny zstd frame header from forcing a huge
+	// window allocation before auth; regular compression levels use at most 8 MiB.
+	maxCapturedZstdWindowBytes uint64 = 8 << 20
 )
 
 // RequestLoggingMiddleware creates a Gin middleware that logs HTTP requests and responses.
@@ -350,12 +353,9 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 
 		// Restore the body for the actual request processing
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		maxBytes := c.GetInt64("maxRequestBodyBytes")
-		if maxBytes > 0 {
-			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxBytes)
-		} else {
-			body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
-		}
+		// This runs before auth, so decoding is always bounded: an unconfigured limit
+		// must not let a small compressed body expand without limit.
+		body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), capturedRequestDecodeLimit(c.GetInt64("maxRequestBodyBytes")))
 	}
 
 	return &RequestInfo{
@@ -366,18 +366,6 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		RequestID: logging.GetGinRequestID(c),
 		Timestamp: time.Now(),
 	}, nil
-}
-
-func decodeCapturedRequestBodyForLog(raw []byte, encoding string) []byte {
-	if len(raw) == 0 {
-		return raw
-	}
-
-	decoded, errDecode := decodeCapturedRequestBody(raw, encoding)
-	if errDecode != nil {
-		return raw
-	}
-	return decoded
 }
 
 func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit int64) []byte {
@@ -414,31 +402,6 @@ func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit
 	return body
 }
 
-func decodeCapturedRequestBody(raw []byte, encoding string) ([]byte, error) {
-	encoding = strings.TrimSpace(encoding)
-	if encoding == "" || strings.EqualFold(encoding, "identity") {
-		encoding = detectMagicCapturedRequestEncoding(raw)
-		if encoding == "" {
-			return raw, nil
-		}
-	}
-
-	parts := strings.Split(encoding, ",")
-	body := raw
-	for i := len(parts) - 1; i >= 0; i-- {
-		enc := strings.ToLower(strings.TrimSpace(parts[i]))
-		if enc == "" || enc == "identity" {
-			continue
-		}
-		decoded, errDecode := decodeSingleCapturedRequestBody(body, enc)
-		if errDecode != nil {
-			return nil, errDecode
-		}
-		body = decoded
-	}
-	return body, nil
-}
-
 func detectMagicCapturedRequestEncoding(raw []byte) string {
 	switch {
 	case len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b:
@@ -461,7 +424,7 @@ func newCapturedRequestDecoder(raw []byte, enc string) (io.ReadCloser, error) {
 	case "br":
 		return io.NopCloser(brotli.NewReader(bytes.NewReader(raw))), nil
 	case "zstd":
-		decoder, err := zstd.NewReader(bytes.NewReader(raw))
+		decoder, err := zstd.NewReader(bytes.NewReader(raw), zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(maxCapturedZstdWindowBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create zstd request decoder: %w", err)
 		}
@@ -482,22 +445,6 @@ func newCapturedRequestDecoder(raw []byte, enc string) (io.ReadCloser, error) {
 	default:
 		return nil, fmt.Errorf("unsupported request content encoding: %s", enc)
 	}
-}
-
-func decodeSingleCapturedRequestBody(raw []byte, enc string) ([]byte, error) {
-	decoder, errNewReader := newCapturedRequestDecoder(raw, enc)
-	if errNewReader != nil {
-		return nil, errNewReader
-	}
-	defer func() {
-		_ = decoder.Close()
-	}()
-
-	decoded, errRead := io.ReadAll(decoder)
-	if errRead != nil {
-		return nil, fmt.Errorf("failed to decode %s request body: %w", enc, errRead)
-	}
-	return decoded, nil
 }
 
 func decodeSingleCapturedRequestBodyWithLimit(raw []byte, enc string, limit int64) ([]byte, bool, error) {
@@ -523,10 +470,6 @@ func decodeSingleCapturedRequestBodyWithLimit(raw []byte, enc string, limit int6
 	return decoded, false, nil
 }
 
-func decodeCapturedZstdRequestBody(raw []byte) ([]byte, error) {
-	return decodeSingleCapturedRequestBody(raw, "zstd")
-}
-
 func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bool, error) {
 	return decodeSingleCapturedRequestBodyWithLimit(raw, "zstd", limit)
 }
@@ -540,4 +483,13 @@ func shouldLogRequest(path string) bool {
 	}
 
 	return true
+}
+
+// capturedRequestDecodeLimit bounds the decoded log copy of a request body:
+// the configured max-request-body-bytes, or 32 MiB when it is unset.
+func capturedRequestDecodeLimit(maxBytes int64) int64 {
+	if maxBytes > 0 {
+		return maxBytes
+	}
+	return maxDeferredErrorRequestBodyBytes
 }

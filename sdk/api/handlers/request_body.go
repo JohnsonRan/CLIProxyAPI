@@ -22,6 +22,24 @@ import (
 // MaxRequestBodyBytesContextKey stores the configured request body size limit (in bytes) on the Gin context.
 const MaxRequestBodyBytesContextKey = "maxRequestBodyBytes"
 
+// DefaultMaxDecodedRequestBodyBytes bounds the decompressed request body when
+// max-request-body-bytes is not configured, so a small compressed body cannot
+// expand without limit.
+const DefaultMaxDecodedRequestBodyBytes int64 = 256 << 20
+
+// MaxZstdRequestWindowBytes caps the zstd window of request bodies. The default
+// cap (512 MiB) lets a tiny frame header force a huge allocation; 8 MiB is the
+// largest window used by regular (non-ultra) compression levels.
+const MaxZstdRequestWindowBytes uint64 = 8 << 20
+
+// EffectiveDecodedRequestBodyLimit returns the decoded-size limit for maxBytes.
+func EffectiveDecodedRequestBodyLimit(maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		return DefaultMaxDecodedRequestBodyBytes
+	}
+	return maxBytes
+}
+
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values (gzip, br, zstd, deflate) before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
@@ -79,6 +97,7 @@ func detectMagicRequestEncoding(raw []byte) string {
 }
 
 func decodeRequestBody(raw []byte, encoding string, maxBytes int64) ([]byte, error) {
+	maxBytes = EffectiveDecodedRequestBodyLimit(maxBytes)
 	parts := strings.Split(encoding, ",")
 	body := raw
 	for i := len(parts) - 1; i >= 0; i-- {
@@ -149,7 +168,7 @@ func decodeBrotliRequestBody(raw []byte, maxBytes int64) ([]byte, error) {
 }
 
 func decodeZstdRequestBody(raw []byte, maxBytes int64) ([]byte, error) {
-	decoder, err := zstd.NewReader(bytes.NewReader(raw))
+	decoder, err := zstd.NewReader(bytes.NewReader(raw), zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(MaxZstdRequestWindowBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create zstd request decoder: %w", err)
 	}

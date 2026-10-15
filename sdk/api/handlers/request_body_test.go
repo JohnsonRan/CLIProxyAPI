@@ -153,3 +153,21 @@ func TestReadRequestBodyChainedEncodingsAndMaxBytesLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveDecodedRequestBodyLimitDefaultsWhenUnset(t *testing.T) {
+	if got := EffectiveDecodedRequestBodyLimit(0); got != DefaultMaxDecodedRequestBodyBytes {
+		t.Fatalf("limit for 0 = %d, want default %d", got, DefaultMaxDecodedRequestBodyBytes)
+	}
+	if got := EffectiveDecodedRequestBodyLimit(1024); got != 1024 {
+		t.Fatalf("limit for 1024 = %d, want 1024", got)
+	}
+}
+
+func TestDecodeRequestBodyRejectsHugeZstdWindow(t *testing.T) {
+	// Magic, descriptor without content size, window descriptor 0x80 (2^26 = 64 MiB),
+	// then one last raw block holding "x".
+	frame := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x80, 0x09, 0x00, 0x00, 0x78}
+	if _, errDecode := decodeRequestBody(frame, "zstd", 0); errDecode == nil {
+		t.Fatal("expected huge zstd window to be rejected")
+	}
+}

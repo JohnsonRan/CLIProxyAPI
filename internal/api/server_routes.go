@@ -358,8 +358,13 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		return
 	}
 
-	if c.GetInt64(handlers.MaxRequestBodyBytesContextKey) <= 0 && c.Request != nil && c.Request.Body != nil {
-		c.Request.Body = io.NopCloser(io.LimitReader(c.Request.Body, 16<<20))
+	// Keep the endpoint's 16 MiB ceiling on both the raw and the decoded body.
+	const alphaSearchMaxBodyBytes int64 = 16 << 20
+	if limit := c.GetInt64(handlers.MaxRequestBodyBytesContextKey); limit <= 0 || limit > alphaSearchMaxBodyBytes {
+		if c.Request != nil && c.Request.Body != nil {
+			c.Request.Body = io.NopCloser(io.LimitReader(c.Request.Body, alphaSearchMaxBodyBytes))
+		}
+		c.Set(handlers.MaxRequestBodyBytesContextKey, alphaSearchMaxBodyBytes)
 	}
 	body, err := handlers.ReadRequestBody(c)
 	if err != nil {
