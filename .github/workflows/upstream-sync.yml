@@ -40,6 +40,7 @@ env:
     patch/client-key-provider-scope
     patch/openai-decisions-endpoint
     patch/codex-app-keepalive
+    patch/runtime-gc-tuning
 
 jobs:
   sync-main-with-squash-branches:

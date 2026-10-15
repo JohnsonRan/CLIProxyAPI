@@ -18,7 +18,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
    - **Scope**:
      - Downstream request body decompression (`sdk/api/handlers/request_body.go`, `internal/api/middleware/request_logging.go`, and the Claude, Gemini and `/v1/alpha/search` handlers) supporting `gzip`, `br`, `zstd`, `deflate`, multi-coding chains, and magic-byte `gzip`/`zstd` detection. Decoded size is capped by `max-request-body-bytes`, or by default at 256 MiB in handlers and 32 MiB in the pre-auth request log copy; zstd request windows are capped at 8 MiB; `/v1/alpha/search` keeps its 16 MiB ceiling.
      - Downstream HTTP & SSE response compression middleware (`internal/api/middleware/response_compression.go`) negotiating `zstd > br > gzip > deflate`, flushing stream encoders on every SSE flush, with small per-stream encoders (zstd 1 MiB window, brotli quality 5 / 256 KiB window), skipping image/video/audio/archive bodies and 206 responses and weakening strong `ETag`s, plus `EnableCompression: true` on `wsrelay` and `codex/live` WebSocket upgraders/dialers.
-     - Upstream HTTP response decompression (`internal/runtime/executor/helps/response_compression.go`) across `codex`, `openai-compatibility`, `gemini`, `antigravity`, `kimi`, `xai`, and `meta` executors.
+     - Upstream HTTP response decompression (`internal/runtime/executor/helps/response_compression.go`) across `codex`, `openai-compatibility`, `gemini`, `antigravity`, `kimi`, `xai`, and `meta` executors. zstd bodies are decoded synchronously (`WithDecoderConcurrency(1)`, about 2x faster and a third of the allocations of the default four-worker decoder on SSE streams) with the window capped at 64 MiB.
      - Upstream request body compression (`upstream.codex.upstream-request-compression`) defaulting to `zstd` level 3 for `chatgpt.com` `/responses` and `/responses/compact` bodies of at least 1024 bytes.
    - **Related Upstream Work**: PR [#5132](https://github.com/router-for-me/CLIProxyAPI/pull/5132), PR [#4461](https://github.com/router-for-me/CLIProxyAPI/pull/4461).
 
@@ -173,6 +173,11 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: PR [#6348](https://github.com/router-for-me/CLIProxyAPI/pull/6348) (open, unreviewed), Issue [#6554](https://github.com/router-for-me/CLIProxyAPI/issues/6554) (closed; added `send-keepalive-before-ft`), PR [#4593](https://github.com/router-for-me/CLIProxyAPI/pull/4593)/[#4691](https://github.com/router-for-me/CLIProxyAPI/pull/4691) (open; turn upstream keepalive events into comments).
     - **Retire when**: PR #6348 or an equivalent lands.
 
+25. **`patch/runtime-gc-tuning`**
+    - **Goal**: Spend less CPU in garbage collection under load.
+    - **Scope**: `Dockerfile` sets `ENV GOGC=200`. Request and response translation allocate several times the payload size per request (about 3 MiB for a 53 KiB chat request) while the live heap stays small, so with `GOGC=100` the collector runs every few requests; `GOGC=200` gave about 30% more throughput in an end-to-end Codex streaming benchmark (`-cpu 8`, local mock upstream). Cost: peak heap is up to three times the live heap instead of two. An explicit `GOGC` on the container wins; pin `GOMEMLIMIT` (for example 80% of the container limit) when memory is capped. Binary deployments get the same effect by exporting `GOGC=200`.
+    - **Retire when**: Upstream tunes the collector in the image or in `cmd/server`.
+
 ## Combination Conflicts
 
 Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
@@ -188,7 +193,7 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
