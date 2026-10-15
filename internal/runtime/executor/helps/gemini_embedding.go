@@ -25,19 +25,30 @@ func ConvertOpenAIEmbeddingToGemini(model string, payload []byte) (action string
 	}
 
 	normalizedModel := strings.TrimPrefix(model, "models/")
+	// OpenAI "dimensions" maps to Gemini outputDimensionality.
+	dimensions := gjson.GetBytes(payload, "dimensions")
+	withDimensions := func(request map[string]any) map[string]any {
+		if dimensions.Exists() && dimensions.Int() > 0 {
+			request["outputDimensionality"] = dimensions.Int()
+		}
+		return request
+	}
 
 	if inputVal.IsArray() {
 		arr := inputVal.Array()
 		requests := make([]map[string]any, 0, len(arr))
 		for _, item := range arr {
-			requests = append(requests, map[string]any{
+			if item.Type != gjson.String {
+				return "", nil, false, fmt.Errorf("gemini embeddings accept only string inputs, not token arrays")
+			}
+			requests = append(requests, withDimensions(map[string]any{
 				"model": "models/" + normalizedModel,
 				"content": map[string]any{
 					"parts": []map[string]any{
 						{"text": item.String()},
 					},
 				},
-			})
+			}))
 		}
 		batchPayload, errMarshal := json.Marshal(map[string]any{
 			"requests": requests,
@@ -48,13 +59,16 @@ func ConvertOpenAIEmbeddingToGemini(model string, payload []byte) (action string
 		return "batchEmbedContents", batchPayload, true, nil
 	}
 
-	singlePayload, errMarshal := json.Marshal(map[string]any{
+	if inputVal.Type != gjson.String {
+		return "", nil, false, fmt.Errorf("gemini embeddings accept only string inputs, not token arrays")
+	}
+	singlePayload, errMarshal := json.Marshal(withDimensions(map[string]any{
 		"content": map[string]any{
 			"parts": []map[string]any{
 				{"text": inputVal.String()},
 			},
 		},
-	})
+	}))
 	if errMarshal != nil {
 		return "", nil, false, errMarshal
 	}
@@ -77,7 +91,12 @@ func ConvertGeminiEmbeddingToOpenAI(model string, geminiResp []byte, isBatch boo
 	}
 
 	data := make([]embeddingItem, 0)
-	totalTokens := 0
+	// Gemini reports token usage only in usageMetadata, when at all; the vector
+	// length is not a token count.
+	totalTokens := int(gjson.GetBytes(geminiResp, "usageMetadata.promptTokenCount").Int())
+	if totalTokens == 0 {
+		totalTokens = int(gjson.GetBytes(geminiResp, "usageMetadata.totalTokenCount").Int())
+	}
 
 	if isBatch {
 		embeddingsVal := gjson.GetBytes(geminiResp, "embeddings")
@@ -93,7 +112,6 @@ func ConvertGeminiEmbeddingToOpenAI(model string, geminiResp []byte, isBatch boo
 					Embedding: floats,
 					Index:     i,
 				})
-				totalTokens += len(floats)
 			}
 		}
 	} else {
@@ -107,7 +125,6 @@ func ConvertGeminiEmbeddingToOpenAI(model string, geminiResp []byte, isBatch boo
 			Embedding: floats,
 			Index:     0,
 		})
-		totalTokens = len(floats)
 	}
 
 	resp := openAIEmbeddingResponse{
