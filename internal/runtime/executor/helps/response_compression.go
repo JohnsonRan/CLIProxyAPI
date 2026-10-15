@@ -20,6 +20,20 @@ import (
 // transparently decode from upstream HTTP responses.
 const DefaultUpstreamAcceptEncoding = "gzip, deflate, br, zstd"
 
+// maxUpstreamZstdWindowBytes bounds the history buffer an upstream zstd frame
+// can make the decoder allocate. Standard zstd levels use at most 8 MiB.
+const maxUpstreamZstdWindowBytes = 64 << 20
+
+// newUpstreamZstdReader decodes one upstream response synchronously: the
+// default decoder spawns up to four block decoders per response, which costs
+// goroutines and allocations and adds handoff latency on SSE streams.
+func newUpstreamZstdReader(reader io.Reader) (*zstd.Decoder, error) {
+	return zstd.NewReader(reader,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxWindow(maxUpstreamZstdWindowBytes),
+	)
+}
+
 // EnsureDefaultAcceptEncoding sets Accept-Encoding to DefaultUpstreamAcceptEncoding
 // when the outgoing request does not already specify an Accept-Encoding header.
 func EnsureDefaultAcceptEncoding(req *http.Request) {
@@ -144,7 +158,7 @@ func DecodeResponseBodyWithStatus(body io.ReadCloser, contentEncoding string) (i
 			reader = brotli.NewReader(reader)
 			applied = true
 		case "zstd":
-			decoder, errZstd := zstd.NewReader(reader)
+			decoder, errZstd := newUpstreamZstdReader(reader)
 			if errZstd != nil {
 				cleanup()
 				return nil, false, fmt.Errorf("failed to create zstd reader: %w", errZstd)
@@ -209,7 +223,7 @@ func (m *magicSniffResponseBody) detect() {
 		reader = gzipReader
 		closeDecoder = func() { _ = gzipReader.Close() }
 	case len(head) >= 4 && head[0] == 0x28 && head[1] == 0xb5 && head[2] == 0x2f && head[3] == 0xfd:
-		decoder, errZstd := zstd.NewReader(m.body)
+		decoder, errZstd := newUpstreamZstdReader(m.body)
 		if errZstd != nil {
 			m.err = fmt.Errorf("magic-byte zstd: failed to create reader: %w", errZstd)
 			return
