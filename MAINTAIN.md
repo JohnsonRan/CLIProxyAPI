@@ -184,6 +184,25 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: PR [#4684](https://github.com/router-for-me/CLIProxyAPI/pull/4684) introduced the readers; no upstream performance work on them was found.
     - **Retire when**: Upstream reads summary intent in a single pass.
 
+27. **`patch/claude-responses-request-validate-once`**
+    - **Goal**: Stop re-validating the whole request body on every Claude → Responses SSE chunk.
+    - **Scope**: `ConvertClaudeResponseToOpenAIResponses` called `pickRequestJSON` (`gjson.ValidBytes` over the full request) per chunk although the per-stream state is built from the same picked body. The state now pins it as `RequestJSON`, and the per-chunk tool-metadata path and the `response.completed` injection read it from there. 26.1 µs → 1.45 µs per text delta with a 64 KiB request; this path was 10.6% of CPU in the 2026-10-15 production profile (light load, Codex clients on Claude). `claude_openai-responses_request_once_test.go` pins the behaviour and carries the benchmark.
+    - **Retire when**: Upstream validates the request once per stream.
+
+28. **`patch/management-key-bcrypt-cache`**
+    - **Goal**: Stop paying bcrypt on every management request.
+    - **Scope**: `AuthenticateManagementKey` keeps the SHA-256 of the last key that passed `bcrypt.CompareHashAndPassword`, together with the secret hash it matched (`verifiedKey`, an `atomic.Pointer`). A repeat of the same key against the same hash is accepted after two constant-time compares (~2 µs instead of ~60 ms at the default cost); a different key or a changed hash goes through bcrypt again, and a failed bcrypt never populates the cache. Only the digest is kept. The IP ban counters are untouched. bcrypt was 5% of the 2026-10-15 profile, likely inflated by an open panel polling during collection.
+    - **Retire when**: Upstream caches the verification or moves the panel to session tokens.
+
+29. **`patch/pgo`**
+    - **Goal**: Profile-guided optimisation of the release binary.
+    - **Scope**: `cmd/server/default.pgo`, picked up by the default `-pgo=auto` of `go build` (the `Dockerfile` passes no `-pgo`). The current file merges three 300 s CPU profiles collected on 2026-10-15 from a production instance (`observability.pprof` on `127.0.0.1:8316`, 45 s of samples; Codex and Claude clients through `/v1/responses`, light load). Functions absent from the profile compile as before, so an unrepresentative profile cannot regress them; it only leaves gains on the table for the translators it did not see (Gemini, OpenAI chat). Replace the file after re-collecting at peak with every client type active:
+      ```bash
+      for i in 1 2 3; do curl -s "http://127.0.0.1:8316/debug/pprof/profile?seconds=300" -o cpu-$i.pprof; sleep 600; done
+      go tool pprof -proto cpu-1.pprof cpu-2.pprof cpu-3.pprof > cmd/server/default.pgo
+      ```
+    - **Retire when**: Upstream ships a `default.pgo`.
+
 ## Combination Conflicts
 
 Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
@@ -199,7 +218,7 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/claude-responses-request-validate-once patch/management-key-bcrypt-cache patch/pgo)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
@@ -228,7 +247,7 @@ done
 # TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559 fails on
 # upstream/main itself (seen 2026-10-15).
 go build -o test-output ./cmd/server && rm -f test-output
-go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./sdk/cliproxy/usage/...
+go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/translator/claude/openai/responses/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./sdk/cliproxy/usage/...
 go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs|TestCompatDiscoveryCacheKey" ./sdk/cliproxy
 go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope" ./internal/runtime/executor
 go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
