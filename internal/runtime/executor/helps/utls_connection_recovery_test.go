@@ -112,13 +112,22 @@ func TestUtlsConnectionRetriesAreBoundedAndClassified(t *testing.T) {
 	})}
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://chatgpt.com", nil)
 	_, errRoundTrip := transport.RoundTrip(req)
-	var status interface{ StatusCode() int }
-	if !errors.As(errRoundTrip, &status) || status.StatusCode() != 502 || dials.Load() != utlsConnectionAttempts {
+	if dials.Load() != utlsConnectionAttempts {
 		t.Fatalf("error=%v attempts=%d", errRoundTrip, dials.Load())
 	}
+	// Exhausted dial retries must stay a plain transport error: an HTTP status or
+	// Retry-After hint would make the conductor cool the credential.
+	var opErr *net.OpError
+	if !errors.As(errRoundTrip, &opErr) {
+		t.Fatalf("expected *net.OpError, got %T: %v", errRoundTrip, errRoundTrip)
+	}
+	var status interface{ StatusCode() int }
+	if errors.As(errRoundTrip, &status) {
+		t.Fatalf("transport error must not carry an HTTP status: %v", errRoundTrip)
+	}
 	var retryAfter interface{ RetryAfter() *time.Duration }
-	if !errors.As(errRoundTrip, &retryAfter) || *retryAfter.RetryAfter() != 5*time.Second {
-		t.Fatalf("missing short transport retry delay: %v", errRoundTrip)
+	if errors.As(errRoundTrip, &retryAfter) {
+		t.Fatalf("transport error must not carry a retry hint: %v", errRoundTrip)
 	}
 }
 

@@ -58,16 +58,6 @@ func cachedChatGPTRoundTripper(proxyURL string) http.RoundTripper {
 	})
 }
 
-type utlsConnectionError struct{ err error }
-
-func (e *utlsConnectionError) Error() string   { return e.err.Error() }
-func (e *utlsConnectionError) Unwrap() error   { return e.err }
-func (e *utlsConnectionError) StatusCode() int { return http.StatusBadGateway }
-func (e *utlsConnectionError) RetryAfter() *time.Duration {
-	delay := 5 * time.Second
-	return &delay
-}
-
 func retryableUtlsConnectionError(err error) bool {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
@@ -114,7 +104,9 @@ func (t *utlsRoundTripper) connectWithRetry(ctx context.Context, host, addr stri
 			return nil, errConnect
 		}
 		if attempt == utlsConnectionAttempts {
-			return nil, &utlsConnectionError{err: errConnect}
+			// Return the raw transport error so the conductor classifies it as a
+			// transient transport failure instead of cooling the credential.
+			return nil, errConnect
 		}
 		phase := "dial"
 		if strings.Contains(errConnect.Error(), "TLS handshake") {
@@ -242,8 +234,9 @@ func prepareRetryOnFreshH2Conn(req *http.Request, err error) (*http.Request, boo
 	var streamErr http2.StreamError
 	refused := errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeRefusedStream
 	message := err.Error()
+	// "client conn is closed" is deliberately excluded: x/net also returns it
+	// while writing the body, after HEADERS were sent, so a retry could resend.
 	unusable := strings.Contains(message, "client conn not usable") ||
-		strings.Contains(message, "client conn is closed") ||
 		strings.Contains(message, "graceful shutdown GOAWAY")
 	if !refused && !unusable {
 		return nil, false
