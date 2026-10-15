@@ -83,6 +83,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 
 	// Keep the OpenAI fields (id, object, created, owned_by) plus the
 	// OpenRouter-style capability fields clients use to classify models.
+	// Capability fields are only present when the registry declares them.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -106,6 +107,18 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 
 		if architecture, exists := model["architecture"]; exists {
 			filteredModel["architecture"] = architecture
+		}
+
+		if displayName, ok := model["display_name"].(string); ok && displayName != "" {
+			filteredModel["name"] = displayName
+		}
+
+		if maxCompletionTokens, exists := model["max_completion_tokens"]; exists {
+			filteredModel["top_provider"] = map[string]any{"max_completion_tokens": maxCompletionTokens}
+		}
+
+		if reasoning, exists := model["reasoning"]; exists {
+			filteredModel["reasoning"] = reasoning
 		}
 
 		filteredModels[i] = filteredModel
