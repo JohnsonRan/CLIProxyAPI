@@ -93,6 +93,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	if helps.IsOpenAIDecisionsRequest(opts) {
+		return e.executeOpenAIDecisions(ctx, auth, req, opts)
+	}
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
