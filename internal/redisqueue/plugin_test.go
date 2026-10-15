@@ -862,3 +862,29 @@ func TestUsageQueuePluginPayloadDistinguishesNativeKey(t *testing.T) {
 		})
 	})
 }
+
+func TestUsageQueuePluginExcludesEmbeddingsWhenConfigured(t *testing.T) {
+	withEnabledQueue(t, func() {
+		prev := ExcludeEmbeddingUsage()
+		defer SetExcludeEmbeddingUsage(prev)
+
+		embeddingCtx := coreusage.WithRequestKind(context.Background(), coreusage.RequestKindEmbeddings)
+		record := coreusage.Record{Provider: "openai-compatibility", Model: "text-embedding-3-small", Detail: coreusage.Detail{InputTokens: 3, TotalTokens: 3}}
+
+		SetExcludeEmbeddingUsage(false)
+		(&usageQueuePlugin{}).HandleUsage(embeddingCtx, record)
+		requireStringField(t, popSinglePayload(t), "model", "text-embedding-3-small")
+
+		SetExcludeEmbeddingUsage(true)
+		(&usageQueuePlugin{}).HandleUsage(embeddingCtx, record)
+		if items := PopOldest(10); len(items) != 0 {
+			t.Fatalf("embedding usage enqueued %d items while excluded", len(items))
+		}
+
+		// Other requests are still recorded.
+		chat := record
+		chat.Model = "gpt-5.4"
+		(&usageQueuePlugin{}).HandleUsage(context.Background(), chat)
+		requireStringField(t, popSinglePayload(t), "model", "gpt-5.4")
+	})
+}
