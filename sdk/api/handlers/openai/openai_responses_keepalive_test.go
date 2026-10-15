@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -332,51 +333,109 @@ func TestChatCompletionsKeepAlive_UnchangedForCodexAndNonCodex(t *testing.T) {
 	}
 }
 
-func TestForwardResponsesStream_CodexKeepAliveIntegration(t *testing.T) {
-	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
-	c.Request.Header.Set("User-Agent", "Codex Desktop/1.0.0")
+// keepAliveTestWriter is a goroutine-safe http.ResponseWriter that reports
+// when a Codex application keepalive has been written.
+type keepAliveTestWriter struct {
+	mu        sync.Mutex
+	header    http.Header
+	body      bytes.Buffer
+	keepAlive chan struct{}
+}
 
-	// Override interval for fast integration testing
-	fastInterval := 15 * time.Millisecond
+func newKeepAliveTestWriter() *keepAliveTestWriter {
+	return &keepAliveTestWriter{header: make(http.Header), keepAlive: make(chan struct{}, 1)}
+}
+
+func (w *keepAliveTestWriter) Header() http.Header { return w.header }
+func (w *keepAliveTestWriter) WriteHeader(int)     {}
+func (w *keepAliveTestWriter) Flush()              {}
+
+func (w *keepAliveTestWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.body.Write(p)
+	if bytes.Contains(p, []byte(`"type":"codex.client.keepalive"`)) {
+		select {
+		case w.keepAlive <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
+}
+
+func (w *keepAliveTestWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
+}
+
+func TestForwardResponsesStream_CodexKeepAliveIntegration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
+	writer := newKeepAliveTestWriter()
+	c, _ := gin.CreateTestContext(writer)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "Codex Desktop/1.0.0")
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		t.Fatalf("gin writer does not implement http.Flusher")
+	}
+
+	fastInterval := 5 * time.Millisecond
 	codexAppKeepAliveIntervalOverrideForTest = &fastInterval
 	defer func() { codexAppKeepAliveIntervalOverrideForTest = nil }()
 
 	data := make(chan []byte)
 	errs := make(chan *interfaces.ErrorMessage)
-
 	done := make(chan struct{})
 	go func() {
 		h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
 		close(done)
 	}()
 
-	// Wait for at least one keepalive to be written while silent
-	deadline := time.After(300 * time.Millisecond)
-	foundKeepAlive := false
-	for !foundKeepAlive {
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for codex keepalive; recorder body: %q", recorder.Body.String())
-		default:
-			if strings.Contains(recorder.Body.String(), "data: {\"type\":\"codex.client.keepalive\"}\n\n") {
-				foundKeepAlive = true
-			} else {
-				time.Sleep(10 * time.Millisecond)
-			}
-		}
+	// Wait for the keepalive event itself instead of polling the body.
+	select {
+	case <-writer.keepAlive:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no codex keepalive while upstream was silent; body: %q", writer.String())
 	}
 
-	// Complete stream cleanly
 	data <- []byte(`data: {"type":"response.completed","response":{"id":"resp-1","output":[]}}`)
 	close(data)
 	close(errs)
 	<-done
 
-	body := recorder.Body.String()
+	body := writer.String()
 	if !strings.Contains(body, "data: {\"type\":\"codex.client.keepalive\"}\n\n") {
 		t.Fatalf("expected keepalive in body, got %q", body)
 	}
 	if !strings.Contains(body, "response.completed") {
 		t.Fatalf("expected response.completed in body, got %q", body)
+	}
+	if strings.Index(body, "codex.client.keepalive") > strings.Index(body, "response.completed") {
+		t.Fatalf("keepalive written after the terminal event: %q", body)
+	}
+}
+
+func TestSkipKeepAliveAfterTerminal(t *testing.T) {
+	framer := &responsesSSEFramer{}
+	writes := 0
+	write := skipKeepAliveAfterTerminal(framer, func() { writes++ })
+
+	write()
+	if writes != 1 {
+		t.Fatalf("writes = %d before a terminal event, want 1", writes)
+	}
+	var out bytes.Buffer
+	framer.WriteChunk(&out, []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n"))
+	if framer.terminalEvent == "" {
+		t.Fatalf("framer did not record the terminal event; output %q", out.String())
+	}
+	write()
+	if writes != 1 {
+		t.Fatalf("writes = %d after the terminal event, want no keepalive", writes)
+	}
+	if skipKeepAliveAfterTerminal(framer, nil) != nil {
+		t.Fatal("a nil writer must stay nil so the default keepalive applies")
 	}
 }
