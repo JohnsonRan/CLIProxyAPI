@@ -699,7 +699,13 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		}
 	}
 
-	body = h.filterVisibleModelsJSON(c, body)
+	// Client model rules apply to the final catalog, including one a response
+	// interceptor replaced; a shortened body invalidates its Content-Length.
+	visibleBody := h.filterVisibleModelsJSON(c, body)
+	if len(visibleBody) != len(body) {
+		c.Writer.Header().Del("Content-Length")
+	}
+	body = visibleBody
 
 	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
 		c.Writer.Header().Del("Content-Length")
