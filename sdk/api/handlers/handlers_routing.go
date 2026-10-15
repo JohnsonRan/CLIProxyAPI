@@ -400,10 +400,17 @@ func (h *BaseAPIHandler) validateClientModelAccess(ctx context.Context, modelNam
 	if !h.Cfg.HasClientModelRestrictions(apiKey) {
 		return nil
 	}
-	if h.Cfg.IsModelAllowedForClient(apiKey, modelName) {
-		return nil
+	if !h.Cfg.IsModelAllowedForClient(apiKey, modelName) {
+		return clientModelNotAllowedError(modelName)
 	}
-	return clientModelNotAllowedError(modelName)
+	// "auto" resolves to the first available model, which must be allowed too;
+	// otherwise an exclusion-only key could reach excluded models through it.
+	if base := thinking.ParseSuffix(modelName).ModelName; base == "auto" && (h.AuthManager == nil || !h.AuthManager.HomeEnabled()) {
+		if resolved := util.ResolveAutoModel(base); resolved != base && !h.Cfg.IsModelAllowedForClient(apiKey, resolved) {
+			return clientModelNotAllowedError(modelName)
+		}
+	}
+	return nil
 }
 
 func clientModelNotAllowedError(modelName string) *interfaces.ErrorMessage {
