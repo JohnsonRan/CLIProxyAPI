@@ -844,7 +844,8 @@ upstream:
 #       auto-discover-models: false # optional: fetch the model list from this provider's /models endpoint.
 #         # Discovered models are added underneath any explicit "models" entries below, which keep priority,
 #         # so new upstream models appear without editing the config. Use "excluded-models" to hide the rest.
-#         # The list refreshes on startup and on config reload; a failed refresh keeps the last known models.
+#         # The first list is fetched when the provider is registered; afterwards a list older than 30 minutes is
+#         # refreshed in the background and used from the next model registration. A failed refresh keeps the last list.
 #       excluded-models: # optional: hide models by exact name or wildcard (e.g. "glm-4.*", "*-preview")
 #         - "*-preview"
 #       disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
