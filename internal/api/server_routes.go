@@ -384,6 +384,16 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
 		return
 	}
+	// Enforce per-key model rules on the model the client asked for; fall back to
+	// the selected model when the request names none.
+	accessModel := strings.TrimSpace(routing.Model)
+	if accessModel == "" {
+		accessModel = selectionModel
+	}
+	if apiKey := c.GetString("userApiKey"); s.cfg != nil && s.cfg.HasClientModelRestrictions(apiKey) && !s.cfg.IsModelAllowedForClient(apiKey, accessModel) {
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("model %q is not allowed for this API key", accessModel)})
+		return
+	}
 	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
