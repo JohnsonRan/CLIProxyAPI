@@ -181,7 +181,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 26. **`patch/summary-config-single-scan`**
     - **Goal**: Stop rescanning the whole request body for every candidate summary path.
     - **Scope**: `internal/thinking/summary.go` indexes the top-level members once (`summaryDocument`, built with `util.ParseGJSONBytesNoCopy`) and resolves the up to 22 candidate paths of `ExtractSummaryConfig` / `ExtractExplicitSummaryConfig` against the member values instead of calling `gjson.GetBytes` on the full body each time. Same answers, including first-duplicate-wins (`summary_document_test.go` pins this against gjson). 124 µs → 25 µs per call on a 52 KiB chat body; the executor and translator registry call it several times per request.
-    - **Related Upstream Work**: PR [#4684](https://github.com/router-for-me/CLIProxyAPI/pull/4684) introduced the readers; no upstream performance work on them was found. Candidate for an upstream PR.
+    - **Related Upstream Work**: PR [#4684](https://github.com/router-for-me/CLIProxyAPI/pull/4684) introduced the readers; no upstream performance work on them was found.
     - **Retire when**: Upstream reads summary intent in a single pass.
 
 ## Combination Conflicts
