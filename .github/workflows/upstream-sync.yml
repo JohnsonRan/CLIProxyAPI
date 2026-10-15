@@ -41,6 +41,7 @@ env:
     patch/openai-decisions-endpoint
     patch/codex-app-keepalive
     patch/runtime-gc-tuning
+    patch/summary-config-single-scan
 
 jobs:
   sync-main-with-squash-branches:
