@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,18 +14,14 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// decisionsHandlerType is the entry protocol of OpenAI Decisions API requests.
-// It must match helps.OpenAIDecisionsFormat in the executors.
-const decisionsHandlerType = "openai-decisions"
-
 // Decisions handles POST /v1/decisions (OpenAI Decisions API).
 //
 // A request carries a model, an input (text or user messages with text and
 // image parts) and typed questions; the answer lists one typed answer per
 // question plus usage. The body is forwarded unchanged to <base-url>/decisions
-// of a codex-api-key or openai-compatibility credential. ChatGPT OAuth
-// credentials are skipped: the Codex backend is not known to serve this API.
-// Decisions never stream.
+// of a codex-api-key or openai-compatibility credential; other providers are
+// never selected. ChatGPT OAuth credentials are skipped: the Codex backend is
+// not known to serve this API. Decisions never stream.
 func (h *OpenAIAPIHandler) Decisions(c *gin.Context) {
 	rawJSON, err := handlers.ReadRequestBody(c)
 	if err != nil {
@@ -58,9 +55,14 @@ func (h *OpenAIAPIHandler) Decisions(c *gin.Context) {
 	parent := coreauth.WithExcludedAuthKind(context.Background(), coreauth.AuthKindOAuth)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, parent)
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, decisionsHandlerType, modelName, rawJSON, "")
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, handlers.OpenAIDecisionsEntryProtocol, modelName, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
+		if decisionsHasNoEligibleCredential(errMsg.Error) {
+			writeDecisionsError(c, http.StatusBadRequest, fmt.Sprintf("No credential can serve the Decisions API for model '%s'. It needs a codex-api-key or an openai-compatibility API key credential for that model; ChatGPT OAuth credentials are not used.", modelName), "model_not_supported")
+			cliCancel(errMsg.Error)
+			return
+		}
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
@@ -68,6 +70,16 @@ func (h *OpenAIAPIHandler) Decisions(c *gin.Context) {
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+// decisionsHasNoEligibleCredential reports a selection that found no API-key
+// credential of a Decisions-capable provider for the model.
+func decisionsHasNoEligibleCredential(err error) bool {
+	var authErr *coreauth.Error
+	if !errors.As(err, &authErr) || authErr == nil {
+		return false
+	}
+	return authErr.Code == "auth_not_found" || authErr.Code == "provider_not_found"
 }
 
 func writeDecisionsError(c *gin.Context, status int, message, code string) {

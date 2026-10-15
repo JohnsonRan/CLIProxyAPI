@@ -239,3 +239,62 @@ func TestCodexExecutorDecisionsRejectsOAuthCredential(t *testing.T) {
 		t.Fatalf("OAuth credential reached the upstream at %q", upstream.path)
 	}
 }
+
+// Endpoint-level failures must not cool down a credential that serves the same
+// model for chat; credential and upstream health failures keep normal handling.
+func TestOpenAIDecisionsErrorScope(t *testing.T) {
+	cases := []struct {
+		status        int
+		requestScoped bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusForbidden, true},
+		{http.StatusNotFound, true},
+		{http.StatusMethodNotAllowed, true},
+		{http.StatusUnprocessableEntity, true},
+		{http.StatusNotImplemented, true},
+		{http.StatusUnauthorized, false},
+		{http.StatusPaymentRequired, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusServiceUnavailable, false},
+	}
+	for _, tc := range cases {
+		upstream := newDecisionsUpstream(t, tc.status, `{"error":{"message":"x"}}`)
+		for name, exec := range map[string]cliproxyauth.ProviderExecutor{
+			"openai-compat": NewOpenAICompatExecutor("openai", &config.Config{}),
+			"codex":         NewCodexExecutor(&config.Config{}),
+		} {
+			auth := &cliproxyauth.Auth{ID: "auth-decisions-scope", Provider: "x",
+				Attributes: map[string]string{"base_url": upstream.server.URL, "api_key": "sk"}}
+			req, opts := newDecisionsTestRequest()
+			_, err := exec.Execute(context.Background(), auth, req, opts)
+			if err == nil {
+				t.Fatalf("%s %d: error = nil", name, tc.status)
+			}
+			scoped, _ := err.(cliproxyexecutor.RequestScopedError)
+			if got := scoped != nil && scoped.IsRequestScoped(); got != tc.requestScoped {
+				t.Fatalf("%s %d: request scoped = %v, want %v (err %v)", name, tc.status, got, tc.requestScoped, err)
+			}
+			status, ok := err.(interface{ StatusCode() int })
+			if !ok || status.StatusCode() != tc.status {
+				t.Fatalf("%s %d: status lost: %v", name, tc.status, err)
+			}
+			if gjson.Get(err.Error(), "error.message").String() != "x" {
+				t.Fatalf("%s %d: body not preserved: %s", name, tc.status, err.Error())
+			}
+		}
+	}
+}
+
+func TestCodexExecutorDecisionsOAuthRejectionIsRequestScoped(t *testing.T) {
+	exec := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "auth-decisions-oauth-scope", Provider: "codex",
+		Metadata: map[string]any{"access_token": "oauth-token", "refresh_token": "refresh"}}
+	req, opts := newDecisionsTestRequest()
+	_, err := exec.Execute(context.Background(), auth, req, opts)
+	scoped, ok := err.(cliproxyexecutor.RequestScopedError)
+	if !ok || !scoped.IsRequestScoped() {
+		t.Fatalf("OAuth rejection = %v, want a request-scoped error so Home mode does not cool the credential down", err)
+	}
+}
