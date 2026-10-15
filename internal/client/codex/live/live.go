@@ -199,6 +199,9 @@ func (h *Handler) Handle(c *gin.Context) {
 	if errPayload == nil {
 		upstreamBody, upstreamContentType, model, errPayload = applyClientSecretCallSession(upstreamBody, upstreamContentType, model, clientSecretSession(c))
 	}
+	// Enforce per-key model rules on the requested model, before it is rewritten
+	// to the upstream Realtime model.
+	requestedModel := model
 	if errPayload == nil {
 		upstreamBody, model, errPayload = rewriteCallRequestModel(upstreamBody, upstreamContentType, model)
 	}
@@ -207,8 +210,8 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 	callerKey := c.GetString("userApiKey")
-	if h.cfg != nil && h.cfg.HasClientModelRestrictions(callerKey) && !h.cfg.IsModelAllowedForClient(callerKey, model) {
-		writeLiveError(c, http.StatusForbidden, fmt.Sprintf("model %q is not allowed for this API key", model))
+	if h.cfg != nil && h.cfg.HasClientModelRestrictions(callerKey) && !h.cfg.IsModelAllowedForClient(callerKey, requestedModel) {
+		writeLiveError(c, http.StatusForbidden, fmt.Sprintf("model %q is not allowed for this API key", requestedModel))
 		return
 	}
 	runtimeConfig, mediaRelay, mediaRelayErr := h.currentRuntime()
