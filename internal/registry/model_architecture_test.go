@@ -89,3 +89,25 @@ func TestModelCapabilitiesOpenAIModelMapIncludesArchitecture(t *testing.T) {
 		t.Fatalf("unknown model must not advertise architecture: %#v", unknown)
 	}
 }
+
+func TestModelCapabilitiesOpenAIModelMapKeepsTokenLimitsSeparate(t *testing.T) {
+	r := newTestModelRegistry()
+	model := r.convertModelToMap(&ModelInfo{
+		ID:               "gemini-style",
+		OwnedBy:          "test",
+		InputTokenLimit:  1048576,
+		OutputTokenLimit: 65536,
+	}, "openai")
+	if got := model["input_token_limit"]; got != 1048576 {
+		t.Fatalf("input_token_limit = %v, want 1048576", got)
+	}
+	if got := model["output_token_limit"]; got != 65536 {
+		t.Fatalf("output_token_limit = %v, want 65536", got)
+	}
+	// Codex catalog reads these keys; token limits must not leak into them.
+	for _, key := range []string{"context_length", "max_completion_tokens"} {
+		if _, exists := model[key]; exists {
+			t.Fatalf("%s must stay undeclared: %#v", key, model)
+		}
+	}
+}
