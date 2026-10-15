@@ -34,6 +34,12 @@ env:
     patch/proxy-transport-reuse
     patch/systemone-endpoint
     patch/model-capabilities
+    patch/quota-cooldown-fail-fast
+    patch/responses-input-tokens
+    patch/openai-compat-model-discovery
+    patch/client-key-provider-scope
+    patch/openai-decisions-endpoint
+    patch/codex-app-keepalive
 
 jobs:
   sync-main-with-squash-branches:
@@ -82,7 +88,22 @@ jobs:
 
           for branch in "${patches[@]}"; do
             if ! git merge --squash "origin/${branch}"; then
-              echo "::error::${branch} does not merge onto the candidate; fix it on the patch branch"
+              # Known combination conflicts, resolved at their step (see MAINTAIN.md,
+              # "Combination Conflicts"). The resolver fails closed on any other shape.
+              case "${branch}" in
+                patch/client-key-provider-scope)
+                  bash .github/scripts/resolve-union-conflict.sh sdk/api/handlers/handlers_interceptors.go \
+                    f42a0e3014a41933a4ba6c380af390c6a42d3a4513aebb944cbc0addf15d6601 \
+                    22d0e60853c89ef17420ad5709ddd666de3c70edbf2479f570b062539af28354
+                  ;;
+                *)
+                  echo "::error::${branch} does not merge onto the candidate; fix it on the patch branch"
+                  exit 1
+                  ;;
+              esac
+            fi
+            if ! git diff --quiet --diff-filter=U --; then
+              echo "::error::Unresolved conflicts remain after applying ${branch}"
               exit 1
             fi
             if git diff --cached --quiet; then
@@ -96,10 +117,10 @@ jobs:
         run: |
           set -euo pipefail
           go build -o test-output ./cmd/server && rm -f test-output
-          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/...
-          go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels" ./sdk/cliproxy
-          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne" ./internal/runtime/executor
-          go test -run "TestSystemOneRoute" ./internal/api
+          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/...
+          go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs" ./sdk/cliproxy
+          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions" ./internal/runtime/executor
+          go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
 
       - name: Skip unchanged result
         id: changed
