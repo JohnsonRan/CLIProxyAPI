@@ -70,7 +70,13 @@ type codexOutputItemPatchBuffer struct {
 	byIndex  map[int64][]byte
 	fallback [][]byte
 	retained int
-	dropped  bool
+	// seen counts every output item observed, including ones not retained, so
+	// callers can still tell that output was produced.
+	seen int
+	// skipImages stops retaining image_generation_call items after they were
+	// evicted to stay under the limit.
+	skipImages bool
+	dropped    bool
 }
 
 func newCodexOutputItemPatchBuffer() *codexOutputItemPatchBuffer {
@@ -78,20 +84,65 @@ func newCodexOutputItemPatchBuffer() *codexOutputItemPatchBuffer {
 }
 
 func (b *codexOutputItemPatchBuffer) collect(eventData []byte) {
-	if b.dropped {
+	item := gjson.GetBytes(eventData, "item")
+	if !item.Exists() || item.Type != gjson.JSON {
 		return
 	}
-	b.retained += collectCodexOutputItemDone(eventData, b.byIndex, &b.fallback)
-	if b.retained > codexOutputItemsRetainLimit {
-		b.byIndex = make(map[int64][]byte)
-		b.fallback = nil
-		b.dropped = true
-		log.Debugf("codex executor: retained output items exceeded %d bytes, skipping response.completed output patch", codexOutputItemsRetainLimit)
+	b.seen++
+	if b.dropped || (b.skipImages && isCodexImageOutputItem([]byte(item.Raw))) {
+		return
 	}
+	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
+		// A repeated index replaces the earlier item, so stop counting its bytes.
+		b.retained -= len(b.byIndex[outputIndex.Int()])
+	}
+	b.retained += collectCodexOutputItemDone(eventData, b.byIndex, &b.fallback)
+	if b.retained <= codexOutputItemsRetainLimit {
+		return
+	}
+	// Generated images are the large items and were already streamed to the
+	// client; evict them first so reasoning, messages and tool calls can still
+	// be reconstructed into response.completed.
+	if !b.skipImages {
+		b.skipImages = true
+		b.evictImages()
+		if b.retained <= codexOutputItemsRetainLimit {
+			log.Warnf("codex executor: retained output items exceeded %d bytes, response.completed output omits image_generation_call items", codexOutputItemsRetainLimit)
+			return
+		}
+	}
+	b.byIndex = make(map[int64][]byte)
+	b.fallback = nil
+	b.retained = 0
+	b.dropped = true
+	log.Warnf("codex executor: retained output items exceeded %d bytes, skipping response.completed output patch", codexOutputItemsRetainLimit)
 }
 
+func (b *codexOutputItemPatchBuffer) evictImages() {
+	for index, item := range b.byIndex {
+		if isCodexImageOutputItem(item) {
+			b.retained -= len(item)
+			delete(b.byIndex, index)
+		}
+	}
+	kept := b.fallback[:0]
+	for _, item := range b.fallback {
+		if isCodexImageOutputItem(item) {
+			b.retained -= len(item)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	b.fallback = kept
+}
+
+func isCodexImageOutputItem(item []byte) bool {
+	return gjson.GetBytes(item, "type").String() == "image_generation_call"
+}
+
+// count reports how many output items were observed, retained or not.
 func (b *codexOutputItemPatchBuffer) count() int {
-	return len(b.byIndex) + len(b.fallback)
+	return b.seen
 }
 
 func (b *codexOutputItemPatchBuffer) patch(completedData []byte) []byte {
