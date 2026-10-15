@@ -49,3 +49,29 @@ func TestClaudeThinkingOffUsesBetweenToolsOrAdaptiveFallback(t *testing.T) {
 		}
 	})
 }
+
+// Only models with the explicit adaptive-only fact fall back to a level when
+// thinking is turned off; other Claude-format models without a "none" level
+// keep thinking.type="disabled".
+func TestClaudeThinkingOffFallbackRequiresAdaptiveOnlyFact(t *testing.T) {
+	levels := []string{"low", "medium", "high"}
+	off := ThinkingConfig{Mode: ModeNone}
+
+	thirdParty := &registry.ModelInfo{ID: "my-claude", Type: "claude", Thinking: &registry.ThinkingSupport{Levels: levels}}
+	got, errValidate := ValidateConfig(off, thirdParty, "claude", "claude", false)
+	if errValidate != nil {
+		t.Fatalf("ValidateConfig(third-party) error: %v", errValidate)
+	}
+	if got.Mode != ModeNone {
+		t.Fatalf("third-party model mode = %v, want ModeNone", got.Mode)
+	}
+
+	adaptiveOnly := &registry.ModelInfo{ID: "claude-opus-5-5", Type: "claude", Thinking: &registry.ThinkingSupport{Levels: levels, DisableType: registry.ThinkingDisableTypeNone}}
+	got, errValidate = ValidateConfig(off, adaptiveOnly, "claude", "claude", false)
+	if errValidate != nil {
+		t.Fatalf("ValidateConfig(adaptive-only) error: %v", errValidate)
+	}
+	if got.Mode != ModeLevel || got.Level != "low" {
+		t.Fatalf("adaptive-only model = %+v, want ModeLevel low", got)
+	}
+}

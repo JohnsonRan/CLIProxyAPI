@@ -167,10 +167,11 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	}
 
 	if config.Mode == ModeNone && toFormat == "claude" {
-		if !support.ZeroAllowed && len(support.Levels) > 0 {
+		if support.DisableType == registry.ThinkingDisableTypeNone && len(support.Levels) > 0 {
 			// Adaptive-only Claude models (for example claude-opus-5-5) reject
 			// thinking.type="disabled". Like other models that cannot be
-			// disabled, fall back to the lowest supported level.
+			// disabled, fall back to the lowest supported level. Gate on the
+			// explicit fact, so configured third-party models keep "disabled".
 			config.Mode = ModeLevel
 			config.Budget = 0
 			config.Level = ThinkingLevel(support.Levels[0])

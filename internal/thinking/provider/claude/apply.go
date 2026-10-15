@@ -158,7 +158,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 // is left to the model default in both cases.
 func disableThinking(body []byte, modelInfo *registry.ModelInfo) []byte {
 	result := body
-	if disableType := modelInfo.Thinking.DisableType; disableType != "" && disableType != "disabled" {
+	if disableType := modelInfo.Thinking.DisableType; disableType != "" && disableType != "disabled" && disableType != registry.ThinkingDisableTypeNone {
 		result, _ = sjson.SetRawBytes(result, "thinking", []byte(`{}`))
 		result, _ = sjson.SetBytes(result, "thinking.type", disableType)
 	} else {

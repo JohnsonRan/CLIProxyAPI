@@ -12,6 +12,10 @@ type claudeThinkingFact struct {
 	adaptiveOnly bool
 }
 
+// ThinkingDisableTypeNone is the DisableType of models that reject every way of
+// turning thinking off; turning it off falls back to the lowest level instead.
+const ThinkingDisableTypeNone = "none"
+
 var claudeThinkingFacts = map[string]claudeThinkingFact{
 	"claude-sonnet-5-5": {disableType: "between_tools"},
 	"claude-opus-5-5":   {adaptiveOnly: true},
@@ -35,6 +39,9 @@ func applyClaudeThinkingFacts(models []*ModelInfo) {
 		}
 		if fact.adaptiveOnly {
 			model.Thinking.ZeroAllowed = false
+			if model.Thinking.DisableType == "" {
+				model.Thinking.DisableType = ThinkingDisableTypeNone
+			}
 		}
 	}
 }

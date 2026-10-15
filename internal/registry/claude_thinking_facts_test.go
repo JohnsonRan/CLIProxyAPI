@@ -46,8 +46,8 @@ func TestClaudeThinkingFactsSurviveCatalogReplacement(t *testing.T) {
 				if fact.disableType != "" && info.Thinking.DisableType != fact.disableType {
 					t.Errorf("%s DisableType = %q, want %q", id, info.Thinking.DisableType, fact.disableType)
 				}
-				if fact.adaptiveOnly && info.Thinking.ZeroAllowed {
-					t.Errorf("%s ZeroAllowed = true, want false", id)
+				if fact.adaptiveOnly && (info.Thinking.ZeroAllowed || info.Thinking.DisableType != ThinkingDisableTypeNone) {
+					t.Errorf("%s = ZeroAllowed %v DisableType %q, want false and %q", id, info.Thinking.ZeroAllowed, info.Thinking.DisableType, ThinkingDisableTypeNone)
 				}
 			}
 		})

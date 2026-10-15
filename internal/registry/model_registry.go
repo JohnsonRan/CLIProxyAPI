@@ -152,6 +152,7 @@ type ThinkingSupport struct {
 	DynamicAllowed bool `json:"dynamic_allowed,omitempty" yaml:"dynamic-allowed,omitempty"`
 	// DisableType is the Claude thinking.type sent when thinking is turned off.
 	// Empty means "disabled"; claude-sonnet-5-5 needs "between_tools".
+	// ThinkingDisableTypeNone marks models that cannot turn thinking off at all.
 	DisableType string `json:"disable_type,omitempty" yaml:"disable-type,omitempty"`
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
