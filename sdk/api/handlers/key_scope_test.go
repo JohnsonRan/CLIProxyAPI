@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -155,6 +156,33 @@ func TestScopeProvidersNarrowsAndRejects(t *testing.T) {
 	providers, errMsg = handler.scopeProviders(context.Background(), keyScopeCodexModel, []string{"codex"})
 	if errMsg != nil || len(providers) != 1 {
 		t.Fatalf("context without a request = %v, %v; want the providers unchanged", providers, errMsg)
+	}
+}
+
+// Kimi auth files register under kimi, kimi-ai, kimi.ai or kimi.com, so a
+// scope naming kimi must reach all of them, while a specific key stays exact.
+func TestKeyScopeKimiCoversEveryKimiProviderKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.Client.KeyScopes = &[]config.ClientKeyScope{
+		{KeyPrefix: "sk-kimi-ai-", Providers: []string{"kimi-ai"}},
+		{KeyPrefix: "sk-kimi-", Providers: []string{"Kimi"}},
+	}
+	handler := NewBaseAPIHandlers(cfg, nil)
+	kimiKeys := []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com"}
+
+	providers, errMsg := handler.scopeProviders(keyScopeExecutionContext("sk-kimi-abc"), "kimi-k2", append([]string{"codex"}, kimiKeys...))
+	if errMsg != nil || !reflect.DeepEqual(providers, kimiKeys) {
+		t.Fatalf("kimi scope = %v, %v; want %v", providers, errMsg, kimiKeys)
+	}
+	c, _ := keyScopeRequestContext("sk-kimi-abc")
+	if !handler.KeyAllowsProvider(c, "kimi.com") {
+		t.Fatal("kimi scope rejected a kimi.com credential")
+	}
+
+	providers, errMsg = handler.scopeProviders(keyScopeExecutionContext("sk-kimi-ai-abc"), "kimi-k2", kimiKeys)
+	if errMsg != nil || !reflect.DeepEqual(providers, []string{"kimi-ai"}) {
+		t.Fatalf("kimi-ai scope = %v, %v; want only kimi-ai", providers, errMsg)
 	}
 }
 
