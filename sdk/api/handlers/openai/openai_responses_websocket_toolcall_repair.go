@@ -17,8 +17,8 @@ const (
 	websocketToolOutputCacheTTL           = time.Hour
 )
 
-var defaultWebsocketToolOutputCache = newWebsocketToolOutputCache(websocketToolOutputCacheTTL, websocketToolOutputCacheMaxPerSession)
-var defaultWebsocketToolCallCache = newWebsocketToolOutputCache(websocketToolOutputCacheTTL, websocketToolOutputCacheMaxPerSession)
+var defaultWebsocketToolOutputCache = newDefaultWebsocketToolCache()
+var defaultWebsocketToolCallCache = newDefaultWebsocketToolCache()
 var defaultWebsocketToolSessionRefs = newWebsocketToolSessionRefCounter()
 var defaultWebsocketToolCacheTransactionMu sync.RWMutex
 
@@ -27,6 +27,9 @@ type websocketToolOutputCache struct {
 	ttl           time.Duration
 	maxPerSession int
 	sessions      map[string]*websocketToolOutputSession
+	// isActive reports sessions whose WebSocket is still connected; the TTL only
+	// expires sessions that are not.
+	isActive func(sessionKey string) bool
 }
 
 type websocketToolOutputSession struct {
@@ -41,6 +44,14 @@ type responsesWebsocketToolCacheTurn struct {
 	outputOrder []string
 	calls       map[string]json.RawMessage
 	callOrder   []string
+}
+
+// newDefaultWebsocketToolCache expires idle sessions after the TTL but keeps
+// sessions of connected WebSockets, which are removed on disconnect instead.
+func newDefaultWebsocketToolCache() *websocketToolOutputCache {
+	cache := newWebsocketToolOutputCache(websocketToolOutputCacheTTL, websocketToolOutputCacheMaxPerSession)
+	cache.isActive = func(sessionKey string) bool { return defaultWebsocketToolSessionRefs.active(sessionKey) }
+	return cache
 }
 
 func newWebsocketToolOutputCache(ttl time.Duration, maxPerSession int) *websocketToolOutputCache {
@@ -128,6 +139,9 @@ func (c *websocketToolOutputCache) cleanupLocked(now time.Time) {
 			delete(c.sessions, key)
 			continue
 		}
+		if c.isActive != nil && c.isActive(key) {
+			continue
+		}
 		if now.Sub(session.lastSeen) > c.ttl {
 			delete(c.sessions, key)
 		}
@@ -186,6 +200,15 @@ func (c *websocketToolSessionRefCounter) acquire(sessionKey string) {
 	defer c.mu.Unlock()
 
 	c.counts[sessionKey]++
+}
+
+func (c *websocketToolSessionRefCounter) active(sessionKey string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[strings.TrimSpace(sessionKey)] > 0
 }
 
 func (c *websocketToolSessionRefCounter) release(sessionKey string) bool {
