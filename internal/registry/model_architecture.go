@@ -9,8 +9,8 @@ func openAIModelArchitecture(model *ModelInfo) map[string]any {
 	if model == nil {
 		return nil
 	}
-	input := normalizeListedModalities(model.SupportedInputModalities)
-	output := normalizeListedModalities(model.SupportedOutputModalities)
+	input := normalizeListedValues(model.SupportedInputModalities)
+	output := normalizeListedValues(model.SupportedOutputModalities)
 	if len(input) == 0 && len(output) == 0 {
 		return nil
 	}
@@ -40,7 +40,7 @@ const (
 // no chat client can consume: embeddings, rerank or decisions. Undeclared
 // outputs are not treated as non-chat.
 func IsNonChatOutput(outputModalities []string) bool {
-	output := normalizeListedModalities(outputModalities)
+	output := normalizeListedValues(outputModalities)
 	if len(output) == 0 {
 		return false
 	}
@@ -54,7 +54,8 @@ func IsNonChatOutput(outputModalities []string) bool {
 	return true
 }
 
-func normalizeListedModalities(raw []string) []string {
+// normalizeListedValues lowercases, trims and de-duplicates listed values.
+func normalizeListedValues(raw []string) []string {
 	if len(raw) == 0 {
 		return nil
 	}

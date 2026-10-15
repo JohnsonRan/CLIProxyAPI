@@ -1,7 +1,5 @@
 package registry
 
-import "strings"
-
 // openAIModelReasoning returns the reasoning capability advertised in OpenAI
 // model listings. nil means the capability is unknown and must be omitted.
 //
@@ -10,6 +8,10 @@ import "strings"
 // ThinkingSupport is reported as not supporting reasoning, because the proxy
 // strips reasoning settings for it; user-defined models without an explicit
 // thinking configuration are passed through unchanged, so they stay unknown.
+//
+// User-defined models matched to the static catalog report the catalog's
+// ThinkingSupport as the upstream capability. The proxy passes reasoning
+// settings for them through without validating them against these levels.
 func openAIModelReasoning(model *ModelInfo) map[string]any {
 	if model == nil || model.DefaultThinking {
 		return nil
@@ -22,7 +24,7 @@ func openAIModelReasoning(model *ModelInfo) map[string]any {
 		return map[string]any{"supported": false}
 	}
 
-	levels := listedReasoningLevels(support.Levels)
+	levels := normalizeListedValues(support.Levels)
 	hasBudget := support.Min > 0 || support.Max > 0
 	supported := support.Max > 0
 	for _, level := range levels {
@@ -45,27 +47,4 @@ func openAIModelReasoning(model *ModelInfo) map[string]any {
 		}
 	}
 	return reasoning
-}
-
-func listedReasoningLevels(raw []string) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	seen := make(map[string]struct{}, len(raw))
-	for _, item := range raw {
-		level := strings.ToLower(strings.TrimSpace(item))
-		if level == "" {
-			continue
-		}
-		if _, exists := seen[level]; exists {
-			continue
-		}
-		seen[level] = struct{}{}
-		out = append(out, level)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }

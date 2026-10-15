@@ -103,7 +103,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 
 		// The configured max_context_length override is folded into
 		// context_length; Gemini-style catalogs only declare token limits.
-		if contextLength, exists := firstModelValue(model, "context_length", "max_context_length", "input_token_limit"); exists {
+		if contextLength, exists := firstModelValue(model, "context_length", "input_token_limit"); exists {
 			filteredModel["context_length"] = contextLength
 		}
 
