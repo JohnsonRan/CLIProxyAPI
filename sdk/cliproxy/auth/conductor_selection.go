@@ -81,12 +81,24 @@ func isBuiltInSelector(selector Selector) bool {
 }
 
 type requiredAuthKindContextKey struct{}
+type excludedAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
 	requiredKind     string
+	excludedKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+}
+
+// WithExcludedAuthKind returns a context whose executions skip credentials of
+// kind (AuthKindAPIKey or AuthKindOAuth), for endpoints that only one kind of
+// credential can serve. Credentials of unknown kind stay eligible.
+func WithExcludedAuthKind(ctx context.Context, kind string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, excludedAuthKindContextKey{}, normalizeAuthKind(kind))
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -109,6 +121,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
+		eligibility.excludedKind, _ = ctx.Value(excludedAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
 	return eligibility
@@ -119,6 +132,9 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
+		return false
+	}
+	if e.excludedKind != "" && auth.AuthKind() == e.excludedKind {
 		return false
 	}
 	if e.credentialPolicy != "" && !credentialPolicyAllows(e.credentialPolicy, auth) {
