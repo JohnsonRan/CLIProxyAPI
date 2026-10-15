@@ -55,6 +55,8 @@ func TestKeyScopeProviderKeys(t *testing.T) {
 		{"OpenRouter", []string{"openrouter", "openai-compatible-openrouter"}},
 		{"openai-compatible-openrouter", []string{"openai-compatible-openrouter"}},
 		{"openai-compatibility", []string{"openai-compatibility"}},
+		{"Kimi", []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com", "openai-compatible-kimi"}},
+		{"kimi-ai", []string{"kimi-ai", "openai-compatible-kimi-ai"}},
 		{" ", nil},
 	} {
 		if got := KeyScopeProviderKeys(tc.name); !reflect.DeepEqual(got, tc.want) {

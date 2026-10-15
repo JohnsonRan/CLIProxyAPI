@@ -12,6 +12,14 @@ var keyScopeProviderAliases = map[string]string{
 	"grok":      "xai",
 }
 
+// keyScopeProviderFamilies lists the provider keys one provider name covers
+// when credentials of that provider register under several keys. Kimi auth
+// files register as kimi, kimi-ai, kimi.ai or kimi.com depending on the account
+// domain; naming a specific key still selects only that key.
+var keyScopeProviderFamilies = map[string][]string{
+	"kimi": {"kimi-ai", "kimi.ai", "kimi.com"},
+}
+
 // keyScopeOpenAICompatiblePrefix starts the provider key an openai-compatibility
 // entry registers its credentials under, as util.OpenAICompatibleProviderKey builds it.
 const keyScopeOpenAICompatiblePrefix = "openai-compatible-"
@@ -35,7 +43,8 @@ func KeyScopeProviderKeys(provider string) []string {
 	if provider == "" {
 		return nil
 	}
-	keys := []string{NormalizeKeyScopeProvider(provider)}
+	canonical := NormalizeKeyScopeProvider(provider)
+	keys := append([]string{canonical}, keyScopeProviderFamilies[canonical]...)
 	if provider != "openai-compatibility" && !strings.HasPrefix(provider, keyScopeOpenAICompatiblePrefix) {
 		keys = append(keys, keyScopeOpenAICompatiblePrefix+provider)
 	}
