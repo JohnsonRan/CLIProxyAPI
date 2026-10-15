@@ -2,10 +2,13 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +22,10 @@ const (
 	// compatDiscoveryTTL bounds how often a provider's /models endpoint is polled.
 	compatDiscoveryTTL = 30 * time.Minute
 
-	// compatDiscoveryTimeout bounds the discovery request. Discovery runs during
-	// client bootstrap, before any upstream conversation is established, and
-	// mirrors the remote model updater in internal/registry.
+	// compatDiscoveryTimeout bounds the discovery request through its context.
+	// It is a metadata call, not an upstream conversation, like the remote model
+	// updater in internal/registry; the bound keeps a hung provider from pinning
+	// a registration or a background refresh.
 	compatDiscoveryTimeout = 30 * time.Second
 
 	// compatDiscoveryMaxBody caps the response body read from a provider.
@@ -37,10 +41,40 @@ type compatDiscoveryEntry struct {
 	fetchedAt time.Time
 }
 
-// compatDiscoveryState caches discovered model IDs keyed by provider name and base URL.
+// compatDiscoveryAfterRefresh, when set by tests, runs after each background
+// refresh finishes.
+var compatDiscoveryAfterRefresh func()
+
+// compatDiscoveryState caches discovered model IDs keyed by provider, base URL
+// and request inputs, and tracks in-flight background refreshes.
 type compatDiscoveryState struct {
-	mu      sync.Mutex
-	entries map[string]*compatDiscoveryEntry
+	mu         sync.Mutex
+	entries    map[string]*compatDiscoveryEntry
+	refreshing map[string]bool
+}
+
+// startRefresh claims the background refresh for key; false means one is
+// already running.
+func (s *compatDiscoveryState) startRefresh(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshing[key] {
+		return false
+	}
+	if s.refreshing == nil {
+		s.refreshing = make(map[string]bool)
+	}
+	s.refreshing[key] = true
+	return true
+}
+
+func (s *compatDiscoveryState) finishRefresh(key string) {
+	s.mu.Lock()
+	delete(s.refreshing, key)
+	s.mu.Unlock()
+	if hook := compatDiscoveryAfterRefresh; hook != nil {
+		hook()
+	}
 }
 
 func (s *compatDiscoveryState) get(key string) (*compatDiscoveryEntry, bool) {
@@ -111,22 +145,33 @@ func mergeDiscoveredCompatModels(configured []config.OpenAICompatibilityModel, d
 	return out
 }
 
-// discoverCompatModelIDs returns the provider's upstream model IDs, refreshing
-// the cache when the previous result has aged out. A failed refresh keeps the
-// last known good result so a transient upstream outage cannot empty the
-// advertised model list.
+// discoverCompatModelIDs returns the provider's upstream model IDs without
+// holding up registration once a result is cached: a stale entry is returned
+// immediately and refreshed by one background fetch per provider, which only
+// updates the cache (the next registration picks it up). Only the first fetch
+// for a provider runs inline. A failed fetch keeps the last known good result,
+// so a transient upstream outage cannot empty the advertised model list.
 func (s *Service) discoverCompatModelIDs(ctx context.Context, cfg *config.Config, compat *config.OpenAICompatibility) []string {
-	cacheKey := strings.ToLower(strings.TrimSpace(compat.Name)) + "|" + strings.TrimSpace(compat.BaseURL)
+	cacheKey := compatDiscoveryCacheKey(compat)
 	state := s.compatDiscovery()
-	now := compatDiscoveryNow()
-	if entry, ok := state.get(cacheKey); ok && now.Sub(entry.fetchedAt) < compatDiscoveryTTL {
-		return entry.modelIDs
-	}
-
 	globalProxyURL := ""
 	if cfg != nil {
 		globalProxyURL = cfg.ProxyURL
 	}
+	if entry, ok := state.get(cacheKey); ok {
+		if compatDiscoveryNow().Sub(entry.fetchedAt) >= compatDiscoveryTTL && state.startRefresh(cacheKey) {
+			snapshot := *compat
+			go func() {
+				defer state.finishRefresh(cacheKey)
+				s.fetchAndStoreCompatModelIDs(context.Background(), state, cacheKey, &snapshot, globalProxyURL)
+			}()
+		}
+		return entry.modelIDs
+	}
+	return s.fetchAndStoreCompatModelIDs(ctx, state, cacheKey, compat, globalProxyURL)
+}
+
+func (s *Service) fetchAndStoreCompatModelIDs(ctx context.Context, state *compatDiscoveryState, cacheKey string, compat *config.OpenAICompatibility, globalProxyURL string) []string {
 	modelIDs, errFetch := fetchOpenAICompatibilityModelIDs(ctx, compat, globalProxyURL)
 	if errFetch != nil {
 		if entry, ok := state.get(cacheKey); ok {
@@ -136,9 +181,26 @@ func (s *Service) discoverCompatModelIDs(ctx context.Context, cfg *config.Config
 		log.Warnf("openai-compatibility model discovery failed for %q, no cached models available: %v", compat.Name, errFetch)
 		return nil
 	}
-	state.put(cacheKey, modelIDs, now)
+	state.put(cacheKey, modelIDs, compatDiscoveryNow())
 	log.Debugf("openai-compatibility model discovery for %q returned %d models", compat.Name, len(modelIDs))
 	return modelIDs
+}
+
+// compatDiscoveryCacheKey identifies what the discovery request depends on, so
+// a rotated key, a new proxy or changed headers fetch a fresh list.
+func compatDiscoveryCacheKey(compat *config.OpenAICompatibility) string {
+	apiKey, proxyURL := firstCompatCredential(compat)
+	names := make([]string, 0, len(compat.Headers))
+	for name := range compat.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%s\x00%s", apiKey, proxyURL)
+	for _, name := range names {
+		_, _ = fmt.Fprintf(hash, "\x00%s=%s", name, compat.Headers[name])
+	}
+	return strings.ToLower(strings.TrimSpace(compat.Name)) + "|" + strings.TrimSpace(compat.BaseURL) + "|" + hex.EncodeToString(hash.Sum(nil))[:16]
 }
 
 // fetchOpenAICompatibilityModelIDs queries the provider's /models endpoint
@@ -176,7 +238,7 @@ func fetchOpenAICompatibilityModelIDs(ctx context.Context, compat *config.OpenAI
 		req.Header.Set(name, value)
 	}
 
-	httpClient := &http.Client{Timeout: compatDiscoveryTimeout}
+	httpClient := &http.Client{}
 	if proxyURL != "" {
 		transport, _, errTransport := proxyutil.BuildHTTPTransport(proxyURL)
 		if errTransport != nil {
