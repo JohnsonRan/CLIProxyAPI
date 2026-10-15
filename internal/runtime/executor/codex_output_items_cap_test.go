@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestCollectCodexOutputItemDoneReportsRetainedBytes(t *testing.T) {
@@ -45,13 +47,17 @@ func TestCodexOutputItemPatchBufferCapsRetainedBytes(t *testing.T) {
 	if !buf.dropped {
 		t.Fatal("buffer should drop once retained bytes exceed the limit")
 	}
-	if buf.count() != 0 {
-		t.Fatalf("dropped buffer should release retained items, got count=%d", buf.count())
+	if len(buf.byIndex) != 0 || len(buf.fallback) != 0 || buf.retained != 0 {
+		t.Fatalf("dropped buffer should release retained items, got byIndex=%d fallback=%d retained=%d", len(buf.byIndex), len(buf.fallback), buf.retained)
 	}
 
 	buf.collect(small)
-	if buf.count() != 0 {
-		t.Fatalf("dropped buffer should keep ignoring events, got count=%d", buf.count())
+	if len(buf.byIndex) != 0 {
+		t.Fatalf("dropped buffer should keep ignoring events, got byIndex=%d", len(buf.byIndex))
+	}
+	// Output was still produced, so the empty-incomplete check must not fire.
+	if buf.count() != 3 {
+		t.Fatalf("count() = %d, want 3 observed items", buf.count())
 	}
 	completed := []byte(`{"type":"response.completed","response":{"output":[]}}`)
 	if got := buf.patch(completed); string(got) != string(completed) {
@@ -59,13 +65,38 @@ func TestCodexOutputItemPatchBufferCapsRetainedBytes(t *testing.T) {
 	}
 }
 
-func TestCodexOutputItemPatchBufferRepeatedIndexStaysBounded(t *testing.T) {
+func TestCodexOutputItemPatchBufferRepeatedIndexCountsOnce(t *testing.T) {
 	buf := newCodexOutputItemPatchBuffer()
 	item := []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"` + strings.Repeat("x", codexOutputItemsRetainLimit/2) + `"}}`)
-	for i := 0; i < 3 && !buf.dropped; i++ {
+	for i := 0; i < 3; i++ {
 		buf.collect(item)
 	}
-	if !buf.dropped {
-		t.Fatal(fmt.Sprintf("buffer should drop after repeated oversized items, retained=%d", buf.retained))
+	if buf.dropped {
+		t.Fatalf("a replaced index must not be counted twice, retained=%d", buf.retained)
+	}
+	if want := len(gjson.GetBytes(item, "item").Raw); buf.retained != want {
+		t.Fatalf("retained = %d, want %d", buf.retained, want)
+	}
+}
+
+func TestCodexOutputItemPatchBufferEvictsImagesBeforeDroppingAll(t *testing.T) {
+	buf := newCodexOutputItemPatchBuffer()
+	buf.collect([]byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs1"}}`))
+	image := `{"type":"response.output_item.done","output_index":%d,"item":{"type":"image_generation_call","id":"ig%d","result":"` + strings.Repeat("A", codexOutputItemsRetainLimit/2) + `"}}`
+	for i := 1; i <= 3; i++ {
+		buf.collect([]byte(fmt.Sprintf(image, i, i)))
+	}
+	buf.collect([]byte(`{"type":"response.output_item.done","output_index":4,"item":{"type":"message","id":"m1"}}`))
+	if buf.dropped {
+		t.Fatal("buffer should evict images instead of dropping every item")
+	}
+
+	patched := buf.patch([]byte(`{"type":"response.completed","response":{"output":[]}}`))
+	output := gjson.GetBytes(patched, "response.output").Array()
+	if len(output) != 2 || output[0].Get("id").String() != "rs1" || output[1].Get("id").String() != "m1" {
+		t.Fatalf("patched output = %s, want reasoning and message without images", gjson.GetBytes(patched, "response.output").Raw)
+	}
+	if buf.count() != 5 {
+		t.Fatalf("count() = %d, want 5 observed items", buf.count())
 	}
 }
