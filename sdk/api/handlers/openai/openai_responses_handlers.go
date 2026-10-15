@@ -1228,15 +1228,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 	}
 
 	keepAliveInterval, writeKeepAlive, wrappedWriteChunk := h.configureResponsesKeepAlive(c, c.Writer, writeChunk)
-	if writeKeepAlive != nil {
-		// Nothing may follow a terminal event on the wire.
-		writeAppKeepAlive := writeKeepAlive
-		writeKeepAlive = func() {
-			if framer.terminalEvent == "" {
-				writeAppKeepAlive()
-			}
-		}
-	}
+	writeKeepAlive = skipKeepAliveAfterTerminal(framer, writeKeepAlive)
 
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		KeepAliveInterval:      keepAliveInterval,
@@ -1282,4 +1274,17 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
+}
+
+// skipKeepAliveAfterTerminal drops keepalives once the framer has written a
+// terminal event: nothing may follow it on the wire.
+func skipKeepAliveAfterTerminal(framer *responsesSSEFramer, write func()) func() {
+	if write == nil || framer == nil {
+		return write
+	}
+	return func() {
+		if framer.terminalEvent == "" {
+			write()
+		}
+	}
 }
