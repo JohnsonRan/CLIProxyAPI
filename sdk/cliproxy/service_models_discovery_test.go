@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -158,11 +159,33 @@ func TestCompatModelsWithDiscoveryAppliesExclusions(t *testing.T) {
 	}
 }
 
+// waitCompatDiscoveryRefresh installs a hook that reports finished background
+// refreshes.
+func waitCompatDiscoveryRefresh(t *testing.T) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{}, 4)
+	compatDiscoveryAfterRefresh = func() { done <- struct{}{} }
+	t.Cleanup(func() { compatDiscoveryAfterRefresh = nil })
+	return done
+}
+
+func receiveRefresh(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background discovery refresh did not finish")
+	}
+}
+
 func TestDiscoverCompatModelIDsUsesCacheWithinTTL(t *testing.T) {
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&hits, 1)
-		_, _ = w.Write([]byte(modelsPayload("model-a")))
+		if atomic.AddInt32(&hits, 1) == 1 {
+			_, _ = w.Write([]byte(modelsPayload("model-a")))
+			return
+		}
+		_, _ = w.Write([]byte(modelsPayload("model-a", "model-b")))
 	}))
 	defer server.Close()
 
@@ -170,6 +193,7 @@ func TestDiscoverCompatModelIDsUsesCacheWithinTTL(t *testing.T) {
 	original := compatDiscoveryNow
 	compatDiscoveryNow = func() time.Time { return base }
 	defer func() { compatDiscoveryNow = original }()
+	done := waitCompatDiscoveryRefresh(t)
 
 	service := &Service{}
 	compat := &config.OpenAICompatibility{Name: "test", BaseURL: server.URL, AutoDiscoverModels: true}
@@ -183,11 +207,55 @@ func TestDiscoverCompatModelIDsUsesCacheWithinTTL(t *testing.T) {
 		t.Fatalf("upstream hit %d times within the TTL, want 1", got)
 	}
 
-	// Advancing past the TTL must refresh.
+	// Past the TTL the cached list is returned at once and refreshed in the
+	// background; the next call sees the refreshed list.
 	compatDiscoveryNow = func() time.Time { return base.Add(compatDiscoveryTTL + time.Second) }
-	service.discoverCompatModelIDs(context.Background(), nil, compat)
+	if ids := service.discoverCompatModelIDs(context.Background(), nil, compat); len(ids) != 1 {
+		t.Fatalf("stale call returned %v, want the cached model without waiting", ids)
+	}
+	receiveRefresh(t, done)
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Fatalf("upstream hit %d times after the TTL expired, want 2", got)
+	}
+	if ids := service.discoverCompatModelIDs(context.Background(), nil, compat); len(ids) != 2 {
+		t.Fatalf("after refresh returned %v, want two models", ids)
+	}
+}
+
+func TestDiscoverCompatModelIDsStaleRefreshDoesNotBlock(t *testing.T) {
+	release := make(chan struct{})
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&hits, 1) > 1 {
+			<-release
+		}
+		_, _ = w.Write([]byte(modelsPayload("model-a")))
+	}))
+	defer server.Close()
+	defer close(release)
+
+	base := time.Unix(1700000000, 0)
+	original := compatDiscoveryNow
+	compatDiscoveryNow = func() time.Time { return base }
+	defer func() { compatDiscoveryNow = original }()
+	done := waitCompatDiscoveryRefresh(t)
+
+	service := &Service{}
+	compat := &config.OpenAICompatibility{Name: "test", BaseURL: server.URL, AutoDiscoverModels: true}
+	service.discoverCompatModelIDs(context.Background(), nil, compat)
+
+	compatDiscoveryNow = func() time.Time { return base.Add(compatDiscoveryTTL + time.Second) }
+	// The upstream now hangs; registration must still get the cached list,
+	// and repeated calls must not start a second refresh.
+	for i := 0; i < 3; i++ {
+		if ids := service.discoverCompatModelIDs(context.Background(), nil, compat); len(ids) != 1 {
+			t.Fatalf("call %d returned %v, want the cached model", i, ids)
+		}
+	}
+	release <- struct{}{}
+	receiveRefresh(t, done)
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("upstream hit %d times, want one background refresh", got)
 	}
 }
 
@@ -206,6 +274,7 @@ func TestDiscoverCompatModelIDsKeepsStaleResultOnFailure(t *testing.T) {
 	original := compatDiscoveryNow
 	compatDiscoveryNow = func() time.Time { return base }
 	defer func() { compatDiscoveryNow = original }()
+	done := waitCompatDiscoveryRefresh(t)
 
 	service := &Service{}
 	compat := &config.OpenAICompatibility{Name: "test", BaseURL: server.URL, AutoDiscoverModels: true}
@@ -217,9 +286,35 @@ func TestDiscoverCompatModelIDsKeepsStaleResultOnFailure(t *testing.T) {
 	// A transient upstream failure after the TTL must not empty the model list.
 	fail.Store(true)
 	compatDiscoveryNow = func() time.Time { return base.Add(compatDiscoveryTTL + time.Second) }
-	ids := service.discoverCompatModelIDs(context.Background(), nil, compat)
-	if len(ids) != 2 {
-		t.Fatalf("failed refresh returned %v, want the cached two models", ids)
+	service.discoverCompatModelIDs(context.Background(), nil, compat)
+	receiveRefresh(t, done)
+	if ids := service.discoverCompatModelIDs(context.Background(), nil, compat); len(ids) != 2 {
+		t.Fatalf("after a failed refresh returned %v, want the cached two models", ids)
+	}
+}
+
+func TestCompatDiscoveryCacheKeyTracksRequestInputs(t *testing.T) {
+	base := config.OpenAICompatibility{
+		Name:          "Test",
+		BaseURL:       "https://api.example.com/v1",
+		Headers:       map[string]string{"X-A": "1"},
+		APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "sk-1"}},
+	}
+	key := compatDiscoveryCacheKey(&base)
+	if strings.Contains(key, "sk-1") {
+		t.Fatalf("cache key %q leaks the API key", key)
+	}
+	rotated := base
+	rotated.APIKeyEntries = []config.OpenAICompatibilityAPIKey{{APIKey: "sk-2"}}
+	headers := base
+	headers.Headers = map[string]string{"X-A": "2"}
+	for name, changed := range map[string]config.OpenAICompatibility{"rotated key": rotated, "changed headers": headers} {
+		if compatDiscoveryCacheKey(&changed) == key {
+			t.Fatalf("%s kept the same cache key", name)
+		}
+	}
+	if same := base; compatDiscoveryCacheKey(&same) != key {
+		t.Fatal("identical inputs produced different cache keys")
 	}
 }
 
