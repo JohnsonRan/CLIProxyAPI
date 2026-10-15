@@ -65,6 +65,7 @@ func (s *Service) Run(ctx context.Context) error {
 		cfg = s.cfg
 		s.cfgMu.Unlock()
 		redisqueue.SetUsageStatisticsEnabled(true)
+		redisqueue.SetExcludeEmbeddingUsage(false)
 	}
 
 	defer func() {
