@@ -878,6 +878,8 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		}
 		if model.Thinking != nil {
 			info.ExplicitThinking = true
+		} else if thinkingSupport != nil {
+			info.DefaultThinking = true
 		}
 		if len(model.InputModalities) > 0 {
 			info.ExplicitInputModalities = true
