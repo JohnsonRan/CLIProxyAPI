@@ -101,7 +101,9 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 			filteredModel["owned_by"] = ownedBy
 		}
 
-		if contextLength, exists := model["context_length"]; exists {
+		// The configured max_context_length override is folded into
+		// context_length; Gemini-style catalogs only declare token limits.
+		if contextLength, exists := firstModelValue(model, "context_length", "max_context_length", "input_token_limit"); exists {
 			filteredModel["context_length"] = contextLength
 		}
 
@@ -113,7 +115,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 			filteredModel["name"] = displayName
 		}
 
-		if maxCompletionTokens, exists := model["max_completion_tokens"]; exists {
+		if maxCompletionTokens, exists := firstModelValue(model, "max_completion_tokens", "output_token_limit"); exists {
 			filteredModel["top_provider"] = map[string]any{"max_completion_tokens": maxCompletionTokens}
 		}
 
@@ -128,6 +130,16 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		"object": "list",
 		"data":   filteredModels,
 	})
+}
+
+// firstModelValue returns the first key present in a registry model map.
+func firstModelValue(model map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, exists := model[key]; exists {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 // ChatCompletions handles the /v1/chat/completions endpoint.

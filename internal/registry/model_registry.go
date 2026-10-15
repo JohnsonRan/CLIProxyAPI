@@ -1755,6 +1755,14 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if model.MaxCompletionTokens > 0 {
 			result["max_completion_tokens"] = model.MaxCompletionTokens
 		}
+		// Gemini-style catalogs only declare token limits; keep them separate so
+		// consumers of context_length/max_completion_tokens are unaffected.
+		if model.InputTokenLimit > 0 {
+			result["input_token_limit"] = model.InputTokenLimit
+		}
+		if model.OutputTokenLimit > 0 {
+			result["output_token_limit"] = model.OutputTokenLimit
+		}
 		if len(model.SupportedParameters) > 0 {
 			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
 		}

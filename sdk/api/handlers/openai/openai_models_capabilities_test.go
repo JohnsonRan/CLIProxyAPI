@@ -209,3 +209,91 @@ func TestModelCapabilitiesOpenAIModelsListsLimitsReasoningAndName(t *testing.T) 
 		}
 	}
 }
+
+func TestModelCapabilitiesOpenAIModelsFallsBackToTokenLimits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	clientID := "openai-models-token-limits-test"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(clientID, "gemini", []*registry.ModelInfo{
+		{
+			ID:               "limits-gemini-style",
+			OwnedBy:          "test",
+			Type:             "gemini",
+			InputTokenLimit:  1048576,
+			OutputTokenLimit: 65536,
+		},
+		{
+			ID:                  "limits-declared-wins",
+			OwnedBy:             "test",
+			Type:                "gemini",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32000,
+			InputTokenLimit:     1048576,
+			OutputTokenLimit:    65536,
+		},
+		{
+			ID:               "limits-override-wins",
+			OwnedBy:          "test",
+			Type:             "gemini",
+			ContextLength:    128000,
+			MaxContextLength: 128000,
+			InputTokenLimit:  1048576,
+		},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	handler := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil))
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	handler.OpenAIModels(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	entries := make(map[string]map[string]any, len(body.Data))
+	for _, entry := range body.Data {
+		id, _ := entry["id"].(string)
+		entries[id] = entry
+	}
+
+	cases := []struct {
+		id         string
+		context    float64
+		maxOutput  any
+		wantOutput bool
+	}{
+		{id: "limits-gemini-style", context: 1048576, maxOutput: float64(65536), wantOutput: true},
+		{id: "limits-declared-wins", context: 200000, maxOutput: float64(32000), wantOutput: true},
+		{id: "limits-override-wins", context: 128000, wantOutput: false},
+	}
+	for _, tc := range cases {
+		entry := entries[tc.id]
+		if entry == nil {
+			t.Fatalf("model %s missing from /v1/models", tc.id)
+		}
+		if got := entry["context_length"]; got != tc.context {
+			t.Fatalf("%s context_length = %v, want %v", tc.id, got, tc.context)
+		}
+		topProvider, exists := entry["top_provider"].(map[string]any)
+		if exists != tc.wantOutput {
+			t.Fatalf("%s top_provider = %#v, want present=%v", tc.id, entry["top_provider"], tc.wantOutput)
+		}
+		if tc.wantOutput && topProvider["max_completion_tokens"] != tc.maxOutput {
+			t.Fatalf("%s top_provider.max_completion_tokens = %v, want %v", tc.id, topProvider["max_completion_tokens"], tc.maxOutput)
+		}
+		for _, internal := range []string{"input_token_limit", "output_token_limit", "max_context_length"} {
+			if _, exists := entry[internal]; exists {
+				t.Fatalf("%s must not expose %s: %#v", tc.id, internal, entry)
+			}
+		}
+	}
+}
