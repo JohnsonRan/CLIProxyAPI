@@ -1152,6 +1152,10 @@ observability:
     # Default: 60. Max: 3600.
     redis-usage-queue-retention-seconds: 60
 
+    # When true, embedding requests (/v1/embeddings) are left out of usage statistics (the usage queue).
+    # They still appear in request logs and application logs. Ignored in Home mode.
+    exclude-embeddings: false
+
   # Enable pprof HTTP debug server (host:port). Keep it bound to localhost for safety.
   pprof:
     enable: false

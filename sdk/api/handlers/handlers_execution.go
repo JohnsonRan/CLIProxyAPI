@@ -41,7 +41,9 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 }
 
 // ExecuteEmbeddingWithAuthManager executes an OpenAI-compatible embedding endpoint request.
+// The context is tagged so usage sinks can leave embeddings out of statistics.
 func (h *BaseAPIHandler) ExecuteEmbeddingWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	ctx = coreusage.WithRequestKind(ctx, coreusage.RequestKindEmbeddings)
 	return h.executeWithAuthManagerFormats(ctx, handlerType, handlerType, modelName, rawJSON, alt, false, modelExecutionOptions{Path: "/v1/embeddings"})
 }
 
