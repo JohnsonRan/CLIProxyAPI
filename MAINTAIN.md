@@ -5,7 +5,7 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
 ## Branch Architecture
 
 - **Upstream baseline**: `https://github.com/router-for-me/CLIProxyAPI.git` (`main`)
-- **`ci`**: Downstream maintenance overlay carrying this `MAINTAIN.md`, downstream `README.md` notice, `.github/workflows/upstream-sync.yml`, and `.github/workflows/ghcr-docker.yml`. Never mix product runtime changes into `ci`.
+- **`ci`**: Downstream maintenance overlay carrying this `MAINTAIN.md`, downstream `README.md` notice, `.github/workflows/upstream-sync.yml`, `.github/workflows/ghcr-docker.yml`, the combination-conflict resolver `.github/scripts/resolve-union-conflict.sh`, and multi-patch integration tests (`sdk/api/handlers/downstream_client_access_combination_test.go`; it compiles only on the integrated tree). Never mix product runtime changes into `ci`.
 - **`patch/<name>`**: Independent product patch branches, each branched directly from `upstream/main` and kept suitable for standalone review and independent build/test. One patch carries one feature or fix, so a patch becomes empty once upstream absorbs it.
 - **`main`**: Integrated release branch rebuilt from `upstream/main` with one countable squash commit per branch (`merge ci branch` followed by each `merge patch/<name> branch` in fixed order). Never commit fixes only to `main`.
 
@@ -130,6 +130,52 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: Issue [#5119](https://github.com/router-for-me/CLIProxyAPI/issues/5119) (closed as not planned: the maintainer keeps the default `/v1/models` strictly in OpenAI format and points to `?client_version=1` for extended metadata, so this patch is expected to stay downstream; extending the default list is a deliberate choice because generic OpenRouter-style readers cannot add query parameters), PR [#5646](https://github.com/router-for-me/CLIProxyAPI/pull/5646) (open, unreviewed; separate `?capabilities=true` schema bundled with unrelated token-count and refresh changes, no embeddings/rerank/decisions; do not reuse that parameter name), PR [#5801](https://github.com/router-for-me/CLIProxyAPI/pull/5801) (capability propagation across aliases), PR [#3371](https://github.com/router-for-me/CLIProxyAPI/pull/3371) (closed unmerged; full metadata and thinking levels in the plain list), PR [#5123](https://github.com/router-for-me/CLIProxyAPI/pull/5123) and PR [#6194](https://github.com/router-for-me/CLIProxyAPI/pull/6194) (open; token limits and `inputTokenLimit` fallback in the plain list), PR [#4608](https://github.com/router-for-me/CLIProxyAPI/pull/4608) and PR [#5246](https://github.com/router-for-me/CLIProxyAPI/pull/5246) (open; output limits in the Codex catalog only).
     - **Retire when**: Upstream lists output modalities, limits and reasoning support in `/v1/models`; then move the flag mappings onto upstream's field names.
 
+19. **`patch/quota-cooldown-fail-fast`**
+    - **Goal**: Stop clients from retrying, or sleeping through `Retry-After`, when every credential for a model is out of quota for hours or days.
+    - **Scope**: Carries PR #6647's two commits unchanged. A model cooldown longer than `QuotaExhaustedCooldownThreshold` (5 minutes, `sdk/cliproxy/auth/selector.go`) keeps `code: "model_cooldown"` and adds `type: "usage_limit_reached"`, `resets_at` and `retryable: false`; it drops `Retry-After` and sets `X-Should-Retry: false`, which the official OpenAI and Anthropic SDKs honor. The Claude handler maps the type to `rate_limit_error`. `handlers.WriteSafeRetryHeaders` forwards the header on the base, Claude, Codex alpha search and Codex live/realtime selection-error paths, and CORS exposes it. Short cooldowns are unchanged.
+    - **Related Upstream Work**: Issue [#6646](https://github.com/router-for-me/CLIProxyAPI/issues/6646), PR [#6647](https://github.com/router-for-me/CLIProxyAPI/pull/6647) (open; its second commit fixes the live/realtime gap Copilot reported), PR [#3244](https://github.com/router-for-me/CLIProxyAPI/pull/3244) (transient cooldown retry hints).
+    - **Retire when**: PR #6647 or an equivalent lands.
+
+20. **`patch/responses-input-tokens`**
+    - **Goal**: Serve OpenAI's `POST /v1/responses/input_tokens` (also on `/backend-api/codex/responses/input_tokens`).
+    - **Scope**: `sdk/api/handlers/openai/openai_responses_input_tokens.go` applies the same boundary rewrites as `/v1/responses` (multi-agent-v2 tools, orphan delegation), drops `stream`, and runs the selected executor's `CountTokens`. No translator targets `openai-response` for token counts, so the handler reads every built-in count location (`input_tokens`, `response.usage.input_tokens`, `usage.prompt_tokens`, `totalTokens`, `total_tokens`, `usage.total_tokens`) and answers `{"object":"response.input_tokens","input_tokens":N}`. It never re-estimates a provider's number; an unrecognized count is a `502`.
+    - **Related Upstream Work**: PR [#5757](https://github.com/router-for-me/CLIProxyAPI/pull/5757) (open, conflicting). This fork reimplements it instead of carrying it because that PR's review findings are valid: it ignored the Gemini and OpenAI-compatible count shapes, skipped the boundary rewrites, and fell back to tokenizing raw JSON. Its fourth finding (string `input` counted as zero) does not apply: the Codex request translator wraps string input in a message.
+    - **Known limits**: When the count is unrecognized (only possible for plugin executors), request lifecycle hooks have already recorded success while the client gets `502`.
+
+21. **`patch/openai-compat-model-discovery`**
+    - **Goal**: Let an `openai-compatibility` provider advertise its upstream models without listing them, and make `excluded-models` work there.
+    - **Scope**: Carries PR #5898. `auto-discover-models: true` fetches `<base-url>/models` with the first key (its `proxy-url`, else the global `proxy-url`, which this fork adds) and merges the IDs under configured `models`, which keep priority. `excluded-models` (exact or wildcard) filters the final list. Results are cached per provider for 30 minutes and a failed refresh keeps the last good list. Discovery runs during model registration (startup and reloads that re-register), not on a timer. The fork adapts the PR to upstream's split `newOpenAICompatibilityRegistrationCacheForConfig` builder, the second registration-cache call in `service_plugins.go`, and the v8 config layout (covered by `TestOpenAICompatibilityDiscoveryFieldsSurviveV8Layout`).
+    - **Known limits**: The discovery request has a 30-second timeout, like the remote model updater; it is a bootstrap call, not an upstream conversation. Discovered models get the default openai-compatibility thinking levels, which `patch/model-capabilities` marks `DefaultThinking` and does not advertise.
+    - **Related Upstream Work**: PR [#5898](https://github.com/router-for-me/CLIProxyAPI/pull/5898) (open, unreviewed).
+    - **Retire when**: PR #5898 or an equivalent lands.
+
+22. **`patch/client-key-provider-scope`**
+    - **Goal**: Restrict client API keys to providers, so one tool's key cannot spend another provider's quota.
+    - **Scope**: Carries PR #6568's five commits unchanged. `client.key-scopes` maps a `key-prefix` (longest match wins) to `providers`; an `openai-compatibility` name also matches `openai-compatible-<name>`. Execute, stream and count narrow providers before selection (`400 model_not_found` for a model only other providers serve); executor-plugin routes need the plugin ID; model lists, model details and Gemini `/v1beta/models/{model}` are filtered; Codex-only routes (`/v1/alpha/search`, `/v1/live`, `/v1/realtime*`) answer `403 provider_not_allowed`. Home mode is untouched.
+    - **Interaction**: Separate from `patch/client-api-key-models` (`client-keys` model rules). A key restricted by both gets the intersection, in lists and execution; see "Combination Conflicts".
+    - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568) (open, mergeable, review findings fixed), PR [#6569](https://github.com/router-for-me/CLIProxyAPI/pull/6569) (account pools on top of it), PR [#5660](https://github.com/router-for-me/CLIProxyAPI/pull/5660) (per-key credential prefixes).
+    - **Retire when**: PR #6568 lands.
+
+23. **`patch/openai-decisions-endpoint`**
+    - **Goal**: Pass through OpenAI's Decisions API on `POST /v1/decisions`.
+    - **Scope**: `Decisions` (`sdk/api/handlers/openai/openai_decisions_handlers.go`) validates `model`, `input` and a non-empty `questions` array, rejects `stream`, and routes by model with entry protocol `openai-decisions`. `helps.ExecuteOpenAIDecisions` forwards the body unchanged to `<base-url>/decisions`, rewriting only the upstream model name before payload rules (protocol `openai-decisions`) run last; upstream status and body are preserved and usage is recorded. Served by `openai-compatibility` providers and `codex-api-key` credentials (default base `https://api.openai.com/v1`). `CodexAutoExecutor` keeps decisions on HTTP even when patch 2 bridges HTTP clients to WebSockets.
+    - **Credential kinds**: The handler excludes OAuth credentials from selection through `coreauth.WithExcludedAuthKind` (new in `sdk/cliproxy/auth/conductor_selection.go`). ChatGPT OAuth and SIWC are not known to serve the Decisions API, and a failed attempt would cool down a model those credentials serve for Responses. `CodexExecutor` also rejects a non-API-key credential with `501`. Using `gpt-6-luna` decisions therefore needs a `codex-api-key` or an `openai-compatibility` entry pointing at `https://api.openai.com/v1`.
+    - **Related Upstream Work**: Issue [#6586](https://github.com/router-for-me/CLIProxyAPI/issues/6586) (open; asks the same, leaves OAuth support open). `patch/systemone-endpoint` is the same pattern for TypeSafe.
+    - **Retire when**: Upstream serves `/v1/decisions`.
+
+24. **`patch/codex-app-keepalive`**
+    - **Goal**: Keep official Codex clients from dropping long silent `/v1/responses` streams (`idle timeout waiting for SSE`).
+    - **Scope**: Carries PR #6348. For official Codex clients (`User-Agent`/`Originator`), the Responses stream forwarder writes `data: {"type":"codex.client.keepalive"}` after `streaming.codex-app-keepalive-seconds` (default 30) of upstream silence; `streaming.disable-codex-app-keepalive` turns it off. codex-rs resets its idle timer on every SSE data event and logs unknown types at debug, while SSE comments produce no event and do not reset it. The fork adapts the PR to the new `Flush`/`ChunkDone` stream options, reads the hot-reloaded config, writes nothing after a terminal event, and documents both settings.
+    - **Known limits**: Covers silence after the first upstream event only. Before the first token, `send-keepalive-before-ft` still writes comments, which Codex ignores.
+    - **Related Upstream Work**: PR [#6348](https://github.com/router-for-me/CLIProxyAPI/pull/6348) (open, unreviewed), Issue [#6554](https://github.com/router-for-me/CLIProxyAPI/issues/6554) (closed; added `send-keepalive-before-ft`), PR [#4593](https://github.com/router-for-me/CLIProxyAPI/pull/4593)/[#4691](https://github.com/router-for-me/CLIProxyAPI/pull/4691) (open; turn upstream keepalive events into comments).
+    - **Retire when**: PR #6348 or an equivalent lands.
+
+## Combination Conflicts
+
+Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
+
+- **`patch/client-api-key-models` + `patch/client-key-provider-scope`**, `sdk/api/handlers/handlers_interceptors.go`: both insert a filter at the same spot in `WriteModelListResponse`, after response interceptors. `.github/scripts/resolve-union-conflict.sh` keeps both blocks (client model rules first, then key scopes), so a model is listed only when both allow it. It checks the SHA-256 of each side and fails closed on any other shape: when either branch changes that block, review the combination again and update the hashes. `sdk/api/handlers/downstream_client_access_combination_test.go` (owned by `ci`) checks the intersection in lists and execution. Retire with either patch.
+
 ## Retired Patch Branches
 
 - `patch/p2-runtime-optimizations` was split into patches 3–8 on 2026-10-14.
@@ -139,14 +185,24 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive)
+# Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
 git merge --squash origin/ci || git restore --source=origin/ci --staged --worktree -- README.md
 git commit -m "merge ci branch"
 for branch in "${branches[@]}"; do
-  git merge --squash "origin/${branch}" || { echo "conflict in ${branch}: fix it on the patch branch"; exit 1; }
+  if ! git merge --squash "origin/${branch}"; then
+    case "${branch}" in
+      # See "Combination Conflicts".
+      patch/client-key-provider-scope)
+        bash .github/scripts/resolve-union-conflict.sh sdk/api/handlers/handlers_interceptors.go \
+          f42a0e3014a41933a4ba6c380af390c6a42d3a4513aebb944cbc0addf15d6601 \
+          22d0e60853c89ef17420ad5709ddd666de3c70edbf2479f570b062539af28354 || exit 1 ;;
+      *) echo "conflict in ${branch}: fix it on the patch branch"; exit 1 ;;
+    esac
+  fi
   git diff --cached --quiet && { echo "${branch} is empty: check whether upstream absorbed it"; exit 1; }
   git commit -m "merge ${branch} branch"
 done
@@ -154,12 +210,14 @@ done
 # Must match the "Validate integrated build and patch tests" step in
 # .github/workflows/upstream-sync.yml. The full ./internal/runtime/executor/...
 # package is not run here: it has long-hanging tests, so it is covered by
-# targeted -run patterns instead.
+# targeted -run patterns instead. ./sdk/cliproxy is also targeted:
+# TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559 fails on
+# upstream/main itself (seen 2026-10-15).
 go build -o test-output ./cmd/server && rm -f test-output
-go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/...
-go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels" ./sdk/cliproxy
-go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne" ./internal/runtime/executor
-go test -run "TestSystemOneRoute" ./internal/api
+go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/...
+go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs" ./sdk/cliproxy
+go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions" ./internal/runtime/executor
+go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
 git push --force-with-lease origin HEAD:main
 ```
 
