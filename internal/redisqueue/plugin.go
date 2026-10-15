@@ -26,6 +26,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if !Enabled() || !UsageStatisticsEnabled() {
 		return
 	}
+	if ExcludeEmbeddingUsage() && coreusage.RequestKindFromContext(ctx) == coreusage.RequestKindEmbeddings {
+		return
+	}
 
 	timestamp := record.RequestedAt
 	if timestamp.IsZero() {
