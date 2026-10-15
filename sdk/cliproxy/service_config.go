@@ -342,6 +342,7 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	}
 	cfg.APIKeys = nil
 	cfg.UsageStatisticsEnabled = true
+	cfg.UsageExcludeEmbeddings = false
 	cfg.DisableCooling = true
 	cfg.SaveCooldownStatus = false
 	cfg.WebsocketAuth = true
