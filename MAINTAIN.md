@@ -178,6 +178,12 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Scope**: `Dockerfile` sets `ENV GOGC=200`. Request and response translation allocate several times the payload size per request (about 3 MiB for a 53 KiB chat request) while the live heap stays small, so with `GOGC=100` the collector runs every few requests; `GOGC=200` gave about 30% more throughput in an end-to-end Codex streaming benchmark (`-cpu 8`, local mock upstream). Cost: peak heap is up to three times the live heap instead of two. An explicit `GOGC` on the container wins; pin `GOMEMLIMIT` (for example 80% of the container limit) when memory is capped. Binary deployments get the same effect by exporting `GOGC=200`.
     - **Retire when**: Upstream tunes the collector in the image or in `cmd/server`.
 
+26. **`patch/summary-config-single-scan`**
+    - **Goal**: Stop rescanning the whole request body for every candidate summary path.
+    - **Scope**: `internal/thinking/summary.go` indexes the top-level members once (`summaryDocument`, built with `util.ParseGJSONBytesNoCopy`) and resolves the up to 22 candidate paths of `ExtractSummaryConfig` / `ExtractExplicitSummaryConfig` against the member values instead of calling `gjson.GetBytes` on the full body each time. Same answers, including first-duplicate-wins (`summary_document_test.go` pins this against gjson). 124 µs → 25 µs per call on a 52 KiB chat body; the executor and translator registry call it several times per request.
+    - **Related Upstream Work**: PR [#4684](https://github.com/router-for-me/CLIProxyAPI/pull/4684) introduced the readers; no upstream performance work on them was found. Candidate for an upstream PR.
+    - **Retire when**: Upstream reads summary intent in a single pass.
+
 ## Combination Conflicts
 
 Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
@@ -193,7 +199,7 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
