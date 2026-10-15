@@ -11,25 +11,38 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 type decisionsCaptureExecutor struct {
-	mu      sync.Mutex
-	authIDs []string
-	source  string
+	mu       sync.Mutex
+	provider string
+	authIDs  []string
+	source   string
+	// decisionsErr fails decisions requests; other requests still succeed.
+	decisionsErr error
 }
 
-func (e *decisionsCaptureExecutor) Identifier() string { return "decisions-provider" }
+func (e *decisionsCaptureExecutor) Identifier() string {
+	if e.provider != "" {
+		return e.provider
+	}
+	return "openai-compatible-decisions"
+}
 
 func (e *decisionsCaptureExecutor) Execute(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.authIDs = append(e.authIDs, auth.ID)
 	e.source = opts.SourceFormat.String()
+	if e.decisionsErr != nil && e.source == handlers.OpenAIDecisionsEntryProtocol {
+		return coreexecutor.Response{}, e.decisionsErr
+	}
 	return coreexecutor.Response{Payload: []byte(`{"object":"decision","answers":[]}`)}, nil
 }
 
@@ -109,8 +122,8 @@ func TestDecisionsWithOnlyOAuthCredentialsDoesNotExecute(t *testing.T) {
 	router := newDecisionsRouter(t, executor, oauth)
 
 	resp := postDecisions(router, validDecisionsBody)
-	if resp.Code == http.StatusOK {
-		t.Fatalf("status = 200, want an error when no API key credential serves the model")
+	if resp.Code != http.StatusBadRequest || gjson.Get(resp.Body.String(), "error.code").String() != "model_not_supported" {
+		t.Fatalf("status = %d body = %s, want 400 model_not_supported", resp.Code, resp.Body.String())
 	}
 	if len(executor.authIDs) != 0 {
 		t.Fatalf("executor called with %v", executor.authIDs)
@@ -138,5 +151,55 @@ func TestDecisionsValidatesRequest(t *testing.T) {
 	}
 	if len(executor.authIDs) != 0 {
 		t.Fatalf("executor called for invalid requests: %v", executor.authIDs)
+	}
+}
+
+func TestDecisionsNeverSelectsOtherProviders(t *testing.T) {
+	executor := &decisionsCaptureExecutor{provider: "claude"}
+	apiKey := &coreauth.Auth{ID: "decisions-claude-key", Provider: executor.Identifier(), Status: coreauth.StatusActive,
+		Attributes: map[string]string{coreauth.AttributeAPIKey: "sk-ant-test"}}
+	router := newDecisionsRouter(t, executor, apiKey)
+
+	resp := postDecisions(router, validDecisionsBody)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s, want 400", resp.Code, resp.Body.String())
+	}
+	if len(executor.authIDs) != 0 {
+		t.Fatalf("a non-Decisions provider was executed: %v", executor.authIDs)
+	}
+}
+
+type decisionsStatusError struct{ code int }
+
+func (e decisionsStatusError) Error() string {
+	return `{"error":{"message":"Not Found","type":"not_found"}}`
+}
+func (e decisionsStatusError) StatusCode() int { return e.code }
+
+// A provider without /decisions answers 404; that must not cool down the model
+// the same credential serves for chat.
+func TestDecisionsUpstreamNotFoundDoesNotCoolDownModel(t *testing.T) {
+	executor := &decisionsCaptureExecutor{decisionsErr: helps.OpenAIDecisionsRequestScoped(decisionsStatusError{code: http.StatusNotFound})}
+	apiKey := &coreauth.Auth{ID: "decisions-relay-key", Provider: executor.Identifier(), Status: coreauth.StatusActive,
+		Attributes: map[string]string{coreauth.AttributeAPIKey: "sk-relay"}}
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), apiKey); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(apiKey.ID, apiKey.Provider, []*registry.ModelInfo{{ID: "decisions-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(apiKey.ID) })
+	h := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager))
+	router := gin.New()
+	router.POST("/v1/decisions", h.Decisions)
+
+	if resp := postDecisions(router, validDecisionsBody); resp.Code != http.StatusNotFound {
+		t.Fatalf("decisions status = %d body = %s, want the upstream 404", resp.Code, resp.Body.String())
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, errMsg := h.ExecuteWithAuthManager(context.Background(), "openai", "decisions-model", []byte(`{"model":"decisions-model"}`), ""); errMsg != nil {
+			t.Fatalf("chat request %d after a decisions 404: %v", i, errMsg.Error)
+		}
 	}
 }

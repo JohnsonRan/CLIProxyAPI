@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -29,6 +30,47 @@ func IsOpenAIDecisionsRequest(opts cliproxyexecutor.Options) bool {
 
 // StatusErrorFunc builds an executor's error for a non-2xx upstream response.
 type StatusErrorFunc func(status int, headers http.Header, body []byte) error
+
+// openAIDecisionsRequestScopedError marks a Decisions API failure that says
+// nothing about the credential's health on other endpoints. The auth manager
+// then neither cools down the credential nor its model, which the same
+// credential may serve for chat and Responses.
+type openAIDecisionsRequestScopedError struct {
+	error
+}
+
+func (e openAIDecisionsRequestScopedError) Unwrap() error { return e.error }
+
+// IsRequestScoped implements cliproxyexecutor.RequestScopedError.
+func (e openAIDecisionsRequestScopedError) IsRequestScoped() bool { return true }
+
+// StatusCode forwards the wrapped error's HTTP status.
+func (e openAIDecisionsRequestScopedError) StatusCode() int {
+	var coder interface{ StatusCode() int }
+	if errors.As(e.error, &coder) {
+		return coder.StatusCode()
+	}
+	return 0
+}
+
+// OpenAIDecisionsRequestScoped wraps err so it never cools down the credential.
+func OpenAIDecisionsRequestScoped(err error) error {
+	if err == nil {
+		return nil
+	}
+	return openAIDecisionsRequestScopedError{error: err}
+}
+
+// openAIDecisionsStatusIsCredentialHealth reports whether an upstream status
+// describes the credential or the upstream rather than this endpoint: bad or
+// expired key (401), billing (402), rate limit (429) and server errors keep
+// their normal retry and cooldown handling. Every other status (a relay
+// without /decisions answering 404 or 501, an account without access answering 403,
+// an invalid request) is scoped to the decisions request.
+func openAIDecisionsStatusIsCredentialHealth(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusPaymentRequired ||
+		status == http.StatusTooManyRequests || (status >= http.StatusInternalServerError && status != http.StatusNotImplemented)
+}
 
 // ExecuteOpenAIDecisions forwards an OpenAI Decisions API request to
 // <baseURL>/decisions with bearer authentication. Decisions are not chat
@@ -112,6 +154,9 @@ func ExecuteOpenAIDecisions(ctx context.Context, cfg *config.Config, executor us
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		LogWithRequestID(ctx).Debugf("decisions request error, error status: %d, error message: %s", httpResp.StatusCode, SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
 		err = statusError(httpResp.StatusCode, httpResp.Header.Clone(), body)
+		if !openAIDecisionsStatusIsCredentialHealth(httpResp.StatusCode) {
+			err = OpenAIDecisionsRequestScoped(err)
+		}
 		return resp, err
 	}
 
