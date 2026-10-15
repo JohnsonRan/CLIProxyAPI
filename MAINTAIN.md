@@ -16,8 +16,8 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 1. **`patch/http-compression`**
    - **Goal**: End-to-end HTTP, SSE, and WebSocket compression (`gzip`, `br`, `zstd`, `deflate`) across both downstream and upstream legs.
    - **Scope**:
-     - Downstream request body decompression (`sdk/api/handlers/request_body.go`, `internal/api/middleware/request_logging.go`, and the Claude, Gemini and `/v1/alpha/search` handlers) supporting `gzip`, `br`, `zstd`, `deflate`, multi-coding chains, and magic-byte `gzip`/`zstd` detection with `max-request-body-bytes` protection.
-     - Downstream HTTP & SSE response compression middleware (`internal/api/middleware/response_compression.go`) negotiating `zstd > br > gzip > deflate`, flushing stream encoders on every SSE flush, plus `EnableCompression: true` on `wsrelay` and `codex/live` WebSocket upgraders/dialers.
+     - Downstream request body decompression (`sdk/api/handlers/request_body.go`, `internal/api/middleware/request_logging.go`, and the Claude, Gemini and `/v1/alpha/search` handlers) supporting `gzip`, `br`, `zstd`, `deflate`, multi-coding chains, and magic-byte `gzip`/`zstd` detection. Decoded size is capped by `max-request-body-bytes`, or by default at 256 MiB in handlers and 32 MiB in the pre-auth request log copy; zstd request windows are capped at 8 MiB; `/v1/alpha/search` keeps its 16 MiB ceiling.
+     - Downstream HTTP & SSE response compression middleware (`internal/api/middleware/response_compression.go`) negotiating `zstd > br > gzip > deflate`, flushing stream encoders on every SSE flush, with small per-stream encoders (zstd 1 MiB window, brotli quality 5 / 256 KiB window), skipping image/video/audio/archive bodies and 206 responses and weakening strong `ETag`s, plus `EnableCompression: true` on `wsrelay` and `codex/live` WebSocket upgraders/dialers.
      - Upstream HTTP response decompression (`internal/runtime/executor/helps/response_compression.go`) across `codex`, `openai-compatibility`, `gemini`, `antigravity`, `kimi`, `xai`, and `meta` executors.
      - Upstream request body compression (`upstream.codex.upstream-request-compression`) defaulting to `zstd` level 3 for `chatgpt.com` `/responses` and `/responses/compact` bodies of at least 1024 bytes.
    - **Related Upstream Work**: PR [#5132](https://github.com/router-for-me/CLIProxyAPI/pull/5132), PR [#4461](https://github.com/router-for-me/CLIProxyAPI/pull/4461).
@@ -33,12 +33,12 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 3. **`patch/chatgpt-utls-pool`**
    - **Goal**: Reuse ChatGPT uTLS HTTP/2 connections and survive transient connection setup failures.
-   - **Scope**: `internal/runtime/executor/helps/utls_client.go` pools one HTTP/2 connection per host and proxy with a TLS session cache, retries dial/handshake failures up to 3 times before any request byte is sent, retries a pooled request on a new connection only when it was never sent (unusable connection or `REFUSED_STREAM`, body rewound through `GetBody`), retires replaced or failed connections gracefully, and closes idle pooled connections after 90 seconds.
+   - **Scope**: `internal/runtime/executor/helps/utls_client.go` pools one HTTP/2 connection per host and proxy with a TLS session cache, retries dial/handshake failures up to 3 times before any request byte is sent (an exhausted retry returns the raw transport error, so credentials are not cooled), retries a pooled request on a new connection only when it was never sent (unusable connection or `REFUSED_STREAM`, body rewound through `GetBody`), retires replaced or failed connections gracefully, and closes idle pooled connections after 90 seconds.
    - **Related Upstream Work**: PR [#5261](https://github.com/router-for-me/CLIProxyAPI/pull/5261), PR [#6398](https://github.com/router-for-me/CLIProxyAPI/pull/6398).
 
 4. **`patch/runtime-memory-bounds`**
    - **Goal**: Bound long-lived memory.
-   - **Scope**: Expire idle WebSocket tool-call and tool-output replay sessions after 1 hour (`openai_responses_websocket_toolcall_repair.go`), and stop retaining Codex `response.output_item.done` items for `response.completed` reconstruction past 16 MiB (`codex_executor_terminal.go`, `codex_executor_stream.go`).
+   - **Scope**: Expire WebSocket tool-call and tool-output replay sessions after 1 idle hour unless their WebSocket is still connected (`openai_responses_websocket_toolcall_repair.go`), and cap retained Codex `response.output_item.done` items for `response.completed` reconstruction at 16 MiB: past it, `image_generation_call` items (already streamed) are omitted first, and all items only if that is not enough (`codex_executor_terminal.go`, `codex_executor_stream.go`).
    - **Related Upstream Work**: PR [#5804](https://github.com/router-for-me/CLIProxyAPI/pull/5804).
 
 5. **`patch/startup-model-registration`**
@@ -73,7 +73,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 
 11. **`patch/claude-thinking-off`**
     - **Goal**: Turn Claude thinking off the way each model accepts.
-    - **Scope**: `claude-sonnet-5-5` uses `thinking.type: "between_tools"`; `claude-opus-5-5`, `claude-fable-5`, `claude-fable-5-1` cannot turn thinking off and fall back to their lowest adaptive level with `display: "omitted"`; dated and bracketed Claude variants resolve to their catalog entry. The facts live in `internal/registry/claude_thinking_facts.go` and are overlaid on every loaded catalog, because the release workflow and the runtime updater replace `models.json` with the remote catalog.
+    - **Scope**: `claude-sonnet-5-5` uses `thinking.type: "between_tools"`; `claude-opus-5-5`, `claude-fable-5`, `claude-fable-5-1` cannot turn thinking off (`DisableType: "none"`) and fall back to their lowest adaptive level with `display: "omitted"`; other Claude-format models keep `thinking.type: "disabled"`; dated and bracketed Claude variants resolve to their catalog entry. The facts live in `internal/registry/claude_thinking_facts.go` and are overlaid on every loaded catalog, because the release workflow and the runtime updater replace `models.json` with the remote catalog.
     - **Related Upstream Work**: PR [#6571](https://github.com/router-for-me/CLIProxyAPI/pull/6571), PR [#6570](https://github.com/router-for-me/CLIProxyAPI/pull/6570).
 
 12. **`patch/claude-search-recovery`**
@@ -95,7 +95,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Goal**: Visible and usable model access control globally and per client API key.
     - **Scope**:
       - `access.models` / `access.allowed-models` / `access.excluded-models` and per-key mapping entries in `access.api-keys`.
-      - Filter `/v1/models` and model detail endpoints; reject execution, count-tokens and Codex Realtime with `403 model_not_allowed`.
+      - Filter `/v1/models` and model detail endpoints; reject execution, count-tokens, `/v1/alpha/search` and Codex Realtime (checked on the requested model, before the upstream rewrite) with `403`; `auto` is also checked against the model it resolves to.
       - Struct-based config saves fold per-key rules back onto `access.api-keys` (`foldClientKeysIntoAPIKeys`); comments attached to those mapping entries are not preserved.
       - `GET /v8/management/models` lists servable models without client-key filtering.
     - **Known limits**: Rules match the requested model name, before alias and prefix resolution. A key with its own allow-list does not inherit the global exclusion list.
