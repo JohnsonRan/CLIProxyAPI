@@ -172,69 +172,92 @@ func TestClientUsageAuthsFiltersAndOrders(t *testing.T) {
 	}
 }
 
-func TestGetClientUsageDisabledReturnsNotFound(t *testing.T) {
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
+func serveClientUsage(t *testing.T, h *Handler, apiKey string) clientUsageResponse {
+	t.Helper()
 	rec := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rec)
 	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
-	h.GetClientUsage(ginCtx)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if apiKey != "" {
+		ginCtx.Set("userApiKey", apiKey)
 	}
-}
-
-func TestGetClientUsageServesCachedCredentials(t *testing.T) {
-	manager := coreauth.NewManager(nil, nil, nil)
-	oauth := map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindOAuth}
-	for _, auth := range []*coreauth.Auth{
-		{ID: "codex-a", Provider: "codex", Attributes: map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindOAuth, "note": "work"}, Metadata: map[string]any{"email": "secret@example.com"}},
-		{ID: "claude-a", Provider: "claude", Attributes: oauth},
-	} {
-		if _, err := manager.Register(context.Background(), auth); err != nil {
-			t.Fatalf("register %s: %v", auth.ID, err)
-		}
-	}
-	cfg := &config.Config{AuthDir: t.TempDir()}
-	cfg.QuotaAPI.Enabled = true
-	h := NewHandlerWithoutConfigFilePath(cfg, manager)
-	observedAt := time.Now().UTC()
-	h.clientUsage.entries = map[string]clientUsageCacheEntry{
-		"codex-a": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
-			observedAt: observedAt,
-			responses:  []clientUsageUpstream{{Endpoint: clientUsageCodexURL, StatusCode: 200, Body: json.RawMessage(`{"plan_type":"plus"}`)}},
-		}},
-		"claude-a": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
-			err: "auth token refresh failed", observedAt: observedAt,
-		}},
-		"deleted": {expiresAt: time.Now().Add(time.Hour)},
-	}
-
-	rec := httptest.NewRecorder()
-	ginCtx, _ := gin.CreateTestContext(rec)
-	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
 	h.GetClientUsage(ginCtx)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); containsAny(body, "secret@example.com", "codex-a", "claude-a", "remaining", "mode") {
+	if body := rec.Body.String(); containsAny(body, "secret@example.com", "null") {
 		t.Fatalf("unexpected content in response: %s", body)
 	}
 	var resp clientUsageResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Credentials) != 2 {
+	return resp
+}
+
+func newClientUsageTestHandler(t *testing.T, keys []config.QuotaAPIKey) *Handler {
+	t.Helper()
+	manager := coreauth.NewManager(nil, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{ID: "codex-a.json", Provider: "codex", Attributes: map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindOAuth, "note": "work"}, Metadata: map[string]any{"email": "secret@example.com"}},
+		{ID: "claude-a.json", Provider: "claude", Attributes: map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindOAuth}},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+	cfg := &config.Config{AuthDir: t.TempDir()}
+	cfg.QuotaAPI.Keys = keys
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+	observedAt := time.Now().UTC()
+	h.clientUsage.entries = map[string]clientUsageCacheEntry{
+		"codex-a.json": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
+			observedAt: observedAt,
+			responses:  []clientUsageUpstream{{Endpoint: clientUsageCodexURL, StatusCode: 200, Body: json.RawMessage(`{"plan_type":"plus"}`)}},
+		}},
+		"claude-a.json": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
+			err: "auth token refresh failed", observedAt: observedAt,
+		}},
+		"deleted.json": {expiresAt: time.Now().Add(time.Hour)},
+	}
+	return h
+}
+
+// Keys see nothing unless credentials were selected for them.
+func TestGetClientUsageDefaultInvisible(t *testing.T) {
+	h := newClientUsageTestHandler(t, []config.QuotaAPIKey{{APIKey: "sk-other", Credentials: []string{"codex-a.json"}}})
+	for _, key := range []string{"", "sk-unlisted"} {
+		if resp := serveClientUsage(t, h, key); len(resp.Credentials) != 0 {
+			t.Fatalf("key %q sees %+v", key, resp.Credentials)
+		}
+	}
+}
+
+func TestGetClientUsageReturnsSelectedCredentialsOnly(t *testing.T) {
+	h := newClientUsageTestHandler(t, []config.QuotaAPIKey{
+		{APIKey: "sk-a", Credentials: []string{"codex-a.json", "missing.json"}},
+		{APIKey: "sk-b", Credentials: []string{"claude-a.json"}},
+	})
+	resp := serveClientUsage(t, h, "sk-a")
+	if len(resp.Credentials) != 1 {
 		t.Fatalf("credentials = %+v", resp.Credentials)
 	}
-	claude, codex := resp.Credentials[0], resp.Credentials[1]
-	if claude.Name != "claude" || claude.Status != "error" || claude.Error != "auth token refresh failed" || claude.Responses == nil {
-		t.Fatalf("claude credential = %+v", claude)
-	}
+	codex := resp.Credentials[0]
 	if codex.Name != "work" || codex.Provider != "codex" || codex.Status != "ok" || len(codex.Responses) != 1 || string(codex.Responses[0].Body) != `{"plan_type":"plus"}` {
 		t.Fatalf("codex credential = %+v", codex)
 	}
-	if _, ok := h.clientUsage.entries["deleted"]; ok {
+	resp = serveClientUsage(t, h, "sk-b")
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("credentials = %+v", resp.Credentials)
+	}
+	claude := resp.Credentials[0]
+	if claude.Name != "claude" || claude.Status != "error" || claude.Error != "auth token refresh failed" || claude.Responses == nil {
+		t.Fatalf("claude credential = %+v", claude)
+	}
+	if _, ok := h.clientUsage.entries["deleted.json"]; ok {
 		t.Fatal("cache kept a removed credential")
+	}
+	if _, ok := h.clientUsage.entries["codex-a.json"]; !ok {
+		t.Fatal("serving one key evicted another key's cached credential")
 	}
 }
 

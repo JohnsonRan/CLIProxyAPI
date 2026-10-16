@@ -1156,13 +1156,19 @@ observability:
     request-log: false
 
   # Client-facing OAuth quota endpoint (GET /v1/usage).
-  # Any valid client API key can read the upstream quota responses of every Codex, Claude,
-  # Antigravity and xAI OAuth credential, as returned upstream minus email, user and account IDs.
-  # Credentials are named by their note, or by provider when no note is set.
+  # A client API key reads the upstream quota responses of the Codex, Claude, Antigravity and
+  # xAI OAuth credentials selected for it below, as returned upstream minus email, user and
+  # account IDs. Keys that are not listed get an empty list. Credentials are named by their
+  # note, or by provider when no note is set.
   quota-api:
-    enabled: false
     # How long upstream quota results are reused. Default: 300. Minimum: 30.
     # cache-ttl-seconds: 300
+    # Client API keys and the auth IDs (auth file names) each of them may read.
+    keys: []
+    # keys:
+    #   - api-key: "your-api-key-1"
+    #     credentials:
+    #       - "codex-user@example.com-plus.json"
 
   usage:
     # When false, disable in-memory usage statistics aggregation
