@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	commandcodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/commandcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
@@ -221,6 +222,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"xai",
 		"devin",
 		"meta",
+		commandcodeauth.ProviderKey,
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -326,6 +328,10 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "meta":
 		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+	case commandcodeauth.ProviderKey:
+		// Command Code's Provider API is OpenAI-compatible; the credential carries
+		// base_url and api_key attributes.
+		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(commandcodeauth.ProviderKey, cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	commandcodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/commandcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -190,6 +191,24 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	case "devin":
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
+	case commandcodeauth.ProviderKey:
+		models = applyExcludedModels(commandCodeModels.get(ctx, cfg, a), excluded)
+		models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
+		models = s.appendPluginModels(provider, models)
+		if len(models) == 0 {
+			s.unregisterModelsForAuthFenced(a, fence)
+			return
+		}
+		models = applyOAuthSettingsForAuth(cfg, provider, authKind, models)
+		// Always publish prefixed IDs only: unprefixed gpt-*, kimi-* or grok-*
+		// would otherwise share routing with the native providers and spend
+		// Command Code credits for their requests.
+		prefix := a.Prefix
+		if prefix == "" {
+			prefix = commandcodeauth.DefaultModelPrefix
+		}
+		s.registerResolvedModelsForAuthFenced(a, fence, provider, applyModelPrefixes(models, prefix, true))
+		return
 	case "meta":
 		models = registry.GetMetaModels()
 		if entry := resolveConfigMetaKeyForConfig(cfg, a); entry != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	commandcodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/commandcode"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -253,6 +254,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
 		}
 	}
+	if provider == commandcodeauth.ProviderKey {
+		applyCommandCodeAttributes(a, metadata)
+	}
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
 		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
@@ -363,4 +367,34 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// applyCommandCodeAttributes exposes a Command Code login credential to the
+// OpenAI-compatible executor (base_url, api_key) while keeping it an OAuth-kind
+// credential, and defaults the model prefix the registration publishes under.
+func applyCommandCodeAttributes(a *coreauth.Auth, metadata map[string]any) {
+	baseURL, _ := metadata["base_url"].(string)
+	if baseURL = strings.TrimSpace(baseURL); baseURL == "" {
+		baseURL = commandcodeauth.ProviderBaseURL
+	}
+	a.Attributes["base_url"] = baseURL
+	if apiKey, _ := metadata["api_key"].(string); strings.TrimSpace(apiKey) != "" {
+		a.Attributes[coreauth.AttributeAPIKey] = strings.TrimSpace(apiKey)
+	}
+	a.Attributes[coreauth.AttributeAuthKind] = coreauth.AuthKindOAuth
+	if a.Prefix == "" {
+		a.Prefix = commandcodeauth.DefaultModelPrefix
+	}
+	if label := commandCodeLabel(metadata); label != "" && a.Label == commandcodeauth.ProviderKey {
+		a.Label = label
+	}
+}
+
+func commandCodeLabel(metadata map[string]any) string {
+	for _, key := range []string{"email", "user_name", "user_id"} {
+		if v, _ := metadata[key].(string); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
