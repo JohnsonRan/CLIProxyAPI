@@ -200,14 +200,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			return
 		}
 		models = applyOAuthSettingsForAuth(cfg, provider, authKind, models)
-		// Always publish prefixed IDs only: unprefixed gpt-*, kimi-* or grok-*
-		// would otherwise share routing with the native providers and spend
-		// Command Code credits for their requests.
-		prefix := a.Prefix
-		if prefix == "" {
-			prefix = commandcodeauth.DefaultModelPrefix
-		}
-		s.registerResolvedModelsForAuthFenced(a, fence, provider, applyModelPrefixes(models, prefix, true))
+		s.registerResolvedModelsForAuthFenced(a, fence, provider, applyModelPrefixes(models, a.Prefix, cfg != nil && cfg.ForceModelPrefix))
 		return
 	case "meta":
 		models = registry.GetMetaModels()

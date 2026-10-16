@@ -31,9 +31,6 @@ const (
 	APIBaseURL = "https://api.commandcode.ai"
 	// ProviderBaseURL is the OpenAI-compatible Provider API base URL.
 	ProviderBaseURL = APIBaseURL + "/provider/v1"
-	// DefaultModelPrefix keeps Command Code models apart from same-named models
-	// of other providers (for example gpt-* on Codex or claude-* on Claude).
-	DefaultModelPrefix = ProviderKey
 	// CallbackPort is the loopback port registered as the Studio callback.
 	CallbackPort = 54546
 	// CallbackPath is the path Studio redirects to on the loopback port.

@@ -54,8 +54,8 @@ func TestFileSynthesizer_Synthesize_CommandCode(t *testing.T) {
 	if got := auth.AuthKind(); got != coreauth.AuthKindOAuth {
 		t.Fatalf("auth kind = %q, want oauth", got)
 	}
-	if auth.Prefix != "commandcode" {
-		t.Fatalf("prefix = %q, want commandcode", auth.Prefix)
+	if auth.Prefix != "" {
+		t.Fatalf("prefix = %q, want empty", auth.Prefix)
 	}
 	if auth.Label != "alice" {
 		t.Fatalf("label = %q, want alice", auth.Label)
