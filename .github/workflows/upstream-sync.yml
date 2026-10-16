@@ -42,7 +42,6 @@ env:
     patch/codex-app-keepalive
     patch/runtime-gc-tuning
     patch/summary-config-single-scan
-    patch/claude-responses-request-validate-once
     patch/management-key-bcrypt-cache
     patch/pgo
     patch/quota-api
