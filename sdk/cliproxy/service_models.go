@@ -193,15 +193,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = applyExcludedModels(models, excluded)
 	case commandcodeauth.ProviderKey:
 		models = applyExcludedModels(commandCodeModels.get(ctx, cfg, a), excluded)
-		models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
-		models = s.appendPluginModels(provider, models)
-		if len(models) == 0 {
-			s.unregisterModelsForAuthFenced(a, fence)
-			return
-		}
-		models = applyOAuthSettingsForAuth(cfg, provider, authKind, models)
-		s.registerResolvedModelsForAuthFenced(a, fence, provider, applyModelPrefixes(models, a.Prefix, cfg != nil && cfg.ForceModelPrefix))
-		return
 	case "meta":
 		models = registry.GetMetaModels()
 		if entry := resolveConfigMetaKeyForConfig(cfg, a); entry != nil {
