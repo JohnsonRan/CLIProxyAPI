@@ -24,6 +24,8 @@ access:
     - api-key: removed-key
       models:
         - claude-*
+    - api-key: named-key
+      name: Alice
 `
 	if errWrite := os.WriteFile(path, []byte(source), 0o600); errWrite != nil {
 		t.Fatal(errWrite)
@@ -35,7 +37,7 @@ access:
 
 	// An unrelated change plus a key removal, as a legacy endpoint would make.
 	cfg.Debug = !cfg.Debug
-	cfg.APIKeys = []string{"plain-key", "scoped-key"}
+	cfg.APIKeys = []string{"plain-key", "scoped-key", "named-key"}
 	if errSave := SaveConfigPreserveComments(path, cfg, true); errSave != nil {
 		t.Fatalf("save: %v", errSave)
 	}
@@ -70,7 +72,18 @@ access:
 	if reloaded.HasClientModelRestrictions("plain-key") {
 		t.Fatalf("plain-key gained restrictions after save:\n%s", saved)
 	}
-	if got := strings.Join(reloaded.APIKeys, ","); got != "plain-key,scoped-key" {
-		t.Fatalf("APIKeys = %q, want plain-key,scoped-key", got)
+	if got := strings.Join(reloaded.APIKeys, ","); got != "plain-key,scoped-key,named-key" {
+		t.Fatalf("APIKeys = %q, want plain-key,scoped-key,named-key", got)
+	}
+	// A name alone keeps the entry a mapping but adds no model restriction.
+	if reloaded.HasClientModelRestrictions("named-key") {
+		t.Fatalf("named-key gained restrictions from its name:\n%s", saved)
+	}
+	names := map[string]string{}
+	for _, entry := range reloaded.ClientKeys {
+		names[entry.APIKey] = entry.Name
+	}
+	if names["named-key"] != "Alice" || names["plain-key"] != "" {
+		t.Fatalf("client key names after save = %v:\n%s", names, saved)
 	}
 }

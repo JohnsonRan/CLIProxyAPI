@@ -9,6 +9,9 @@ type ClientKeyConfig struct {
 	// APIKey is the client authentication key.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Name is an optional display name for management clients. It does not affect access.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	// Models lists visible and usable model IDs or patterns (e.g. "gpt-4o", "claude-*").
 	// When non-empty, only matching models are visible and usable for this API key.
 	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
@@ -69,6 +72,7 @@ func (cfg *Config) SanitizeClientKeys() {
 			continue
 		}
 		seen[entry.APIKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Models = NormalizeExcludedModels(entry.Models)
 		entry.AllowedModels = NormalizeExcludedModels(entry.AllowedModels)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
