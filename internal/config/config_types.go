@@ -398,6 +398,16 @@ type RemoteManagement struct {
 	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 }
 
+// QuotaAPIConfig controls the client-facing GET /v1/usage quota endpoint.
+type QuotaAPIConfig struct {
+	// Enabled exposes OAuth credential quota to authenticated client API keys. Default: false.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// CacheTTLSeconds controls how long upstream quota results are reused.
+	// Default: 300. Minimum: 30.
+	CacheTTLSeconds int `yaml:"cache-ttl-seconds,omitempty" json:"cache-ttl-seconds,omitempty"`
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {
