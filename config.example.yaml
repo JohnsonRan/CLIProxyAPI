@@ -1155,6 +1155,14 @@ observability:
     # Record proxy request/response logs. Management requests are excluded.
     request-log: false
 
+  # Client-facing OAuth quota endpoint (GET /v1/usage, Sub2API-compatible shape).
+  # Any valid client API key can read the quota of every Codex, Claude, Antigravity and xAI
+  # OAuth credential. Credentials are shown as "<provider>#<n>" without account details.
+  quota-api:
+    enabled: false
+    # How long upstream quota results are reused. Default: 300. Minimum: 30.
+    # cache-ttl-seconds: 300
+
   usage:
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false
