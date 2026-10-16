@@ -20,6 +20,9 @@ const (
 	// commandCodeCatalogTimeout bounds the metadata request so a hung upstream
 	// cannot pin model registration.
 	commandCodeCatalogTimeout = 30 * time.Second
+	// commandCodeCatalogRetry spaces out refetches after a failed attempt so an
+	// unreachable upstream does not stall every registration batch.
+	commandCodeCatalogRetry = time.Minute
 )
 
 type commandCodeCatalogFetcher func(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) ([]*registry.ModelInfo, error)
@@ -30,6 +33,7 @@ type commandCodeModelCatalog struct {
 	mu        sync.Mutex
 	models    []*registry.ModelInfo
 	fetchedAt time.Time
+	attempted time.Time
 	now       func() time.Time
 	fetch     commandCodeCatalogFetcher
 }
@@ -47,7 +51,8 @@ func fetchCommandCodeCatalog(ctx context.Context, cfg *config.Config, auth *core
 }
 
 // get returns a copy of the catalog, refetching it when it is missing or older
-// than commandCodeCatalogTTL. A failed fetch keeps the last good catalog.
+// than commandCodeCatalogTTL. A failed fetch keeps the last good catalog and
+// is not retried for commandCodeCatalogRetry.
 func (c *commandCodeModelCatalog) get(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) []*registry.ModelInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -55,7 +60,9 @@ func (c *commandCodeModelCatalog) get(ctx context.Context, cfg *config.Config, a
 	if c.now != nil {
 		now = c.now
 	}
-	if c.models == nil || now().Sub(c.fetchedAt) >= commandCodeCatalogTTL {
+	due := c.models == nil || now().Sub(c.fetchedAt) >= commandCodeCatalogTTL
+	if due && (c.attempted.IsZero() || now().Sub(c.attempted) >= commandCodeCatalogRetry) {
+		c.attempted = now()
 		fetchCtx, cancel := context.WithTimeout(ctx, commandCodeCatalogTimeout)
 		models, errFetch := c.fetch(fetchCtx, cfg, auth)
 		cancel()
