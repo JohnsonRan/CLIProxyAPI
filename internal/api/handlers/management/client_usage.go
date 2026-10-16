@@ -26,6 +26,10 @@ const (
 	clientUsageCredentialFailure = "error"
 )
 
+// clientUsageProbeSlots bounds upstream quota probes in flight across all
+// /v1/usage requests, not just within one.
+var clientUsageProbeSlots = make(chan struct{}, clientUsageProbeConcurrency)
+
 // clientUsageUpstream is one upstream quota response. Body is the upstream
 // JSON as returned, minus the account identifiers in clientUsageRedactedKeys.
 type clientUsageUpstream struct {
@@ -222,15 +226,14 @@ func clientUsageAuths(list []*coreauth.Auth) []*coreauth.Auth {
 
 func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, probe func(*coreauth.Auth) clientUsageProbeResult) []clientUsageProbeResult {
 	results := make([]clientUsageProbeResult, len(auths))
-	sem := make(chan struct{}, clientUsageProbeConcurrency)
 	var wg sync.WaitGroup
 	for i, auth := range auths {
 		wg.Add(1)
 		go func(index int, candidate *coreauth.Auth) {
 			defer wg.Done()
 			results[index] = h.clientUsage.get(candidate.ID, ttl, func() clientUsageProbeResult {
-				sem <- struct{}{}
-				defer func() { <-sem }()
+				clientUsageProbeSlots <- struct{}{}
+				defer func() { <-clientUsageProbeSlots }()
 				return probe(candidate)
 			})
 		}(i, auth)
