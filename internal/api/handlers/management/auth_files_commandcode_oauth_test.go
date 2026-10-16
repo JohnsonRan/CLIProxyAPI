@@ -97,7 +97,6 @@ func TestBuildCommandCodeAuthRecordSavesLoginMetadata(t *testing.T) {
 		"type":             "commandcode",
 		"api_key":          "user_secret",
 		"base_url":         "https://api.commandcode.ai/provider/v1",
-		"prefix":           "commandcode",
 		"auth_kind":        "oauth",
 		"email":            "alice@example.com",
 		"user_id":          "u1",
@@ -109,5 +108,8 @@ func TestBuildCommandCodeAuthRecordSavesLoginMetadata(t *testing.T) {
 		if got, _ := saved[key].(string); got != value {
 			t.Errorf("saved[%q] = %q, want %q", key, got, value)
 		}
+	}
+	if _, ok := saved["prefix"]; ok {
+		t.Errorf("saved file should not force a model prefix, got %v", saved["prefix"])
 	}
 }

@@ -540,7 +540,7 @@ func ExtractExcludedModelsFromMetadata(metadata map[string]any) ([]string, error
 
 // applyCommandCodeAttributes exposes a Command Code login credential to the
 // OpenAI-compatible executor (base_url, api_key) while keeping it an OAuth-kind
-// credential, and defaults the model prefix the registration publishes under.
+// credential.
 func applyCommandCodeAttributes(a *coreauth.Auth, metadata map[string]any) {
 	baseURL, _ := metadata["base_url"].(string)
 	if baseURL = strings.TrimSpace(baseURL); baseURL == "" {
@@ -551,9 +551,6 @@ func applyCommandCodeAttributes(a *coreauth.Auth, metadata map[string]any) {
 		a.Attributes[coreauth.AttributeAPIKey] = strings.TrimSpace(apiKey)
 	}
 	a.Attributes[coreauth.AttributeAuthKind] = coreauth.AuthKindOAuth
-	if a.Prefix == "" {
-		a.Prefix = commandcodeauth.DefaultModelPrefix
-	}
 	if label := commandCodeLabel(metadata); label != "" && a.Label == commandcodeauth.ProviderKey {
 		a.Label = label
 	}

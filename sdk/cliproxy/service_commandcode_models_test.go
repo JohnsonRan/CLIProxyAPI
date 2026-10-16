@@ -19,7 +19,7 @@ func stubCommandCodeCatalog(t *testing.T, fetch commandCodeCatalogFetcher) {
 	t.Cleanup(func() { commandCodeModels = previous })
 }
 
-func TestRegisterModelsForAuthCommandCodePublishesPrefixedModelsOnly(t *testing.T) {
+func TestRegisterModelsForAuthCommandCodeRespectsPrefixConfig(t *testing.T) {
 	stubCommandCodeCatalog(t, func(context.Context, *config.Config, *coreauth.Auth) ([]*internalregistry.ModelInfo, error) {
 		return commandcodeauth.ParseModels([]byte(`{"data":[
 			{"id":"gpt-6-luna","supported_endpoints":["/chat/completions","/responses"]},
@@ -28,36 +28,51 @@ func TestRegisterModelsForAuthCommandCodePublishesPrefixedModelsOnly(t *testing.
 		]}`), 1), nil
 	})
 
-	const authID = "commandcode-registration-test"
-	modelRegistry := internalregistry.GetGlobalRegistry()
-	modelRegistry.UnregisterClient(authID)
-	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
-
-	service := &Service{cfg: &config.Config{}}
-	service.registerModelsForAuth(context.Background(), &coreauth.Auth{
-		ID:       authID,
-		Provider: commandcodeauth.ProviderKey,
-		Prefix:   commandcodeauth.DefaultModelPrefix,
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			coreauth.AttributeAuthKind: coreauth.AuthKindOAuth,
-			coreauth.AttributeAPIKey:   "user_test",
-			"base_url":                 commandcodeauth.ProviderBaseURL,
-		},
-	})
-
-	got := map[string]bool{}
-	for _, model := range modelRegistry.GetModelsForClient(authID) {
-		got[model.ID] = true
+	tests := []struct {
+		name   string
+		prefix string
+		force  bool
+		want   []string
+	}{
+		{name: "no prefix", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro"}},
+		{name: "prefix", prefix: "cc", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro", "cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro"}},
+		{name: "forced prefix", prefix: "cc", force: true, want: []string{"cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro"}},
 	}
-	want := []string{"commandcode/gpt-6-luna", "commandcode/deepseek/deepseek-v4-pro"}
-	if len(got) != len(want) {
-		t.Fatalf("registered models = %v, want %v", got, want)
-	}
-	for _, id := range want {
-		if !got[id] {
-			t.Errorf("missing registered model %q (got %v)", id, got)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const authID = "commandcode-registration-test"
+			modelRegistry := internalregistry.GetGlobalRegistry()
+			modelRegistry.UnregisterClient(authID)
+			t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+
+			cfg := &config.Config{}
+			cfg.ForceModelPrefix = tc.force
+			service := &Service{cfg: cfg}
+			service.registerModelsForAuth(context.Background(), &coreauth.Auth{
+				ID:       authID,
+				Provider: commandcodeauth.ProviderKey,
+				Prefix:   tc.prefix,
+				Status:   coreauth.StatusActive,
+				Attributes: map[string]string{
+					coreauth.AttributeAuthKind: coreauth.AuthKindOAuth,
+					coreauth.AttributeAPIKey:   "user_test",
+					"base_url":                 commandcodeauth.ProviderBaseURL,
+				},
+			})
+
+			got := map[string]bool{}
+			for _, model := range modelRegistry.GetModelsForClient(authID) {
+				got[model.ID] = true
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("registered models = %v, want %v", got, tc.want)
+			}
+			for _, id := range tc.want {
+				if !got[id] {
+					t.Errorf("missing registered model %q (got %v)", id, got)
+				}
+			}
+		})
 	}
 }
 
