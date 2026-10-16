@@ -152,11 +152,28 @@ func TestAggregateClientUsage(t *testing.T) {
 	if resp.RateLimits[1].Window != "7d" || resp.RateLimits[1].Remaining != 90 || resp.RateLimits[1].Credentials != 1 {
 		t.Fatalf("7d aggregate = %+v", resp.RateLimits[1])
 	}
-	if resp.Remaining == nil || *resp.Remaining != 50 {
+	if resp.Remaining != 50 {
 		t.Fatalf("top remaining = %v, want 50", resp.Remaining)
 	}
-	if resp.Mode != "quota_limited" || !resp.IsValid || resp.Unit != "%" {
+	if resp.Quota != (clientUsageQuota{Limit: 100, Used: 50, Remaining: 50, Unit: "%"}) {
+		t.Fatalf("quota = %+v", resp.Quota)
+	}
+	if resp.Mode != "quota_limited" || !resp.IsValid || resp.Status != "active" || resp.Unit != "%" {
 		t.Fatalf("envelope = %+v", resp)
+	}
+}
+
+// Every credential failing must still yield a numeric balance, otherwise
+// clients such as Minis treat the relay as having no balance endpoint.
+func TestBuildClientUsageResponseAllFailed(t *testing.T) {
+	resp := buildClientUsageResponse([]clientUsageCredential{
+		{Name: "codex#1", Status: clientUsageCredentialFailure, Windows: []clientUsageWindow{}},
+	})
+	if !resp.IsValid || resp.Remaining != 0 || len(resp.RateLimits) != 0 {
+		t.Fatalf("envelope = %+v", resp)
+	}
+	if resp.Quota != (clientUsageQuota{Limit: 100, Used: 100, Remaining: 0, Unit: "%"}) {
+		t.Fatalf("quota = %+v", resp.Quota)
 	}
 }
 
@@ -169,8 +186,14 @@ func TestBuildClientUsageResponseEmptyPool(t *testing.T) {
 	if err = json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := payload["remaining"]; ok {
-		t.Fatalf("empty pool must omit remaining: %s", raw)
+	if remaining, ok := payload["remaining"].(float64); !ok || remaining != 0 {
+		t.Fatalf("empty pool must report remaining 0: %s", raw)
+	}
+	if quota, ok := payload["quota"].(map[string]any); !ok || quota["remaining"] != float64(0) || quota["limit"] != float64(100) || quota["unit"] != "%" {
+		t.Fatalf("empty pool must report a quota object: %s", raw)
+	}
+	if payload["isValid"] != false || payload["status"] != "unavailable" {
+		t.Fatalf("empty pool must be flagged unavailable: %s", raw)
 	}
 	if creds, ok := payload["credentials"].([]any); !ok || len(creds) != 0 {
 		t.Fatalf("credentials must be an empty array: %s", raw)
@@ -328,7 +351,7 @@ func TestGetClientUsageServesCachedCredentials(t *testing.T) {
 	if resp.Credentials[1].Name != "codex#1" || resp.Credentials[1].Plan != "plus" || len(resp.Credentials[1].Windows) != 1 {
 		t.Fatalf("codex credential = %+v", resp.Credentials[1])
 	}
-	if resp.Remaining == nil || *resp.Remaining != 70 || len(resp.RateLimits) != 1 {
+	if resp.Remaining != 70 || resp.Quota.Remaining != 70 || len(resp.RateLimits) != 1 {
 		t.Fatalf("aggregate = %+v remaining=%v", resp.RateLimits, resp.Remaining)
 	}
 	if _, ok := h.clientUsage.entries["deleted"]; ok {
