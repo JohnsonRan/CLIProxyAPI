@@ -203,6 +203,13 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
       ```
     - **Retire when**: Upstream ships a `default.pgo`.
 
+30. **`patch/quota-api`**
+    - **Goal**: Let client API key holders read the OAuth credential pool's quota, in the Sub2API `GET /v1/usage` shape that CC Switch and OpenMinis (1.15-beta "relay services") read.
+    - **Scope**: `GetClientUsage` (`internal/api/handlers/management/client_usage.go`) is registered on the `/v1` group behind the normal client-key auth and answers 404 unless `observability.quota-api.enabled` is true (default false). It probes every enabled OAuth credential of `codex`, `claude`, `antigravity` and `xai` with the panel's upstream endpoints and headers (`client_usage_providers.go`), reusing api-call token resolution and proxy transport. Results are cached per credential for `cache-ttl-seconds` (default 300, minimum 30, failures included) and concurrent probes are collapsed with singleflight; removed credentials are pruned. The response is `mode: quota_limited`, `unit: "%"`; `rate_limits` averages each window length across healthy credentials (account-wide window first, else the tightest scoped one), `remaining` is the tightest aggregate, and `credentials[]` lists every credential as `<provider>#<n>` (ordered by provider and ID) with its windows, plan and a sanitized error. No account identifiers or upstream bodies are returned.
+    - **Known limits**: Any valid client key sees the whole pool. Numbering shifts when credentials are added or removed. Paid xAI accounts without billing data report an error (the panel's chat ping is not replicated). Each probe is bounded by a 20 s timeout (listed in `AGENTS.md`). OpenMinis' exact field use is unverified because its 1.15 source is unpublished.
+    - **Related Upstream Work**: None found (searched quota endpoint, `v1/usage`, 额度, sub2api usage on 2026-10-16). Issue [#6519](https://github.com/router-for-me/CLIProxyAPI/issues/6519) concerns the management plugin quota contract only.
+    - **Retire when**: Upstream exposes credential quota to client keys.
+
 ## Combination Conflicts
 
 Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
@@ -218,7 +225,7 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/claude-responses-request-validate-once patch/management-key-bcrypt-cache patch/pgo)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/claude-responses-request-validate-once patch/management-key-bcrypt-cache patch/pgo patch/quota-api)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
