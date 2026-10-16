@@ -198,32 +198,6 @@ func (s *Server) setupRoutes() {
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
 
-	// Command Code returns the API key itself (apiKey) instead of an authorization code.
-	s.engine.GET("/commandcode/callback", func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store")
-		state := strings.TrimSpace(c.Query("state"))
-		apiKey := strings.TrimSpace(c.Query("apiKey"))
-		errStr := strings.TrimSpace(c.Query("error"))
-		if errStr == "" {
-			errStr = strings.TrimSpace(c.Query("error_description"))
-		}
-		if apiKey == "" && errStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "apiKey or error is required"})
-			return
-		}
-		cfg := s.getConfig()
-		authDir := ""
-		if cfg != nil {
-			authDir = cfg.AuthDir
-		}
-		if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(authDir, "commandcode", state, apiKey, errStr); errWrite != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or expired OAuth callback"})
-			return
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
 	devinCallbackHandler := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		code := strings.TrimSpace(c.Query("code"))

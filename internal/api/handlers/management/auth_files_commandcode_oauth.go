@@ -25,11 +25,11 @@ var commandCodeFetchAccount = commandcodeauth.FetchAccount
 
 // RequestCommandCodeToken starts the Command Code browser login.
 //
-// Studio redirects to http://127.0.0.1:<CallbackPort>/callback with the API key
-// in the query. For web UI requests a forwarder on that port relays the
-// callback to /commandcode/callback; otherwise the user pastes the redirect URL
-// into POST /oauth/callback. The key is validated with /alpha/whoami before it
-// is saved.
+// Studio posts the API key to http://127.0.0.1:<CallbackPort>/callback. For web
+// UI requests a callback server on that port records it for the pending
+// session; otherwise (or when the browser cannot reach the server) the user
+// submits the callback URL, payload or API key through POST /oauth/callback.
+// The key is validated with /alpha/whoami before it is saved.
 func (h *Handler) RequestCommandCodeToken(c *gin.Context) {
 	ctx := PopulateAuthContext(context.Background(), c)
 	provider := commandcodeauth.ProviderKey
@@ -47,14 +47,8 @@ func (h *Handler) RequestCommandCodeToken(c *gin.Context) {
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
 	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/commandcode/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute command code callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
 		var errStart error
-		if forwarder, errStart = startCallbackForwarder(commandcodeauth.CallbackPort, provider, targetURL); errStart != nil {
+		if forwarder, errStart = startCallbackServer(commandcodeauth.CallbackPort, provider, commandCodeCallbackHandler(h.cfg.AuthDir)); errStart != nil {
 			log.WithError(errStart).Error("failed to start command code callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
