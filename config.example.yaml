@@ -133,8 +133,9 @@ access:
     - "your-api-key-1"
     - "your-api-key-2"
     - "your-api-key-3"
-    # Example: per-client API key with custom model restrictions
+    # Example: per-client API key with a display name and custom model restrictions
     # - api-key: "client-key-custom"
+    #   name: "Alice" # optional, shown by the management panel; does not affect access
     #   models: # only these models are visible and usable for this key
     #     - "gpt-4o"
     #     - "gpt-4o-mini"
