@@ -47,6 +47,7 @@ env:
     patch/quota-api
     patch/responses-tool-identity-lite
     patch/commandcode-oauth
+    patch/session-claude-identity-once
 
 jobs:
   sync-main-with-squash-branches:
