@@ -36,14 +36,15 @@ var clientUsageAntigravityURLs = []string{
 	"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 }
 
-// clientUsageRedactedKeys are account identifiers removed, at any depth, from
-// upstream bodies before they reach client API key holders.
+// clientUsageRedactedKeys are account identifiers removed, at any depth and
+// in any letter case, from upstream bodies before they reach client API key
+// holders. Keys are stored lower-cased.
 var clientUsageRedactedKeys = map[string]struct{}{
 	"email":      {},
 	"user_id":    {},
-	"userId":     {},
+	"userid":     {},
 	"account_id": {},
-	"accountId":  {},
+	"accountid":  {},
 }
 
 // clientUsageRequest sends one quota request and records the upstream
@@ -67,6 +68,7 @@ func (h *Handler) clientUsageRequest(ctx context.Context, auth *coreauth.Auth, t
 	client := &http.Client{Transport: h.apiCallTransport(auth, "")}
 	resp, errDo := client.Do(req)
 	if errDo != nil {
+		log.WithFields(log.Fields{"provider": clientUsageProvider(auth), "auth_id": auth.ID, "endpoint": targetURL}).WithError(errDo).Debug("client usage: upstream quota request failed")
 		result.Error = "upstream quota request failed"
 		return result
 	}
@@ -119,7 +121,7 @@ func redactClientUsageValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, item := range typed {
-			if _, redacted := clientUsageRedactedKeys[key]; redacted {
+			if _, redacted := clientUsageRedactedKeys[strings.ToLower(key)]; redacted {
 				delete(typed, key)
 				continue
 			}
