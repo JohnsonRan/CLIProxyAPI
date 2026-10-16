@@ -2,7 +2,7 @@
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)
 
-> **Downstream Fork Notice**: This repository carries downstream patches on top of [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI): end-to-end HTTP/SSE/WS compression, HTTP incremental Responses and the HTTP-to-WebSocket Codex bridge, embeddings and rerank endpoints, per-client-key model access control, Claude and Codex reliability fixes, this fork's management panel by default, and multi-arch GHCR images. See [`MAINTAIN.md`](MAINTAIN.md) for patch branches, sync order, and maintenance rules.
+> **Downstream Fork Notice**: This repository carries downstream patches on top of [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI): end-to-end HTTP/SSE/WS compression, HTTP incremental Responses and the HTTP-to-WebSocket Codex bridge, embeddings and rerank endpoints, per-client-key model access control, an opt-in client quota endpoint (`GET /v1/usage`), Claude and Codex reliability fixes, this fork's management panel by default, and multi-arch GHCR images. See [`MAINTAIN.md`](MAINTAIN.md) for patch branches, sync order, and maintenance rules.
 
 If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
 

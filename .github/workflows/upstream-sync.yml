@@ -45,6 +45,7 @@ env:
     patch/claude-responses-request-validate-once
     patch/management-key-bcrypt-cache
     patch/pgo
+    patch/quota-api
 
 jobs:
   sync-main-with-squash-branches:
