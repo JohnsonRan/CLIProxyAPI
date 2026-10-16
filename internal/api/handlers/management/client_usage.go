@@ -67,15 +67,26 @@ type clientUsageAggregate struct {
 	seconds int64
 }
 
+// clientUsageQuota mirrors the Sub2API quota_limited "quota" object, which
+// strict clients require before they accept the response as a balance.
+type clientUsageQuota struct {
+	Limit     float64 `json:"limit"`
+	Used      float64 `json:"used"`
+	Remaining float64 `json:"remaining"`
+	Unit      string  `json:"unit"`
+}
+
 // clientUsageResponse follows the Sub2API /v1/usage quota_limited shape and
-// extends it with per-credential details.
+// extends it with per-credential details. Remaining and Quota are always
+// present so clients can read a balance even when no credential is healthy.
 type clientUsageResponse struct {
 	Mode        string                  `json:"mode"`
 	IsValid     bool                    `json:"isValid"`
 	Status      string                  `json:"status"`
 	PlanName    string                  `json:"planName"`
 	Unit        string                  `json:"unit"`
-	Remaining   *float64                `json:"remaining,omitempty"`
+	Remaining   float64                 `json:"remaining"`
+	Quota       clientUsageQuota        `json:"quota"`
 	RateLimits  []clientUsageAggregate  `json:"rate_limits,omitempty"`
 	Credentials []clientUsageCredential `json:"credentials"`
 }
@@ -358,11 +369,24 @@ func buildClientUsageResponse(credentials []clientUsageCredential) clientUsageRe
 		RateLimits:  aggregateClientUsage(credentials),
 		Credentials: credentials,
 	}
-	for _, aggregate := range resp.RateLimits {
-		if resp.Remaining == nil || aggregate.Remaining < *resp.Remaining {
-			remaining := aggregate.Remaining
-			resp.Remaining = &remaining
+	if len(credentials) == 0 {
+		// Nothing to report: flag the relay instead of showing a fake 0%.
+		resp.IsValid = false
+		resp.Status = "unavailable"
+	}
+	// Without a healthy credential the pool has nothing usable left.
+	remaining := 0.0
+	for i, aggregate := range resp.RateLimits {
+		if i == 0 || aggregate.Remaining < remaining {
+			remaining = aggregate.Remaining
 		}
+	}
+	resp.Remaining = remaining
+	resp.Quota = clientUsageQuota{
+		Limit:     clientUsagePercentLimit,
+		Used:      roundClientUsage(clientUsagePercentLimit - remaining),
+		Remaining: remaining,
+		Unit:      clientUsageResponseUnit,
 	}
 	return resp
 }
