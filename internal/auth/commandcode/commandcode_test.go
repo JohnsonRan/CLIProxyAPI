@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func TestBuildAuthURL(t *testing.T) {
@@ -77,6 +79,85 @@ func TestParseModelsKeepsSystemOneModels(t *testing.T) {
 	}
 	if models[0].ID != "typesafe/jev" || models[0].DisplayName != "Jev" || models[0].Created != 5 {
 		t.Fatalf("listed jev should win over the built-in, got %+v", models[0])
+	}
+}
+
+func TestParseModelsCatalogPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantNil   bool
+		wantCount int
+		check     func(t *testing.T, models []*registry.ModelInfo)
+	}{
+		{
+			name:      "empty data array returns no models and skips built-ins",
+			body:      `{"data":[]}`,
+			wantCount: 0,
+		},
+		{
+			name:    "body without data array returns nil",
+			body:    `{"error":"bad request"}`,
+			wantNil: true,
+		},
+		{
+			name: "catalog lists jev on chat completions without decisions modality",
+			body: `{"data":[
+				{"id":"deepseek/deepseek-v4-pro","supported_endpoints":["/chat/completions"]},
+				{"id":"typesafe/jev","supported_endpoints":["/chat/completions"]}
+			]}`,
+			wantCount: 2,
+			check: func(t *testing.T, models []*registry.ModelInfo) {
+				var jev *registry.ModelInfo
+				for _, m := range models {
+					if m.ID == "typesafe/jev" {
+						if jev != nil {
+							t.Fatalf("duplicate typesafe/jev in models")
+						}
+						jev = m
+					}
+				}
+				if jev == nil {
+					t.Fatalf("missing typesafe/jev")
+				}
+				if len(jev.SupportedOutputModalities) != 0 {
+					t.Fatalf("output modalities = %v, want empty", jev.SupportedOutputModalities)
+				}
+			},
+		},
+		{
+			name: "catalog lists jev only on messages so jev is dropped and built-in skipped",
+			body: `{"data":[
+				{"id":"deepseek/deepseek-v4-pro","supported_endpoints":["/chat/completions"]},
+				{"id":"typesafe/jev","supported_endpoints":["/messages"]}
+			]}`,
+			wantCount: 1,
+			check: func(t *testing.T, models []*registry.ModelInfo) {
+				for _, m := range models {
+					if m.ID == "typesafe/jev" {
+						t.Fatalf("typesafe/jev should not be present when catalog only serves it on /messages")
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			models := ParseModels([]byte(tc.body), 99)
+			if tc.wantNil {
+				if models != nil {
+					t.Fatalf("models = %v, want nil", models)
+				}
+				return
+			}
+			if len(models) != tc.wantCount {
+				t.Fatalf("len(models) = %d, want %d", len(models), tc.wantCount)
+			}
+			if tc.check != nil {
+				tc.check(t, models)
+			}
+		})
 	}
 }
 
