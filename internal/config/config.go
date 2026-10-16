@@ -80,6 +80,9 @@ type Config struct {
 	// When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 	ErrorLogsMaxFiles int `yaml:"error-logs-max-files" json:"error-logs-max-files"`
 
+	// QuotaAPI exposes OAuth credential quota to client API keys through GET /v1/usage.
+	QuotaAPI QuotaAPIConfig `yaml:"quota-api" json:"quota-api"`
+
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
