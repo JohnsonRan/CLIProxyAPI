@@ -184,26 +184,21 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: PR [#4684](https://github.com/router-for-me/CLIProxyAPI/pull/4684) introduced the readers; no upstream performance work on them was found.
     - **Retire when**: Upstream reads summary intent in a single pass.
 
-27. **`patch/claude-responses-request-validate-once`**
-    - **Goal**: Stop re-validating the whole request body on every Claude → Responses SSE chunk.
-    - **Scope**: `ConvertClaudeResponseToOpenAIResponses` called `pickRequestJSON` (`gjson.ValidBytes` over the full request) per chunk although the per-stream state is built from the same picked body. The state now pins it as `RequestJSON`, and the per-chunk tool-metadata path and the `response.completed` injection read it from there. 26.1 µs → 1.45 µs per text delta with a 64 KiB request; this path was 10.6% of CPU in the 2026-10-15 production profile (light load, Codex clients on Claude). `claude_openai-responses_request_once_test.go` pins the behaviour and carries the benchmark.
-    - **Retire when**: Upstream validates the request once per stream.
-
-28. **`patch/management-key-bcrypt-cache`**
+27. **`patch/management-key-bcrypt-cache`**
     - **Goal**: Stop paying bcrypt on every management request.
     - **Scope**: `AuthenticateManagementKey` keeps the SHA-256 of the last key that passed `bcrypt.CompareHashAndPassword`, together with the secret hash it matched (`verifiedKey`, an `atomic.Pointer`). A repeat of the same key against the same hash is accepted after two constant-time compares (~2 µs instead of ~60 ms at the default cost); a different key or a changed hash goes through bcrypt again, and a failed bcrypt never populates the cache. Only the digest is kept. The IP ban counters are untouched. bcrypt was 5% of the 2026-10-15 profile, likely inflated by an open panel polling during collection.
     - **Retire when**: Upstream caches the verification or moves the panel to session tokens.
 
-29. **`patch/pgo`**
+28. **`patch/pgo`**
     - **Goal**: Profile-guided optimisation of the release binary.
-    - **Scope**: `cmd/server/default.pgo`, picked up by the default `-pgo=auto` of `go build` (the `Dockerfile` passes no `-pgo`). The current file merges three 300 s CPU profiles collected on 2026-10-16 from a production instance (`observability.pprof` on `127.0.0.1:8316`; Codex and Claude clients through `/v1/responses` plus OpenAI chat completions; 23.4 s of samples, the Claude executor stream path about 30% of them). These are the profiles in which `patch/responses-tool-identity-lite` was found; they replaced the 2026-10-15 profile (45 s of samples), which was inflated by the bcrypt and per-chunk validation hot spots patches 27 and 28 removed. Functions absent from the profile compile as before, so an unrepresentative profile cannot regress them; it only leaves gains on the table for the translators it did not see (Gemini). Replace the file after re-collecting at peak with every client type active:
+    - **Scope**: `cmd/server/default.pgo`, picked up by the default `-pgo=auto` of `go build` (the `Dockerfile` passes no `-pgo`). The current file merges three 300 s CPU profiles collected on 2026-10-16 from a production instance (`observability.pprof` on `127.0.0.1:8316`; Codex and Claude clients through `/v1/responses` plus OpenAI chat completions; 23.4 s of samples, the Claude executor stream path about 30% of them). These are the profiles in which `patch/responses-tool-identity-lite` was found; they replaced the 2026-10-15 profile (45 s of samples), which was inflated by the bcrypt hot spot patch 27 removed and the per-chunk request validation that upstream has since fixed (Issue [#6665](https://github.com/router-for-me/CLIProxyAPI/issues/6665)). Functions absent from the profile compile as before, so an unrepresentative profile cannot regress them; it only leaves gains on the table for the translators it did not see (Gemini). Replace the file after re-collecting at peak with every client type active:
       ```bash
       for i in 1 2 3; do curl -s "http://127.0.0.1:8316/debug/pprof/profile?seconds=300" -o cpu-$i.pprof; sleep 600; done
       go tool pprof -proto cpu-1.pprof cpu-2.pprof cpu-3.pprof > cmd/server/default.pgo
       ```
     - **Retire when**: Upstream ships a `default.pgo`.
 
-30. **`patch/quota-api`**
+29. **`patch/quota-api`**
     - **Goal**: Let client API key holders read the OAuth credential pool's quota, in the Sub2API `GET /v1/usage` shape that CC Switch and OpenMinis (1.15-beta "relay services") read.
     - **Scope**: `GetClientUsage` (`internal/api/handlers/management/client_usage.go`) is registered on the `/v1` group behind the normal client-key auth and answers 404 unless `observability.quota-api.enabled` is true (default false). It probes every enabled OAuth credential of `codex`, `claude`, `antigravity` and `xai` with the panel's upstream endpoints and headers (`client_usage_providers.go`), reusing api-call token resolution and proxy transport. Results are cached per credential for `cache-ttl-seconds` (default 300, minimum 30, failures included) and concurrent probes are collapsed with singleflight; removed credentials are pruned. The response is `mode: quota_limited`, `unit: "%"`, with a numeric top-level `remaining` and a Sub2API `quota{limit:100,used,remaining,unit}` object always present (0 when no credential is healthy; an empty pool also sets `isValid:false`, `status:"unavailable"`), because Minis reported "no balance endpoint" when they were missing; `rate_limits` averages each window length across healthy credentials (account-wide window first, else the tightest scoped one), `remaining` is the tightest aggregate, and `credentials[]` lists every credential as `<provider>#<n>` (ordered by provider and ID) with its windows, plan and a sanitized error. No account identifiers or upstream bodies are returned.
     - **Known limits**: Any valid client key sees the whole pool. Numbering shifts when credentials are added or removed. Paid xAI accounts without billing data report an error (the panel's chat ping is not replicated). Each probe is bounded by a 20 s timeout (listed in `AGENTS.md`). OpenMinis' exact field use is unverified because its 1.15 source is unpublished.
@@ -211,7 +206,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: None found (searched quota endpoint, `v1/usage`, 额度, sub2api usage on 2026-10-16). Issue [#6519](https://github.com/router-for-me/CLIProxyAPI/issues/6519) concerns the management plugin quota contract only.
     - **Retire when**: Upstream exposes credential quota to client keys.
 
-31. **`patch/responses-tool-identity-lite`**
+30. **`patch/responses-tool-identity-lite`**
     - **Goal**: Stop rendering Gemini function declarations when only the tool identity map is needed.
     - **Scope**: `util.ResponsesToolReverseIdentityMap` called `BuildGeminiFunctionDeclarations`, which also renders every declaration and runs `CleanJSONSchemaForGeminiJSONSchema` on each tool's parameters. `helps.ApplyPatchRequested` reaches it once per streamed request through `InitializeApplyPatchStream` on every executor except Codex, xAI and Meta, so Claude and OpenAI-compatible requests paid for schema cleaning they never used: 4.4% of CPU in the 2026-10-16 production profile. The shared resolution is now `buildGeminiFunctionDeclarations(root, withDeclarations)`; the identity map passes `false`, and the forward and reverse maps come from the same code either way. 41 schema-bearing tools: 2.93 ms → 88 µs, 45801 → 332 allocs per call. `responses_tools_identity_test.go` pins both maps against `BuildGeminiFunctionDeclarations` and carries the benchmark.
     - **Related Upstream Work**: None found (searched `ApplyPatchRequested`, `ResponsesToolReverseIdentityMap`, `BuildGeminiFunctionDeclarations`, apply_patch performance on 2026-10-16).
@@ -231,12 +226,13 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 - `patch/p2-runtime-optimizations` was split into patches 3–8 on 2026-10-14.
 - `patch/p0-oauth-and-executors` was split into patches 11–13 on 2026-10-14. Its multi-line Codex SSE assembly was dropped because upstream implemented `CodexSSEScanner` (Issue [#6575](https://github.com/router-for-me/CLIProxyAPI/issues/6575)).
+- `patch/claude-responses-request-validate-once` was retired on 2026-10-16: upstream commit `7a511e4d` (Issue [#6665](https://github.com/router-for-me/CLIProxyAPI/issues/6665)) pins the validated request body per stream with the same change, and the patch's own test redeclared upstream's new benchmark.
 
 ## Rebuild & Validation Procedure
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/claude-responses-request-validate-once patch/management-key-bcrypt-cache patch/pgo patch/quota-api patch/responses-tool-identity-lite)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/management-key-bcrypt-cache patch/pgo patch/quota-api patch/responses-tool-identity-lite)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
