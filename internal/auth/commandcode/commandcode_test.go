@@ -42,7 +42,7 @@ func TestParseModelsKeepsChatCompletionModels(t *testing.T) {
 			t.Errorf("model %q = %+v, want user-defined commandcode model", model.ID, model)
 		}
 	}
-	if got := strings.Join(ids, ","); got != "deepseek/deepseek-v4-pro,z-ai/glm-5.3-flash,no-endpoints-listed" {
+	if got := strings.Join(ids, ","); got != "deepseek/deepseek-v4-pro,z-ai/glm-5.3-flash,no-endpoints-listed,typesafe/jev" {
 		t.Fatalf("model ids = %s", got)
 	}
 	if models[0].DisplayName != "DeepSeek V4 Pro" || models[0].ContextLength != 1000000 || models[0].Created != 11 {
@@ -50,6 +50,33 @@ func TestParseModelsKeepsChatCompletionModels(t *testing.T) {
 	}
 	if models[1].Created != 99 {
 		t.Fatalf("missing created should default to now, got %d", models[1].Created)
+	}
+	if len(models[0].SupportedOutputModalities) != 0 {
+		t.Fatalf("chat model output modalities = %v, want undeclared", models[0].SupportedOutputModalities)
+	}
+	jev := models[3]
+	if got := strings.Join(jev.SupportedOutputModalities, ","); got != "decisions" || jev.Created != 99 || jev.DisplayName != "TypeSafe Jev" {
+		t.Fatalf("built-in System One model = %+v", jev)
+	}
+}
+
+func TestParseModelsKeepsSystemOneModels(t *testing.T) {
+	body := []byte(`{"data":[
+		{"id":"typesafe/jev","created":5,"name":"Jev","supported_endpoints":["/systemone"]},
+		{"id":"typesafe/jev-2","supported_endpoints":["/systemone"]},
+		{"id":"claude-opus-5-5","supported_endpoints":["/messages"]}
+	]}`)
+	models := ParseModels(body, 99)
+	if len(models) != 2 {
+		t.Fatalf("models = %d, want the two listed System One models without a duplicate built-in", len(models))
+	}
+	for _, model := range models {
+		if got := strings.Join(model.SupportedOutputModalities, ","); got != "decisions" {
+			t.Errorf("model %q output modalities = %q, want decisions", model.ID, got)
+		}
+	}
+	if models[0].ID != "typesafe/jev" || models[0].DisplayName != "Jev" || models[0].Created != 5 {
+		t.Fatalf("listed jev should win over the built-in, got %+v", models[0])
 	}
 }
 

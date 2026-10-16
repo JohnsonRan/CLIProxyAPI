@@ -12,14 +12,28 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const chatCompletionsEndpoint = "/chat/completions"
+const (
+	chatCompletionsEndpoint = "/chat/completions"
+	systemOneEndpoint       = "/systemone"
+	// decisionsOutputModality is the OpenRouter-style output modality of
+	// TypeSafe System One decision models.
+	decisionsOutputModality = "decisions"
+)
+
+// systemOneModels are TypeSafe System One decision models served on
+// <baseURL>/systemone. The public catalog does not list them, so they are added
+// unless the catalog already does.
+var systemOneModels = []struct{ id, name string }{
+	{id: "typesafe/jev", name: "TypeSafe Jev"},
+}
 
 // FetchModels reads the public Provider API catalog (GET <baseURL>/models).
 //
-// Only models served on /chat/completions are returned: the credential is
-// executed through the OpenAI-compatible executor, and Command Code serves its
-// Claude models on /messages only. Models are marked user-defined so that the
-// request's reasoning settings pass through to the upstream, which validates them.
+// Only models served on /chat/completions or /systemone are returned: the
+// credential is executed through the OpenAI-compatible executor, and Command
+// Code serves its Claude models on /messages only. Models are marked
+// user-defined so that the request's reasoning settings pass through to the
+// upstream, which validates them.
 func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]*registry.ModelInfo, error) {
 	if client == nil {
 		client = &http.Client{Timeout: requestTimeout}
@@ -51,7 +65,9 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey strin
 	return ParseModels(body, time.Now().Unix()), nil
 }
 
-// ParseModels converts a Provider API /models body into registry models.
+// ParseModels converts a Provider API /models body into registry models and
+// appends the System One models the catalog does not list. Models served only
+// on /systemone declare the decisions output modality.
 func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 	data := gjson.GetBytes(body, "data")
 	if !data.IsArray() {
@@ -67,8 +83,12 @@ func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 		if _, dup := seen[id]; dup {
 			continue
 		}
+		var outputModalities []string
 		if endpoints := item.Get("supported_endpoints"); endpoints.IsArray() && !containsEndpoint(endpoints, chatCompletionsEndpoint) {
-			continue
+			if !containsEndpoint(endpoints, systemOneEndpoint) {
+				continue
+			}
+			outputModalities = []string{decisionsOutputModality}
 		}
 		seen[id] = struct{}{}
 		created := item.Get("created").Int()
@@ -84,6 +104,24 @@ func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 			DisplayName:   strings.TrimSpace(item.Get("name").String()),
 			ContextLength: int(item.Get("context_length").Int()),
 			UserDefined:   true,
+
+			SupportedOutputModalities: outputModalities,
+		})
+	}
+	for _, model := range systemOneModels {
+		if _, listed := seen[model.id]; listed {
+			continue
+		}
+		models = append(models, &registry.ModelInfo{
+			ID:          model.id,
+			Object:      "model",
+			Created:     now,
+			OwnedBy:     ProviderKey,
+			Type:        ProviderKey,
+			DisplayName: model.name,
+			UserDefined: true,
+
+			SupportedOutputModalities: []string{decisionsOutputModality},
 		})
 	}
 	return models
