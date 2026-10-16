@@ -2,8 +2,8 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -22,78 +22,37 @@ const (
 	clientUsageProbeTimeout      = 20 * time.Second
 	clientUsageProbeConcurrency  = 4
 	clientUsageMaxResponseBytes  = 1 << 20
-	clientUsagePercentLimit      = 100.0
-	clientUsageResponseUnit      = "%"
-	clientUsageResponseMode      = "quota_limited"
-	clientUsageResponsePlanName  = "CLIProxyAPI"
 	clientUsageCredentialOK      = "ok"
 	clientUsageCredentialFailure = "error"
 )
 
-// clientUsageWindow is one quota window of a credential, expressed in percent.
-// Its JSON shape matches the Sub2API /v1/usage rate_limits entries.
-type clientUsageWindow struct {
-	Window    string     `json:"window"`
-	Scope     string     `json:"scope,omitempty"`
-	Limit     float64    `json:"limit"`
-	Used      float64    `json:"used"`
-	Remaining float64    `json:"remaining"`
-	ResetAt   *time.Time `json:"reset_at,omitempty"`
-
-	seconds int64
+// clientUsageUpstream is one upstream quota response. Body is the upstream
+// JSON as returned, minus the account identifiers in clientUsageRedactedKeys.
+type clientUsageUpstream struct {
+	Endpoint   string          `json:"endpoint"`
+	StatusCode int             `json:"status_code,omitempty"`
+	Body       json.RawMessage `json:"body,omitempty"`
+	Error      string          `json:"error,omitempty"`
 }
 
-// clientUsageCredential is the per-credential quota detail. It never carries
-// account identifiers; credentials are named "<provider>#<n>".
+// clientUsageCredential is one OAuth credential with the upstream quota
+// responses the management panel reads for it. Name is the credential's note,
+// or its provider when no note is set.
 type clientUsageCredential struct {
-	Name       string              `json:"name"`
-	Provider   string              `json:"provider"`
-	Status     string              `json:"status"`
-	Plan       string              `json:"plan,omitempty"`
-	Error      string              `json:"error,omitempty"`
-	Windows    []clientUsageWindow `json:"windows"`
-	ObservedAt time.Time           `json:"observed_at"`
+	Name       string                `json:"name"`
+	Provider   string                `json:"provider"`
+	Status     string                `json:"status"`
+	Error      string                `json:"error,omitempty"`
+	ObservedAt time.Time             `json:"observed_at"`
+	Responses  []clientUsageUpstream `json:"responses"`
 }
 
-// clientUsageAggregate averages one window duration across the credential pool.
-type clientUsageAggregate struct {
-	Window      string     `json:"window"`
-	Limit       float64    `json:"limit"`
-	Used        float64    `json:"used"`
-	Remaining   float64    `json:"remaining"`
-	ResetAt     *time.Time `json:"reset_at,omitempty"`
-	Credentials int        `json:"credentials"`
-
-	seconds int64
-}
-
-// clientUsageQuota mirrors the Sub2API quota_limited "quota" object, which
-// strict clients require before they accept the response as a balance.
-type clientUsageQuota struct {
-	Limit     float64 `json:"limit"`
-	Used      float64 `json:"used"`
-	Remaining float64 `json:"remaining"`
-	Unit      string  `json:"unit"`
-}
-
-// clientUsageResponse follows the Sub2API /v1/usage quota_limited shape and
-// extends it with per-credential details. Remaining and Quota are always
-// present so clients can read a balance even when no credential is healthy.
 type clientUsageResponse struct {
-	Mode        string                  `json:"mode"`
-	IsValid     bool                    `json:"isValid"`
-	Status      string                  `json:"status"`
-	PlanName    string                  `json:"planName"`
-	Unit        string                  `json:"unit"`
-	Remaining   float64                 `json:"remaining"`
-	Quota       clientUsageQuota        `json:"quota"`
-	RateLimits  []clientUsageAggregate  `json:"rate_limits,omitempty"`
 	Credentials []clientUsageCredential `json:"credentials"`
 }
 
 type clientUsageProbeResult struct {
-	plan       string
-	windows    []clientUsageWindow
+	responses  []clientUsageUpstream
 	err        string
 	observedAt time.Time
 }
@@ -161,8 +120,8 @@ func (c *clientUsageCache) prune(keep map[string]struct{}) {
 	}
 }
 
-// GetClientUsage handles GET /v1/usage for client API keys. It reports the
-// quota of every supported OAuth credential in a Sub2API-compatible shape.
+// GetClientUsage handles GET /v1/usage for client API keys. It returns the
+// upstream quota responses of every supported OAuth credential.
 func (h *Handler) GetClientUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "handler unavailable", "type": "server_error"}})
@@ -190,7 +149,7 @@ func (h *Handler) GetClientUsage(c *gin.Context) {
 
 	ttl := clientUsageCacheTTL(cfg.QuotaAPI.CacheTTLSeconds)
 	results := h.clientUsageResults(auths, ttl, h.probeClientUsage)
-	c.JSON(http.StatusOK, buildClientUsageResponse(clientUsageCredentials(auths, results)))
+	c.JSON(http.StatusOK, clientUsageResponse{Credentials: clientUsageCredentials(auths, results)})
 }
 
 func clientUsageCacheTTL(seconds int) time.Duration {
@@ -224,7 +183,7 @@ func clientUsageProvider(auth *coreauth.Auth) string {
 }
 
 // clientUsageAuths keeps enabled OAuth credentials of supported providers,
-// ordered by provider and ID so "<provider>#<n>" names stay stable.
+// ordered by provider and ID so the response order stays stable.
 func clientUsageAuths(list []*coreauth.Auth) []*coreauth.Auth {
 	out := make([]*coreauth.Auth, 0, len(list))
 	for _, auth := range list {
@@ -265,23 +224,30 @@ func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, 
 	return results
 }
 
+// clientUsageName is the credential's configured note, else its provider.
+func clientUsageName(auth *coreauth.Auth) string {
+	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
+		return note
+	}
+	if note := clientUsageString(auth.Metadata, "note"); note != "" {
+		return note
+	}
+	return clientUsageProvider(auth)
+}
+
 func clientUsageCredentials(auths []*coreauth.Auth, results []clientUsageProbeResult) []clientUsageCredential {
-	counters := make(map[string]int)
 	out := make([]clientUsageCredential, 0, len(auths))
 	for i, auth := range auths {
-		provider := clientUsageProvider(auth)
-		counters[provider]++
 		result := results[i]
 		credential := clientUsageCredential{
-			Name:       fmt.Sprintf("%s#%d", provider, counters[provider]),
-			Provider:   provider,
+			Name:       clientUsageName(auth),
+			Provider:   clientUsageProvider(auth),
 			Status:     clientUsageCredentialOK,
-			Plan:       result.plan,
-			Windows:    result.windows,
 			ObservedAt: result.observedAt,
+			Responses:  result.responses,
 		}
-		if credential.Windows == nil {
-			credential.Windows = []clientUsageWindow{}
+		if credential.Responses == nil {
+			credential.Responses = []clientUsageUpstream{}
 		}
 		if result.err != "" {
 			credential.Status = clientUsageCredentialFailure
@@ -292,106 +258,7 @@ func clientUsageCredentials(auths []*coreauth.Auth, results []clientUsageProbeRe
 	return out
 }
 
-// aggregateClientUsage averages each window duration across healthy
-// credentials. Per credential, the account-wide window of a duration is used;
-// when only scoped windows exist (for example Antigravity model families),
-// the most constrained one represents the credential.
-func aggregateClientUsage(credentials []clientUsageCredential) []clientUsageAggregate {
-	type accumulator struct {
-		sum     float64
-		count   int
-		resetAt *time.Time
-		seconds int64
-	}
-	byWindow := make(map[string]*accumulator)
-	for _, credential := range credentials {
-		if credential.Status != clientUsageCredentialOK {
-			continue
-		}
-		chosen := make(map[string]clientUsageWindow)
-		for _, window := range credential.Windows {
-			current, exists := chosen[window.Window]
-			switch {
-			case !exists:
-			case window.Scope == "" && current.Scope != "":
-			case (window.Scope == "") == (current.Scope == "") && window.Remaining < current.Remaining:
-			default:
-				continue
-			}
-			chosen[window.Window] = window
-		}
-		for key, window := range chosen {
-			acc := byWindow[key]
-			if acc == nil {
-				acc = &accumulator{seconds: window.seconds}
-				byWindow[key] = acc
-			}
-			acc.sum += window.Remaining
-			acc.count++
-			if window.ResetAt != nil && (acc.resetAt == nil || window.ResetAt.Before(*acc.resetAt)) {
-				resetAt := *window.ResetAt
-				acc.resetAt = &resetAt
-			}
-		}
-	}
-	out := make([]clientUsageAggregate, 0, len(byWindow))
-	for key, acc := range byWindow {
-		remaining := roundClientUsage(acc.sum / float64(acc.count))
-		out = append(out, clientUsageAggregate{
-			Window:      key,
-			Limit:       clientUsagePercentLimit,
-			Used:        roundClientUsage(clientUsagePercentLimit - remaining),
-			Remaining:   remaining,
-			ResetAt:     acc.resetAt,
-			Credentials: acc.count,
-			seconds:     acc.seconds,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].seconds != out[j].seconds {
-			return out[i].seconds < out[j].seconds
-		}
-		return out[i].Window < out[j].Window
-	})
-	return out
-}
-
-func buildClientUsageResponse(credentials []clientUsageCredential) clientUsageResponse {
-	if credentials == nil {
-		credentials = []clientUsageCredential{}
-	}
-	resp := clientUsageResponse{
-		Mode:        clientUsageResponseMode,
-		IsValid:     true,
-		Status:      "active",
-		PlanName:    clientUsageResponsePlanName,
-		Unit:        clientUsageResponseUnit,
-		RateLimits:  aggregateClientUsage(credentials),
-		Credentials: credentials,
-	}
-	if len(credentials) == 0 {
-		// Nothing to report: flag the relay instead of showing a fake 0%.
-		resp.IsValid = false
-		resp.Status = "unavailable"
-	}
-	// Without a healthy credential the pool has nothing usable left.
-	remaining := 0.0
-	for i, aggregate := range resp.RateLimits {
-		if i == 0 || aggregate.Remaining < remaining {
-			remaining = aggregate.Remaining
-		}
-	}
-	resp.Remaining = remaining
-	resp.Quota = clientUsageQuota{
-		Limit:     clientUsagePercentLimit,
-		Used:      roundClientUsage(clientUsagePercentLimit - remaining),
-		Remaining: remaining,
-		Unit:      clientUsageResponseUnit,
-	}
-	return resp
-}
-
-// probeClientUsage queries one credential's upstream quota endpoint. It runs on
+// probeClientUsage queries one credential's upstream quota endpoints. It runs on
 // a detached, bounded context so a disconnecting client cannot fail the probe
 // shared with other callers, and a stalled upstream cannot pin the cache slot.
 func (h *Handler) probeClientUsage(auth *coreauth.Auth) clientUsageProbeResult {
@@ -412,59 +279,31 @@ func (h *Handler) probeClientUsage(auth *coreauth.Auth) clientUsageProbeResult {
 	var errProbe error
 	switch provider {
 	case "codex":
-		result.plan, result.windows, errProbe = h.probeCodexClientUsage(ctx, auth, token, result.observedAt)
+		result.responses = h.probeCodexClientUsage(ctx, auth, token)
 	case "claude":
-		result.windows, errProbe = h.probeClaudeClientUsage(ctx, auth, token)
+		result.responses = h.probeClaudeClientUsage(ctx, auth, token)
 	case "antigravity":
-		result.windows, errProbe = h.probeAntigravityClientUsage(ctx, auth, token)
+		result.responses, errProbe = h.probeAntigravityClientUsage(ctx, auth, token)
 	case "xai":
-		result.plan, result.windows, errProbe = h.probeXAIClientUsage(ctx, auth, token)
+		result.responses = h.probeXAIClientUsage(ctx, auth, token)
 	default:
 		errProbe = fmt.Errorf("unsupported provider")
 	}
-	if errProbe == nil && len(result.windows) == 0 {
-		errProbe = fmt.Errorf("upstream returned no quota windows")
+	if errProbe == nil && !clientUsageAnyOK(result.responses) {
+		errProbe = fmt.Errorf("no upstream quota endpoint succeeded")
 	}
 	if errProbe != nil {
 		log.WithFields(log.Fields{"provider": provider, "auth_index": auth.Index}).WithError(errProbe).Debug("client usage: quota probe failed")
 		result.err = errProbe.Error()
-		result.windows = nil
 	}
 	return result
 }
 
-func newClientUsageWindow(seconds int64, scope string, usedPercent float64, resetAt *time.Time) clientUsageWindow {
-	if math.IsNaN(usedPercent) || math.IsInf(usedPercent, 0) {
-		usedPercent = 0
+func clientUsageAnyOK(responses []clientUsageUpstream) bool {
+	for _, response := range responses {
+		if clientUsageUpstreamOK(response) {
+			return true
+		}
 	}
-	used := roundClientUsage(math.Max(0, math.Min(clientUsagePercentLimit, usedPercent)))
-	return clientUsageWindow{
-		Window:    clientUsageDuration(seconds),
-		Scope:     scope,
-		Limit:     clientUsagePercentLimit,
-		Used:      used,
-		Remaining: roundClientUsage(clientUsagePercentLimit - used),
-		ResetAt:   resetAt,
-		seconds:   seconds,
-	}
-}
-
-// clientUsageDuration renders a window length the way Sub2API does ("5h", "7d").
-func clientUsageDuration(seconds int64) string {
-	switch {
-	case seconds <= 0:
-		return "unknown"
-	case seconds%(24*60*60) == 0:
-		return fmt.Sprintf("%dd", seconds/(24*60*60))
-	case seconds%(60*60) == 0:
-		return fmt.Sprintf("%dh", seconds/(60*60))
-	case seconds%60 == 0:
-		return fmt.Sprintf("%dm", seconds/60)
-	default:
-		return fmt.Sprintf("%ds", seconds)
-	}
-}
-
-func roundClientUsage(value float64) float64 {
-	return math.Round(value*100) / 100
+	return false
 }
