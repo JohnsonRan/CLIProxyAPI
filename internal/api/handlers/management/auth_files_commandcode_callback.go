@@ -22,7 +22,6 @@ const (
 var commandCodeCallbackOrigins = []string{
 	"https://commandcode.ai",
 	"https://staging.commandcode.ai",
-	"http://localhost:3000",
 }
 
 // commandCodeCallbackHandler serves the Command Code loopback callback.
