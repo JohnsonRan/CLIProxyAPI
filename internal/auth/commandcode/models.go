@@ -21,8 +21,8 @@ const (
 )
 
 // systemOneModels are TypeSafe System One decision models served on
-// <baseURL>/systemone. The public catalog does not list them, so they are added
-// unless the catalog already does.
+// <baseURL>/systemone. They are appended to a non-empty catalog unless the
+// catalog already lists them.
 var systemOneModels = []struct{ id, name string }{
 	{id: "typesafe/jev", name: "TypeSafe Jev"},
 }
@@ -66,8 +66,8 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey strin
 }
 
 // ParseModels converts a Provider API /models body into registry models and
-// appends the System One models the catalog does not list. Models served only
-// on /systemone declare the decisions output modality.
+// appends the System One models when a non-empty catalog does not list them.
+// Models served only on /systemone declare the decisions output modality.
 func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 	data := gjson.GetBytes(body, "data")
 	if !data.IsArray() {
@@ -75,11 +75,13 @@ func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 	}
 	models := make([]*registry.ModelInfo, 0, len(data.Array()))
 	seen := make(map[string]struct{})
+	listed := make(map[string]struct{})
 	for _, item := range data.Array() {
 		id := strings.TrimSpace(item.Get("id").String())
 		if id == "" {
 			continue
 		}
+		listed[id] = struct{}{}
 		if _, dup := seen[id]; dup {
 			continue
 		}
@@ -108,8 +110,11 @@ func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 			SupportedOutputModalities: outputModalities,
 		})
 	}
+	if len(models) == 0 {
+		return models
+	}
 	for _, model := range systemOneModels {
-		if _, listed := seen[model.id]; listed {
+		if _, exists := listed[model.id]; exists {
 			continue
 		}
 		models = append(models, &registry.ModelInfo{
