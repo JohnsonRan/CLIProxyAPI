@@ -121,7 +121,8 @@ func (c *clientUsageCache) prune(keep map[string]struct{}) {
 }
 
 // GetClientUsage handles GET /v1/usage for client API keys. It returns the
-// upstream quota responses of every supported OAuth credential.
+// upstream quota responses of the OAuth credentials selected for the caller's
+// key in quota-api.keys; a key without a selection gets an empty list.
 func (h *Handler) GetClientUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "handler unavailable", "type": "server_error"}})
@@ -131,25 +132,39 @@ func (h *Handler) GetClientUsage(c *gin.Context) {
 	cfg := h.cfg
 	manager := h.authManager
 	h.mu.Unlock()
-	if cfg == nil || !cfg.QuotaAPI.Enabled {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "usage endpoint is disabled", "type": "invalid_request_error", "code": "not_found"}})
-		return
-	}
-	if manager == nil {
+	if cfg == nil || manager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": "core auth manager unavailable", "type": "server_error"}})
 		return
 	}
 
-	auths := clientUsageAuths(manager.List())
-	keep := make(map[string]struct{}, len(auths))
-	for _, auth := range auths {
+	pool := clientUsageAuths(manager.List())
+	keep := make(map[string]struct{}, len(pool))
+	for _, auth := range pool {
 		keep[auth.ID] = struct{}{}
 	}
+	// Prune against the whole pool so other keys' cached results survive.
 	h.clientUsage.prune(keep)
 
+	auths := clientUsageVisibleAuths(pool, cfg.QuotaAPI.VisibleCredentials(c.GetString("userApiKey")))
+	if len(auths) == 0 {
+		c.JSON(http.StatusOK, clientUsageResponse{Credentials: []clientUsageCredential{}})
+		return
+	}
 	ttl := clientUsageCacheTTL(cfg.QuotaAPI.CacheTTLSeconds)
 	results := h.clientUsageResults(auths, ttl, h.probeClientUsage)
 	c.JSON(http.StatusOK, clientUsageResponse{Credentials: clientUsageCredentials(auths, results)})
+}
+
+// clientUsageVisibleAuths keeps the credentials selected for the caller's key.
+// Unknown or unsupported IDs in the selection are ignored.
+func clientUsageVisibleAuths(pool []*coreauth.Auth, visible map[string]struct{}) []*coreauth.Auth {
+	out := make([]*coreauth.Auth, 0, len(visible))
+	for _, auth := range pool {
+		if _, ok := visible[auth.ID]; ok {
+			out = append(out, auth)
+		}
+	}
+	return out
 }
 
 func clientUsageCacheTTL(seconds int) time.Duration {
