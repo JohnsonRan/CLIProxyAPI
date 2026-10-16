@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,7 @@ import (
 )
 
 func TestRedactClientUsageBody(t *testing.T) {
-	raw := []byte(`{"email":"a@b.c","user_id":"u","plan_type":"plus","rate_limit":{"primary_window":{"used_percent":12.50,"reset_at":1760000000}},"accounts":[{"accountId":"x","userId":"y","name":"<team>"}],"credits":{"balance":"0"}}`)
+	raw := []byte(`{"email":"a@b.c","user_id":"u","plan_type":"plus","rate_limit":{"primary_window":{"used_percent":12.50,"reset_at":1760000000}},"accounts":[{"accountId":"x","userId":"y","Email":"A@B.C","ACCOUNT_ID":"z","name":"<team>"}],"credits":{"balance":"0"}}`)
 	got, err := redactClientUsageBody(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +185,7 @@ func serveClientUsage(t *testing.T, h *Handler, apiKey string) clientUsageRespon
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); containsAny(body, "secret@example.com", "null") {
+	if body := rec.Body.String(); strings.Contains(body, "secret@example.com") || strings.Contains(body, "null") {
 		t.Fatalf("unexpected content in response: %s", body)
 	}
 	var resp clientUsageResponse
@@ -259,17 +260,4 @@ func TestGetClientUsageReturnsSelectedCredentialsOnly(t *testing.T) {
 	if _, ok := h.clientUsage.entries["codex-a.json"]; !ok {
 		t.Fatal("serving one key evicted another key's cached credential")
 	}
-}
-
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if needle != "" && len(value) >= len(needle) {
-			for i := 0; i+len(needle) <= len(value); i++ {
-				if value[i:i+len(needle)] == needle {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
