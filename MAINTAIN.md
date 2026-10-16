@@ -93,15 +93,16 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: Issue [#5961](https://github.com/router-for-me/CLIProxyAPI/issues/5961), Issue [#3641](https://github.com/router-for-me/CLIProxyAPI/issues/3641), Issue [#1084](https://github.com/router-for-me/CLIProxyAPI/issues/1084), PR [#1191](https://github.com/router-for-me/CLIProxyAPI/pull/1191).
 
 15. **`patch/client-api-key-models`**
-    - **Goal**: Visible and usable model access control globally and per client API key.
+    - **Goal**: Visible and usable model access control globally and per client API key, plus per-key display names kept in the config.
     - **Scope**:
       - `access.models` / `access.allowed-models` / `access.excluded-models` and per-key mapping entries in `access.api-keys`.
       - Filter `/v1/models` and model detail endpoints; reject execution, count-tokens, `/v1/alpha/search` and Codex Realtime (checked on the requested model, before the upstream rewrite) with `403`; `auto` is also checked against the model it resolves to.
-      - Struct-based config saves fold per-key rules back onto `access.api-keys` (`foldClientKeysIntoAPIKeys`); comments attached to those mapping entries are not preserved.
+      - An `access.api-keys` mapping entry may carry an optional `name` (`ClientKeyConfig.Name`). It is metadata for the panel only and never affects access; a key with only a name stays unrestricted.
+      - Struct-based config saves fold per-key names and rules back onto `access.api-keys` (`foldClientKeysIntoAPIKeys`); comments attached to those mapping entries are not preserved.
       - `GET /v8/management/models` lists servable models without client-key filtering.
     - **Known limits**: Rules match the requested model name, before alias and prefix resolution. A key with its own allow-list does not inherit the global exclusion list.
     - **Cross-repo**: Required by the panel patch `patch/client-api-key-models`.
-    - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568), PR [#4030](https://github.com/router-for-me/CLIProxyAPI/pull/4030), PR [#5517](https://github.com/router-for-me/CLIProxyAPI/pull/5517).
+    - **Related Upstream Work**: PR [#6568](https://github.com/router-for-me/CLIProxyAPI/pull/6568), PR [#4030](https://github.com/router-for-me/CLIProxyAPI/pull/4030), PR [#5517](https://github.com/router-for-me/CLIProxyAPI/pull/5517). Names: PR [#4940](https://github.com/router-for-me/CLIProxyAPI/pull/4940) (open, unreviewed; separate `api-key-names` map on the deprecated v0 endpoint, so the key is stored twice) and panel PR [#378](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/pull/378) (closed); the upstream panel keeps names in browser storage instead.
 
 16. **`patch/proxy-transport-reuse`**
     - **Goal**: Reuse proxied upstream connections and make SOCKS5 dials cancellable.
