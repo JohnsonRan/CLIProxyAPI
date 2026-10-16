@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,9 +35,9 @@ func TestRegisterModelsForAuthCommandCodeRespectsPrefixConfig(t *testing.T) {
 		force  bool
 		want   []string
 	}{
-		{name: "no prefix", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro"}},
-		{name: "prefix", prefix: "cc", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro", "cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro"}},
-		{name: "forced prefix", prefix: "cc", force: true, want: []string{"cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro"}},
+		{name: "no prefix", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro", "typesafe/jev"}},
+		{name: "prefix", prefix: "cc", want: []string{"gpt-6-luna", "deepseek/deepseek-v4-pro", "typesafe/jev", "cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro", "cc/typesafe/jev"}},
+		{name: "forced prefix", prefix: "cc", force: true, want: []string{"cc/gpt-6-luna", "cc/deepseek/deepseek-v4-pro", "cc/typesafe/jev"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +64,10 @@ func TestRegisterModelsForAuthCommandCodeRespectsPrefixConfig(t *testing.T) {
 			got := map[string]bool{}
 			for _, model := range modelRegistry.GetModelsForClient(authID) {
 				got[model.ID] = true
+				decisions := len(model.SupportedOutputModalities) == 1 && model.SupportedOutputModalities[0] == "decisions"
+				if isJev := strings.HasSuffix(model.ID, "typesafe/jev"); isJev != decisions {
+					t.Errorf("model %q output modalities = %v", model.ID, model.SupportedOutputModalities)
+				}
 			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("registered models = %v, want %v", got, tc.want)
