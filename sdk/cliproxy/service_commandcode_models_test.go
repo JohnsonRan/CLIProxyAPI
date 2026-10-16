@@ -109,4 +109,16 @@ func TestCommandCodeModelCatalogKeepsLastGoodListAndRefetchesWhenStale(t *testin
 	if len(got) != 1 || got[0].ID != "m1" {
 		t.Fatalf("failed refetch should keep the last good, unmutated list, got %v", got)
 	}
+
+	catalog.get(context.Background(), nil, nil)
+	if calls != 2 {
+		t.Fatalf("failed fetch retried before commandCodeCatalogRetry: calls = %d", calls)
+	}
+	now = now.Add(commandCodeCatalogRetry)
+	failing = false
+	catalog.get(context.Background(), nil, nil)
+	catalog.get(context.Background(), nil, nil)
+	if calls != 3 {
+		t.Fatalf("catalog not refetched once after the retry delay: calls = %d", calls)
+	}
 }
