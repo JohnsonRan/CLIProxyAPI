@@ -73,7 +73,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
 	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(modelName))
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 
 	// Convert OpenAI Responses reasoning.effort to Claude thinking config.
 	if v := root.Get("reasoning.effort"); v.Exists() {
@@ -630,7 +630,9 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	if len(messageBlocks) == 0 && (len(systemBlocks) > 0 || hadMessages) {
 		messageBlocks = append(messageBlocks, []byte(`{"role":"user","content":[{"type":"text","text":""}]}`))
 	}
-	out = common.SetRawArrayItems(out, "messages", messageBlocks)
+	// messages is spliced into its "[]" placeholder last: every sjson write
+	// below copies out, which is small until the conversation is in it. The
+	// placeholder keeps its key position, so the bytes are the same.
 	if len(systemBlocks) > 0 {
 		out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))
 	}
@@ -731,7 +733,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
-	return thinking.ApplyTranslatedSummaryToClaude(out, rawJSON, "openai-response", modelName), drops.Err()
+	out = thinking.ApplyTranslatedSummaryToClaude(out, rawJSON, "openai-response", modelName)
+	return common.SetRawArrayItems(out, "messages", messageBlocks), drops.Err()
 }
 
 func defaultClaudeResponsesMaxTokensForModel(modelName string) int {
@@ -1028,12 +1031,12 @@ func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) []b
 // the proxy log instead of from an upstream 400.
 func claudeMessageInvariantProblems(messages [][]byte) []string {
 	var problems []string
-	if len(messages) > 0 && gjson.GetBytes(messages[0], "role").String() != "user" {
+	if len(messages) > 0 && util.GetGJSONBytesNoCopy(messages[0], "role").String() != "user" {
 		problems = append(problems, "first message is not user")
 	}
 	for i, msg := range messages {
-		role := gjson.GetBytes(msg, "role").String()
-		content := gjson.GetBytes(msg, "content")
+		role := util.GetGJSONBytesNoCopy(msg, "role").String()
+		content := util.GetGJSONBytesNoCopy(msg, "content")
 		switch role {
 		case "assistant":
 			var toolUseIDs []string
@@ -1046,11 +1049,11 @@ func claudeMessageInvariantProblems(messages [][]byte) []string {
 			if len(toolUseIDs) == 0 {
 				continue
 			}
-			if i+1 >= len(messages) || gjson.GetBytes(messages[i+1], "role").String() != "user" {
+			if i+1 >= len(messages) || util.GetGJSONBytesNoCopy(messages[i+1], "role").String() != "user" {
 				problems = append(problems, "messages["+strconv.Itoa(i)+"] tool_use has no following user message")
 				continue
 			}
-			next := gjson.GetBytes(messages[i+1], "content")
+			next := util.GetGJSONBytesNoCopy(messages[i+1], "content")
 			answered := map[string]struct{}{}
 			next.ForEach(func(_, block gjson.Result) bool {
 				if block.Get("type").String() == "tool_result" {
@@ -1066,7 +1069,7 @@ func claudeMessageInvariantProblems(messages [][]byte) []string {
 		case "user":
 			var previous gjson.Result
 			if i > 0 {
-				previous = gjson.GetBytes(messages[i-1], "content")
+				previous = util.GetGJSONBytesNoCopy(messages[i-1], "content")
 			}
 			toolUses := map[string]struct{}{}
 			previous.ForEach(func(_, block gjson.Result) bool {
@@ -1111,8 +1114,8 @@ func repairClaudeToolPairing(messages [][]byte) [][]byte {
 	out := make([][]byte, 0, len(messages)+1)
 	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
-		role := gjson.GetBytes(msg, "role").String()
-		content := gjson.GetBytes(msg, "content")
+		role := util.GetGJSONBytesNoCopy(msg, "role").String()
+		content := util.GetGJSONBytesNoCopy(msg, "content")
 
 		if role == "user" {
 			// Fold tool_result blocks that do not answer a tool_use in the
@@ -1121,7 +1124,7 @@ func repairClaudeToolPairing(messages [][]byte) [][]byte {
 			rebuilt, changed := normalizeClaudeToolResultMessage(msg, prevToolUseIDs)
 			if changed {
 				msg = rebuilt
-				content = gjson.GetBytes(msg, "content")
+				content = util.GetGJSONBytesNoCopy(msg, "content")
 				if i < len(messages) {
 					messages[i] = msg
 				}
@@ -1146,10 +1149,10 @@ func repairClaudeToolPairing(messages [][]byte) [][]byte {
 				continue
 			}
 
-			hasNextUser := i+1 < len(messages) && gjson.GetBytes(messages[i+1], "role").String() == "user"
+			hasNextUser := i+1 < len(messages) && util.GetGJSONBytesNoCopy(messages[i+1], "role").String() == "user"
 			answered := map[string]struct{}{}
 			if hasNextUser {
-				gjson.GetBytes(messages[i+1], "content").ForEach(func(_, block gjson.Result) bool {
+				util.GetGJSONBytesNoCopy(messages[i+1], "content").ForEach(func(_, block gjson.Result) bool {
 					if block.Get("type").String() == "tool_result" {
 						answered[block.Get("tool_use_id").String()] = struct{}{}
 					}
@@ -1174,7 +1177,7 @@ func repairClaudeToolPairing(messages [][]byte) [][]byte {
 				// Prepend the missing results so tool_result blocks still lead
 				// the existing user message.
 				next := messages[i+1]
-				nextContent := gjson.GetBytes(next, "content")
+				nextContent := util.GetGJSONBytesNoCopy(next, "content")
 				parts := synthesized
 				if nextContent.IsArray() {
 					nextContent.ForEach(func(_, block gjson.Result) bool {
@@ -1204,7 +1207,7 @@ func repairClaudeToolPairing(messages [][]byte) [][]byte {
 // in the immediately preceding assistant message folds into plain text.
 // answeredIDs lists the ids allowed to stay tool_result blocks.
 func normalizeClaudeToolResultMessage(msg []byte, answeredIDs map[string]struct{}) ([]byte, bool) {
-	content := gjson.GetBytes(msg, "content")
+	content := util.GetGJSONBytesNoCopy(msg, "content")
 	if !content.IsArray() {
 		return msg, false
 	}
@@ -1642,7 +1645,7 @@ func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct
 
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
 	names := make(map[string]struct{})
-	root := gjson.ParseBytes(requestRawJSON)
+	root := util.ParseGJSONBytesNoCopy(requestRawJSON)
 	toolSearch := ClientToolSearchEnabled()
 	winners := responsesToolWinners(root, toolSearch)
 	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
@@ -1848,17 +1851,18 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 		return "", ""
 	}
 
-	root := gjson.ParseBytes(requestRawJSON)
+	root := util.ParseGJSONBytesNoCopy(requestRawJSON)
 	winners := responsesToolWinners(root, toolSearch)
 	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
-	identity := toolNames.identity(qualifiedName)
+	// root references requestRawJSON; the names go into stream state.
+	identity := strings.Clone(toolNames.identity(qualifiedName))
 
 	descriptor, ok := winners[identity]
 	if !ok {
 		return identity, ""
 	}
 	if !descriptor.direct {
-		return descriptor.childName, descriptor.namespace
+		return strings.Clone(descriptor.childName), strings.Clone(descriptor.namespace)
 	}
 	return identity, ""
 }
@@ -1877,7 +1881,7 @@ func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {
 // not drop the delegated task text. Encrypted content parts are surfaced as
 // input_text, mirroring the multi-agent v2 optimizer used for other upstreams.
 func normalizeCodexAgentMessages(payload []byte) []byte {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return payload
 	}

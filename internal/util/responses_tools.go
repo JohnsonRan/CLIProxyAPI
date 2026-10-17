@@ -538,7 +538,7 @@ func ResponsesToolReverseIdentityMap(rawJSON []byte) map[string]ResponsesToolIde
 	if len(rawJSON) == 0 || !gjson.ValidBytes(rawJSON) {
 		return nil
 	}
-	root := gjson.ParseBytes(rawJSON)
+	root := ParseGJSONBytesNoCopy(rawJSON)
 	if req := root.Get("request"); req.Exists() && (req.Get("model").Exists() || req.Get("input").Exists() || req.Get("tools").Exists()) {
 		root = req
 	}
