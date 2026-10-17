@@ -95,6 +95,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled {
 		redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	}
+	if oldCfg == nil || oldCfg.UsageExcludeEmbeddings != cfg.UsageExcludeEmbeddings {
+		redisqueue.SetExcludeEmbeddingUsage(cfg.UsageExcludeEmbeddings)
+	}
 
 	if oldCfg == nil || oldCfg.RedisUsageQueueRetentionSeconds != cfg.RedisUsageQueueRetentionSeconds {
 		redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
