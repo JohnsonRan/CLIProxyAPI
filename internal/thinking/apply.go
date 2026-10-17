@@ -405,11 +405,21 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	if thinkingIsFullyDisabled(*validated) || nativeResponses {
 		return applied, nil
 	}
+	if providerFormat == "claude" && thinkingRequestedOff(config) && summaryConfig.Mode == SummaryUnspecified {
+		// The model cannot turn thinking off, so ValidateConfig fell back to its
+		// lowest level. Keep the caller's intent of seeing no thinking: without an
+		// explicit display, cloaking would add progress updates.
+		summaryConfig = SummaryConfig{Mode: SummaryDisabled}
+	}
 	return applySummaryConfigForProvider(applied, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
 }
 
 func thinkingIsFullyDisabled(config ThinkingConfig) bool {
 	return config.Mode == ModeNone && config.Budget == 0 && config.Level == ""
+}
+
+func thinkingRequestedOff(config ThinkingConfig) bool {
+	return config.Mode == ModeNone || (config.Mode == ModeBudget && config.Budget == 0)
 }
 
 func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *registry.ModelInfo) bool {
@@ -668,6 +678,12 @@ func extractThinkingConfigForUsage(body []byte, provider string) ThinkingConfig 
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "codex", "xai", "openai-response":
 		return extractCodexUsageConfig(body)
+	case "claude":
+		// between_tools is how claude-sonnet-5-5 turns thinking off.
+		if gjson.GetBytes(body, "thinking.type").String() == "between_tools" {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		return extractThinkingConfig(body, provider)
 	default:
 		return extractThinkingConfig(body, provider)
 	}
