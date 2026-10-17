@@ -1,0 +1,165 @@
+name: 'Upstream Sync'
+
+on:
+  schedule:
+    # Scheduled at 20:18 UTC (04:18 Asia/Shanghai, UTC+8), avoiding minute 0 and multiples of 5.
+    - cron: '18 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+env:
+  # Fixed integration order. Keep in sync with MAINTAIN.md.
+  PATCH_BRANCHES: >-
+    patch/http-compression
+    patch/responses-ws-sse-incremental
+    patch/chatgpt-utls-pool
+    patch/runtime-memory-bounds
+    patch/startup-model-registration
+    patch/claude-api-key-policy
+    patch/management-panel-update
+    patch/management-ua-shim
+    patch/downstream-panel-source
+    patch/fix-interrupt-test-race
+    patch/claude-thinking-off
+    patch/claude-search-recovery
+    patch/codex-oauth-resilience
+    patch/embeddings-and-rerank
+    patch/client-api-key-models
+    patch/proxy-transport-reuse
+    patch/systemone-endpoint
+    patch/model-capabilities
+    patch/quota-cooldown-fail-fast
+    patch/responses-input-tokens
+    patch/openai-compat-model-discovery
+    patch/client-key-provider-scope
+    patch/openai-decisions-endpoint
+    patch/codex-app-keepalive
+    patch/runtime-gc-tuning
+    patch/summary-config-single-scan
+    patch/management-key-bcrypt-cache
+    patch/pgo
+    patch/quota-api
+    patch/responses-tool-identity-lite
+    patch/commandcode-oauth
+    patch/session-claude-identity-once
+    patch/claude-request-nocopy-reads
+    patch/responses-ws-terminal-error-race
+
+jobs:
+  sync-main-with-squash-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Rebuild main from upstream and squash branches
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          git fetch upstream main --tags
+          read -r -a patches <<< "${PATCH_BRANCHES}"
+          git fetch origin ci "${patches[@]}"
+          echo "PREVIOUS_MAIN=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
+          git reset --hard upstream/main
+
+          if ! git merge --squash origin/ci; then
+            mapfile -d '' -t conflicts < <(git diff --name-only --diff-filter=U -z)
+            if (( ${#conflicts[@]} != 1 )) || [[ ${conflicts[0]} != README.md ]]; then
+              printf '::error::Unexpected ci squash conflicts:'
+              printf ' %q' "${conflicts[@]}"
+              printf '\n'
+              exit 1
+            fi
+            git restore --source=origin/ci --staged --worktree -- README.md
+          fi
+          if ! git diff --quiet --diff-filter=U --; then
+            echo '::error::Unresolved conflicts remain after applying ci branch'
+            exit 1
+          fi
+          git commit -m "merge ci branch"
+
+          for branch in "${patches[@]}"; do
+            if ! git merge --squash "origin/${branch}"; then
+              # Known combination conflicts, resolved at their step (see MAINTAIN.md,
+              # "Combination Conflicts"). The resolver fails closed on any other shape.
+              case "${branch}" in
+                patch/client-key-provider-scope)
+                  bash .github/scripts/resolve-union-conflict.sh sdk/api/handlers/handlers_interceptors.go \
+                    f42a0e3014a41933a4ba6c380af390c6a42d3a4513aebb944cbc0addf15d6601 \
+                    22d0e60853c89ef17420ad5709ddd666de3c70edbf2479f570b062539af28354
+                  ;;
+                *)
+                  echo "::error::${branch} does not merge onto the candidate; fix it on the patch branch"
+                  exit 1
+                  ;;
+              esac
+            fi
+            if ! git diff --quiet --diff-filter=U --; then
+              echo "::error::Unresolved conflicts remain after applying ${branch}"
+              exit 1
+            fi
+            if git diff --cached --quiet; then
+              echo "::error::${branch} is empty on the current upstream; confirm whether upstream absorbed it and retire it"
+              exit 1
+            fi
+            git commit -m "merge ${branch} branch"
+          done
+
+      - name: Validate integrated build and patch tests
+        run: |
+          set -euo pipefail
+          go build -o test-output ./cmd/server && rm -f test-output
+          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/translator/claude/openai/responses/... ./internal/translator/common/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./internal/auth/commandcode/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./sdk/cliproxy/usage/... ./internal/util/... ./internal/signature/...
+          go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs|TestCompatDiscoveryCacheKey|CommandCode" ./sdk/cliproxy
+          go test -run "CommandCode" ./internal/watcher/synthesizer
+          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope|TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions" ./internal/runtime/executor
+          go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
+          # Race detector over the packages with shared no-copy buffers and the
+          # locked HTTP continuation cache (needs cgo; ubuntu runners have gcc).
+          CGO_ENABLED=1 go test -race ./internal/util/... ./internal/translator/common/... ./internal/translator/claude/openai/responses/... ./internal/thinking/... ./internal/signature/... ./internal/runtime/executor/helps/...
+          CGO_ENABLED=1 go test -race ./sdk/api/handlers/openai
+          CGO_ENABLED=1 go test -race -run "TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions" ./internal/runtime/executor
+
+      - name: Skip unchanged result
+        id: changed
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse 'HEAD^{tree}')" == "$(git rev-parse "${PREVIOUS_MAIN}^{tree}")" ]]; then
+            echo "Rebuilt tree matches main; nothing to publish."
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push rebuilt main
+        if: steps.changed.outputs.push == 'true'
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_WORKFLOW_TOKEN }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PUSH_TOKEN="${SYNC_TOKEN:-${FALLBACK_TOKEN}}"
+          if [[ -z "${PUSH_TOKEN}" ]]; then
+            echo "::error::Neither SYNC_WORKFLOW_TOKEN nor GITHUB_TOKEN is available"
+            exit 1
+          fi
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease="main:${PREVIOUS_MAIN}" origin HEAD:main
