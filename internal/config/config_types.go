@@ -1013,7 +1013,8 @@ type OpenAICompatibilityModel struct {
 	// This is separate from Image, which only enables /v1/images/* endpoints.
 	InputModalities []string `yaml:"input-modalities,omitempty" json:"input-modalities,omitempty"`
 
-	// OutputModalities declares supported output modalities when known (e.g. text, image).
+	// OutputModalities declares supported output modalities when known, using
+	// OpenRouter names: text, image, embeddings, rerank, decisions.
 	OutputModalities []string `yaml:"output-modalities,omitempty" json:"output-modalities,omitempty"`
 
 	// IsCompat preserves Claude thinking blocks for compatible upstreams.

@@ -45,6 +45,9 @@ type ModelInfo struct {
 	MetadataModelID string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
+	// DefaultThinking indicates Thinking holds a fallback default rather than a
+	// declared capability, so model listings must not advertise it.
+	DefaultThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
 	ExplicitInputModalities bool `json:"-"`
 	// Object type for the model (typically "model")
@@ -1756,8 +1759,22 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if model.MaxCompletionTokens > 0 {
 			result["max_completion_tokens"] = model.MaxCompletionTokens
 		}
+		// Gemini-style catalogs only declare token limits; keep them separate so
+		// consumers of context_length/max_completion_tokens are unaffected.
+		if model.InputTokenLimit > 0 {
+			result["input_token_limit"] = model.InputTokenLimit
+		}
+		if model.OutputTokenLimit > 0 {
+			result["output_token_limit"] = model.OutputTokenLimit
+		}
 		if len(model.SupportedParameters) > 0 {
 			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
+		}
+		if architecture := openAIModelArchitecture(model); architecture != nil {
+			result["architecture"] = architecture
+		}
+		if reasoning := openAIModelReasoning(model); reasoning != nil {
+			result["reasoning"] = reasoning
 		}
 		return result
 
