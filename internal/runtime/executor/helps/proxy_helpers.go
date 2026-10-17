@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
-		transport := buildProxyTransport(proxyURL)
+		transport := cachedProxyTransport(proxyURL)
 		if transport != nil {
 			httpClient.Transport = transport
 			return httpClient
@@ -140,6 +141,30 @@ func effectiveProxyURL(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		return strings.TrimSpace(cfg.ProxyURL)
 	}
 	return ""
+}
+
+// proxyTransportCache keeps one transport per proxy URL, matching the per-proxy
+// scope of the uTLS round trippers and the conductor's round tripper provider.
+var proxyTransportCache = NewTransportCache[string](DefaultTransportCacheCapacity)
+
+var errProxyTransportUnavailable = errors.New("proxy transport unavailable")
+
+// cachedProxyTransport returns a reusable transport for proxyURL.
+// Building a fresh transport per request would discard its connection pool,
+// forcing a new TCP, proxy and TLS handshake on every upstream call and leaving
+// the previous idle connections open until they time out.
+// It returns nil when the proxy URL cannot be used.
+func cachedProxyTransport(proxyURL string) *http.Transport {
+	transport, errGet := proxyTransportCache.Get(proxyURL, func() (*http.Transport, error) {
+		if built := buildProxyTransport(proxyURL); built != nil {
+			return built, nil
+		}
+		return nil, errProxyTransportUnavailable
+	})
+	if errGet != nil {
+		return nil
+	}
+	return transport
 }
 
 // buildProxyTransport creates an HTTP transport configured for the given proxy URL.
