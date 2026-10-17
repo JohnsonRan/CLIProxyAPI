@@ -34,9 +34,11 @@ func TestResponsesHTTPStateCacheOnlyServesTheCreatingCaller(t *testing.T) {
 
 func TestResponsesHTTPStateCacheBoundsRetainedBytes(t *testing.T) {
 	cache := newResponsesHTTPStateCache(0, 100, 1000)
-	payload := bytes.Repeat([]byte("x"), 300)
-	for _, id := range []string{"resp_1", "resp_2", "resp_3", "resp_4"} {
-		cache.put(id, responsesHTTPStateEntry{request: payload})
+	payloadFor := func(fill string) []byte { return bytes.Repeat([]byte(fill), 300) }
+	payload := payloadFor("d")
+	for i, id := range []string{"resp_1", "resp_2", "resp_3", "resp_4"} {
+		// Distinct contents: identical ones would be stored once.
+		cache.put(id, responsesHTTPStateEntry{request: payloadFor(string(rune('a' + i)))})
 	}
 	if cache.totalBytes > 1000 {
 		t.Fatalf("totalBytes = %d, want <= 1000", cache.totalBytes)
