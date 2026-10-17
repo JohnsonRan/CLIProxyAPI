@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -175,5 +176,36 @@ func BenchmarkResponsesHTTPStateCachePutGet(b *testing.B) {
 			cache.put(id, responsesHTTPStateEntry{request: requests[n], responseOutput: outputs[n]})
 			cache.get(id, "")
 		}
+	}
+}
+
+// Concurrent conversations share chunks (the same tools skeleton and, between
+// turns, the same items) under one lock; run with -race.
+func TestResponsesHTTPStateCacheConcurrentConversations(t *testing.T) {
+	requests, outputs := conversationTurns(12, 128)
+	cache := newResponsesHTTPStateCache(0, 64, 1<<20)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for n := range requests {
+				id := fmt.Sprintf("resp_%d_%d", worker, n)
+				cache.put(id, responsesHTTPStateEntry{request: requests[n], responseOutput: outputs[n]})
+				if got, ok := cache.get(id, ""); ok && !bytes.Equal(got.request, requests[n]) {
+					t.Errorf("worker %d turn %d: request did not round-trip", worker, n)
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	for id, stored := range cache.entries {
+		cache.removeLocked(id, stored)
+	}
+	if cache.totalBytes != 0 || len(cache.chunks) != 0 {
+		t.Fatalf("after removing every entry: totalBytes=%d chunks=%d", cache.totalBytes, len(cache.chunks))
 	}
 }
