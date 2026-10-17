@@ -223,7 +223,14 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
     - **Related Upstream Work**: Issue [#3955](https://github.com/router-for-me/CLIProxyAPI/issues/3955) (closed), PR [#3969](https://github.com/router-for-me/CLIProxyAPI/pull/3969) (closed; the maintainer asked for a plugin instead of a built-in CLI wrapper), PR [#5060](https://github.com/router-for-me/CLIProxyAPI/pull/5060) (open, conflicting; Go plan through `/alpha/generate`, API keys only). The store plugins above take API keys from config and have no browser login. Searched `commandcode`, `command code`, `command-code` on 2026-10-16.
     - **Retire when**: Upstream ships a Command Code login, or the fork switches to a plugin that provides it.
 
-32. **`patch/session-claude-identity-once`**
+32. **`tmp/patch/commandcode-quota-api`** (compatibility patch)
+    - **Goal**: Let `GET /v1/usage` (`patch/quota-api`) report Command Code logins (`patch/commandcode-oauth`). They are OAuth-kind credentials, but the quota pool listed only `codex`, `claude`, `antigravity` and `xai`, so they could not be selected for a key.
+    - **Scope**: `clientUsageProvider` accepts `commandcode`; `client_usage_commandcode.go` probes `GET https://api.commandcode.ai/alpha/billing/credits` and `/alpha/billing/subscriptions` with the credential's API key, the endpoints the panel's quota card reads. Bodies pass through with the usual redaction (`userId` and the other IDs; plan and credit fields stay). Tests: `client_usage_commandcode_test.go`.
+    - **Integration**: The branch is `patch/quota-api` (`cc9d84ea`) merged with `patch/commandcode-oauth` (`e05b66d2`) into the base `bd39912f`, plus the compatibility commit. Squashing it would re-add both source patches without shared ancestry (add/add conflicts in `client_usage.go`), so the workflow applies `git diff <base> origin/tmp/patch/commandcode-quota-api` with `git apply --3way --index`; the base is pinned in `COMPAT_BASES`. When either source patch changes, the workflow warns: re-merge the new tips into a fresh base, rebase the compatibility commit onto it and update `COMPAT_BASES`.
+    - **Cross-repo**: The panel `tmp/patch/commandcode-quota-api` lists Command Code credentials in the quota credential picker.
+    - **Retire when**: Either source patch is retired.
+
+33. **`patch/session-claude-identity-once`**
     - **Goal**: Stop re-scanning large request bodies for Claude metadata identities during session extraction.
     - **Scope**: `session.ExtractSessionInfo` already indexes the top-level members once (`newSessionObject`, upstream `1dffddf4`), but called `ClaudeMetadataIdentities(payload)` / `ClaudeMetadataParentSessionID(payload)` up to three times per request, each re-parsing the raw body and walking it for `metadata.user_id`, `request` and `contents`. A Codex Responses body carries no `metadata`, so every call paid full top-level scans over the `input` history: 0.30 s of the 4.54 s WebSocket-to-Codex path in the 2026-10-16 21:09 profile. Extraction now resolves the identities lazily, at most once, from the existing `sessionObject` index (`claudeMetadataIdentitiesFromSessionObject`); the exported helpers keep their signatures and results and share the user_id parsing (`parseClaudeMetadataIdentities`). 1 MiB Codex body: 710 → 148 µs per extraction; 1 MiB Claude body with `metadata.user_id`: 142 → 148 µs, 9 → 7 allocs. Output is identical for valid JSON; malformed JSON may recover differently, as the rest of the function already does since `1dffddf4`. `info_equivalence_test.go` pins the output against the pre-change logic; `info_performance_test.go` carries the benchmark.
     - **Related Upstream Work**: Issue [#6114](https://github.com/router-for-me/CLIProxyAPI/issues/6114) (closed; session extraction rescanning bodies pinned CPA at 27–31 cores), fixed in part by `1dffddf4`. PR [#6058](https://github.com/router-for-me/CLIProxyAPI/pull/6058) (open, conflicting, no review) indexes fields more broadly and also reuses Claude identity parsing within an extraction; it predates `1dffddf4`. This patch carries only the identity part on top of current upstream. Searched `ClaudeMetadataIdentities`, `ExtractSessionInfo`, session/WebSocket performance on 2026-10-16.
@@ -239,6 +246,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 Textual conflicts between two patches that neither branch owns are resolved at the step where they occur, in `.github/workflows/upstream-sync.yml`, and the same commands appear in the rebuild procedure below.
 
 - **`patch/client-api-key-models` + `patch/client-key-provider-scope`**, `sdk/api/handlers/handlers_interceptors.go`: both insert a filter at the same spot in `WriteModelListResponse`, after response interceptors. `.github/scripts/resolve-union-conflict.sh` keeps both blocks (client model rules first, then key scopes), so a model is listed only when both allow it. It checks the SHA-256 of each side and fails closed on any other shape: when either branch changes that block, review the combination again and update the hashes. `sdk/api/handlers/downstream_client_access_combination_test.go` (owned by `ci`) checks the intersection in lists and execution. Retire with either patch.
+- **`patch/quota-api` + `patch/commandcode-oauth`**: the two merge cleanly, but the Command Code quota probe belongs to neither patch and lives on `tmp/patch/commandcode-quota-api` (patch 32), applied as a base..tip delta.
 
 ## Retired Patch Branches
 
@@ -250,7 +258,9 @@ Textual conflicts between two patches that neither branch owns are resolved at t
 
 ```bash
 git fetch upstream main --tags
-branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/management-key-bcrypt-cache patch/pgo patch/quota-api patch/responses-tool-identity-lite patch/commandcode-oauth patch/session-claude-identity-once)
+branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/fix-interrupt-test-race patch/claude-thinking-off patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/management-key-bcrypt-cache patch/pgo patch/quota-api patch/responses-tool-identity-lite patch/commandcode-oauth tmp/patch/commandcode-quota-api patch/session-claude-identity-once)
+# Compatibility patches applied as base..tip deltas; keep in sync with COMPAT_BASES.
+declare -A compat_bases=([tmp/patch/commandcode-quota-api]=bd39912f4ea4bbe3c392cf69492928bf8e18dfd8)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
@@ -258,7 +268,9 @@ git checkout -B main upstream/main
 git merge --squash origin/ci || git restore --source=origin/ci --staged --worktree -- README.md
 git commit -m "merge ci branch"
 for branch in "${branches[@]}"; do
-  if ! git merge --squash "origin/${branch}"; then
+  if [[ -n "${compat_bases[${branch}]:-}" ]]; then
+    git diff "${compat_bases[${branch}]}" "origin/${branch}" | git apply --3way --index || exit 1
+  elif ! git merge --squash "origin/${branch}"; then
     case "${branch}" in
       # See "Combination Conflicts".
       patch/client-key-provider-scope)
