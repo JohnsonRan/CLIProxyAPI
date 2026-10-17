@@ -49,6 +49,7 @@ env:
     patch/commandcode-oauth
     patch/session-claude-identity-once
     patch/claude-request-nocopy-reads
+    patch/responses-ws-terminal-error-race
 
 jobs:
   sync-main-with-squash-branches:
@@ -134,7 +135,7 @@ jobs:
           # Race detector over the packages with shared no-copy buffers and the
           # locked HTTP continuation cache (needs cgo; ubuntu runners have gcc).
           CGO_ENABLED=1 go test -race ./internal/util/... ./internal/translator/common/... ./internal/translator/claude/openai/responses/... ./internal/thinking/... ./internal/signature/... ./internal/runtime/executor/helps/...
-          CGO_ENABLED=1 go test -race -run "ResponsesHTTPState|HTTPIncremental" ./sdk/api/handlers/openai
+          CGO_ENABLED=1 go test -race ./sdk/api/handlers/openai
           CGO_ENABLED=1 go test -race -run "TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions" ./internal/runtime/executor
 
       - name: Skip unchanged result
