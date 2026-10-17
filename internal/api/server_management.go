@@ -336,5 +336,17 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, errRead := os.ReadFile(filePath)
+	if errRead != nil {
+		log.WithError(errRead).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	patched := managementasset.PatchManagementHTML(data)
+	if len(patched) == len(data) {
+		// Nothing injected: keep http.ServeFile's conditional-request handling.
+		c.File(filePath)
+		return
+	}
+	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
 }
