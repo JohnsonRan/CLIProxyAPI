@@ -573,8 +573,11 @@ type PayloadModelRule struct {
 // Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
 type CloakConfig struct {
 	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
-	// Supplying this CloakConfig explicitly enables cloaking for an unprofiled API key.
+	// An unprofiled API key is cloaked only when this block is explicit: a mode other
+	// than "auto", strict-mode, sensitive-words, or cache-user-id: true. An empty or
+	// "auto" block keeps the official API key's native wire format.
 	// - "auto": cloak unless strong request signals identify a verified native entrypoint
+	//   (for unprofiled API keys, only together with one of the explicit settings above)
 	// - "always": cloak every unconfirmed client; confirmed native Claude Code remains passthrough
 	// - "never": never apply cloaking
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
