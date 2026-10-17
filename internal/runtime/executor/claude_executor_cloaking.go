@@ -1978,23 +1978,60 @@ func upgradeClaudeCacheControlTTL(payload []byte, ttl string) []byte {
 		return payload
 	}
 
+	// Splice every upgraded block in one pass: rewriting the body once per
+	// cache_control block copied the whole conversation each time.
+	var edits []claudeRawJSONEdit
+	offsetsValid := true
+	forEachClaudeCacheControlBlock(payload, func(_ string, block gjson.Result) {
+		cacheControl, upgraded, ok := upgradedClaudeCacheControl(block, ttl)
+		if !ok || !offsetsValid {
+			return
+		}
+		start, end := cacheControl.Index, cacheControl.Index+len(cacheControl.Raw)
+		if start <= 0 || end > len(payload) || string(payload[start:end]) != cacheControl.Raw {
+			offsetsValid = false
+			return
+		}
+		edits = append(edits, claudeRawJSONEdit{start: start, end: end, replacement: upgraded})
+	})
+	if offsetsValid {
+		if updated, ok := applyClaudeRawJSONEdits(payload, edits); ok {
+			return updated
+		}
+	}
+	return upgradeClaudeCacheControlTTLByPath(payload, ttl)
+}
+
+// upgradedClaudeCacheControl returns the block's cache_control and its
+// upgraded form, or false when the block keeps its cache_control.
+func upgradedClaudeCacheControl(block gjson.Result, ttl string) (gjson.Result, string, bool) {
+	cacheControl := block.Get("cache_control")
+	if !cacheControl.IsObject() || cacheControl.Get("ttl").Exists() {
+		return cacheControl, "", false
+	}
+	blockType := cacheControl.Get("type")
+	if blockType.Type != gjson.String {
+		return cacheControl, "", false
+	}
+	// Rebuild the object so the native {type, ttl, scope} key order survives
+	// instead of appending ttl after a caller-supplied scope.
+	upgraded := `{"type":` + marshalJSONStringWithoutHTMLEscape(blockType.String()) +
+		`,"ttl":` + marshalJSONStringWithoutHTMLEscape(ttl)
+	if scope := cacheControl.Get("scope"); scope.Exists() {
+		upgraded += `,"scope":` + scope.Raw
+	}
+	return cacheControl, upgraded + "}", true
+}
+
+// upgradeClaudeCacheControlTTLByPath rewrites one block at a time. It is the
+// fallback when gjson offsets do not point into payload, and the oracle for
+// the batched path in tests.
+func upgradeClaudeCacheControlTTLByPath(payload []byte, ttl string) []byte {
 	upgrade := func(path string, block gjson.Result) {
-		cacheControl := block.Get("cache_control")
-		if !cacheControl.IsObject() || cacheControl.Get("ttl").Exists() {
+		_, upgraded, ok := upgradedClaudeCacheControl(block, ttl)
+		if !ok {
 			return
 		}
-		blockType := cacheControl.Get("type")
-		if blockType.Type != gjson.String {
-			return
-		}
-		// Rebuild the object so the native {type, ttl, scope} key order survives
-		// instead of appending ttl after a caller-supplied scope.
-		upgraded := `{"type":` + marshalJSONStringWithoutHTMLEscape(blockType.String()) +
-			`,"ttl":` + marshalJSONStringWithoutHTMLEscape(ttl)
-		if scope := cacheControl.Get("scope"); scope.Exists() {
-			upgraded += `,"scope":` + scope.Raw
-		}
-		upgraded += "}"
 		updated, errSet := sjson.SetRawBytes(payload, path+".cache_control", []byte(upgraded))
 		if errSet != nil {
 			return
