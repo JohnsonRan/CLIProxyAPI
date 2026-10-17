@@ -11,6 +11,7 @@ import (
 
 	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -671,7 +672,7 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 }
 
 func newClaudeToResponsesState(requestJSON []byte, toolSearch bool) *claudeToResponsesState {
-	root := gjson.ParseBytes(requestJSON)
+	root := util.ParseGJSONBytesNoCopy(requestJSON)
 	winners := responsesToolWinners(root, toolSearch)
 	return &claudeToResponsesState{
 		ToolSearch:              toolSearch,

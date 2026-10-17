@@ -73,7 +73,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
 	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(modelName))
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 
 	// Convert OpenAI Responses reasoning.effort to Claude thinking config.
 	if v := root.Get("reasoning.effort"); v.Exists() {
@@ -1694,7 +1694,7 @@ func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct
 
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
 	names := make(map[string]struct{})
-	root := gjson.ParseBytes(requestRawJSON)
+	root := util.ParseGJSONBytesNoCopy(requestRawJSON)
 	toolSearch := ClientToolSearchEnabled()
 	winners := responsesToolWinners(root, toolSearch)
 	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
@@ -1900,17 +1900,18 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 		return "", ""
 	}
 
-	root := gjson.ParseBytes(requestRawJSON)
+	root := util.ParseGJSONBytesNoCopy(requestRawJSON)
 	winners := responsesToolWinners(root, toolSearch)
 	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
-	identity := toolNames.identity(qualifiedName)
+	// root references requestRawJSON; the names go into stream state.
+	identity := strings.Clone(toolNames.identity(qualifiedName))
 
 	descriptor, ok := winners[identity]
 	if !ok {
 		return identity, ""
 	}
 	if !descriptor.direct {
-		return descriptor.childName, descriptor.namespace
+		return strings.Clone(descriptor.childName), strings.Clone(descriptor.namespace)
 	}
 	return identity, ""
 }
