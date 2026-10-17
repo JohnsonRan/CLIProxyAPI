@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -37,7 +38,7 @@ func RecognizedAntigravityCompactionCapsule(encryptedContent string) bool {
 
 // HasResponsesCompactionTrigger checks whether input contains a compaction_trigger item.
 func HasResponsesCompactionTrigger(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -51,7 +52,7 @@ func HasResponsesCompactionTrigger(payload []byte) bool {
 
 // HasResponsesCompactionItem checks whether input contains a compaction item.
 func HasResponsesCompactionItem(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -82,7 +83,7 @@ func ResponsesCompactionSourcePayload(req cliproxyexecutor.Request, opts cliprox
 
 // DropForeignResponsesCompactionItems removes compaction items whose encrypted_content does not use the CPA capsule prefix.
 func DropForeignResponsesCompactionItems(payload []byte, provider string) []byte {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return payload
 	}
