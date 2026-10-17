@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -25,10 +26,234 @@ import (
 )
 
 // utlsRoundTripper implements http.RoundTripper using a Chrome fingerprint for
-// providers that require browser-like TLS. The HTTP version follows ALPN. Each
-// request gets a dedicated connection that is closed with the response body.
+// providers that require browser-like TLS. The HTTP version follows ALPN.
 type utlsRoundTripper struct {
-	dialer proxy.Dialer
+	dialer       proxy.Dialer
+	rootCAs      *x509.CertPool
+	sessionCache tls.ClientSessionCache
+	poolH2       bool
+
+	poolMu sync.Mutex
+	h2Pool map[string]*http2.ClientConn
+}
+
+const (
+	utlsConnectionAttempts           = 3
+	chatGPTSessionCacheCapacity      = 32
+	chatGPTRoundTripperCacheCapacity = 64
+)
+
+var chatGPTRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
+	chatGPTRoundTripperCacheCapacity,
+	func(_ string, roundTripper http.RoundTripper) {
+		if transport, ok := roundTripper.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	},
+)
+
+func cachedChatGPTRoundTripper(proxyURL string) http.RoundTripper {
+	return chatGPTRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
+		return newUtlsRoundTripper(proxyURL)
+	})
+}
+
+func retryableUtlsConnectionError(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+		return false
+	}
+	var certificateErr *tls.CertificateVerificationError
+	if errors.As(err, &certificateErr) {
+		return false
+	}
+	var unknownAuthErr x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthErr) {
+		return false
+	}
+	var certInvalidErr x509.CertificateInvalidError
+	if errors.As(err, &certInvalidErr) {
+		return false
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return false
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	var operationErr *net.OpError
+	return errors.As(err, &operationErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+func (t *utlsRoundTripper) connectWithRetry(ctx context.Context, host, addr string) (*tls.UConn, error) {
+	for attempt := 1; attempt <= utlsConnectionAttempts; attempt++ {
+		if errContext := ctx.Err(); errContext != nil {
+			return nil, errContext
+		}
+		started := time.Now()
+		connection, errConnect := t.createConnection(ctx, host, addr)
+		if errConnect == nil {
+			return connection, nil
+		}
+		if errContext := ctx.Err(); errContext != nil {
+			return nil, errContext
+		}
+		if !retryableUtlsConnectionError(errConnect) {
+			return nil, errConnect
+		}
+		if attempt == utlsConnectionAttempts {
+			// Return the raw transport error so the conductor classifies it as a
+			// transient transport failure instead of cooling the credential.
+			return nil, errConnect
+		}
+		phase := "dial"
+		if strings.Contains(errConnect.Error(), "TLS handshake") {
+			phase = "handshake"
+		}
+		log.WithFields(log.Fields{
+			"host": host, "phase": phase, "attempt": attempt,
+			"max_attempts": utlsConnectionAttempts, "elapsed_ms": time.Since(started).Milliseconds(),
+		}).Warn("utls: retrying connection setup after transient failure")
+		timer := time.NewTimer(time.Duration(100+rand.IntN(151)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("utls: connection attempts exhausted")
+}
+
+// utlsH2IdleTimeout closes pooled HTTP/2 connections that carry no streams,
+// matching net/http's default idle connection lifetime.
+const utlsH2IdleTimeout = 90 * time.Second
+
+// retireH2Conn stops conn from taking new requests and closes it once its
+// in-flight streams finish, without interrupting them.
+func retireH2Conn(conn *http2.ClientConn) {
+	if conn == nil {
+		return
+	}
+	go func() {
+		if errShutdown := conn.Shutdown(context.Background()); errShutdown != nil {
+			_ = conn.Close()
+		}
+	}()
+}
+
+// h2ConnUsable reports whether conn can carry a new request. CanTakeNewRequest
+// alone still reports true for a connection that was closed before its first
+// request, so the closing state is checked as well.
+func h2ConnUsable(conn *http2.ClientConn) bool {
+	state := conn.State()
+	return !state.Closed && !state.Closing && conn.CanTakeNewRequest()
+}
+
+func (t *utlsRoundTripper) newH2ClientConn(conn net.Conn) (*http2.ClientConn, error) {
+	return (&http2.Transport{IdleConnTimeout: utlsH2IdleTimeout}).NewClientConn(conn)
+}
+
+func (t *utlsRoundTripper) CloseIdleConnections() {
+	if t == nil {
+		return
+	}
+	t.poolMu.Lock()
+	conns := make([]*http2.ClientConn, 0, len(t.h2Pool))
+	for addr, conn := range t.h2Pool {
+		delete(t.h2Pool, addr)
+		if conn != nil {
+			conns = append(conns, conn)
+		}
+	}
+	t.poolMu.Unlock()
+	for _, conn := range conns {
+		retireH2Conn(conn)
+	}
+}
+
+func (t *utlsRoundTripper) getPooledH2Conn(addr string) *http2.ClientConn {
+	if t == nil || !t.poolH2 {
+		return nil
+	}
+	t.poolMu.Lock()
+	conn := t.h2Pool[addr]
+	if conn != nil && h2ConnUsable(conn) {
+		t.poolMu.Unlock()
+		return conn
+	}
+	if conn != nil {
+		delete(t.h2Pool, addr)
+	}
+	t.poolMu.Unlock()
+	retireH2Conn(conn)
+	return nil
+}
+
+func (t *utlsRoundTripper) putPooledH2Conn(addr string, conn *http2.ClientConn) {
+	if t == nil || !t.poolH2 || conn == nil {
+		return
+	}
+	t.poolMu.Lock()
+	if t.h2Pool == nil {
+		t.h2Pool = make(map[string]*http2.ClientConn)
+	}
+	previous := t.h2Pool[addr]
+	t.h2Pool[addr] = conn
+	t.poolMu.Unlock()
+	if previous != conn {
+		retireH2Conn(previous)
+	}
+}
+
+// dropPooledH2Conn removes conn from the pool if it is still the pooled entry
+// and retires it.
+func (t *utlsRoundTripper) dropPooledH2Conn(addr string, conn *http2.ClientConn) {
+	if t == nil || conn == nil {
+		return
+	}
+	t.poolMu.Lock()
+	if t.h2Pool[addr] == conn {
+		delete(t.h2Pool, addr)
+	}
+	t.poolMu.Unlock()
+	retireH2Conn(conn)
+}
+
+// prepareRetryOnFreshH2Conn decides whether a request that failed on a pooled
+// connection may be sent again on a new one. Only failures where the server
+// cannot have processed the request qualify: the connection became unusable
+// before the stream started, or the server refused the stream. The body is
+// rewound through GetBody; requests whose body cannot be replayed are not retried.
+func prepareRetryOnFreshH2Conn(req *http.Request, err error) (*http.Request, bool) {
+	if req == nil || err == nil || req.Context().Err() != nil {
+		return nil, false
+	}
+	var streamErr http2.StreamError
+	refused := errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeRefusedStream
+	message := err.Error()
+	// "client conn is closed" is deliberately excluded: x/net also returns it
+	// while writing the body, after HEADERS were sent, so a retry could resend.
+	unusable := strings.Contains(message, "client conn not usable") ||
+		strings.Contains(message, "graceful shutdown GOAWAY")
+	if !refused && !unusable {
+		return nil, false
+	}
+	if req.Body == nil || req.Body == http.NoBody {
+		return req, true
+	}
+	if req.GetBody == nil {
+		return nil, false
+	}
+	body, errBody := req.GetBody()
+	if errBody != nil {
+		return nil, false
+	}
+	retry := req.Clone(req.Context())
+	retry.Body = body
+	return retry, true
 }
 
 type closeConnectionBody struct {
@@ -66,11 +291,20 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 			dialer = proxyDialer
 		}
 	}
-	return &utlsRoundTripper{dialer: dialer}
+	return &utlsRoundTripper{
+		dialer:       dialer,
+		sessionCache: tls.NewLRUClientSessionCache(chatGPTSessionCacheCapacity),
+		poolH2:       true,
+		h2Pool:       make(map[string]*http2.ClientConn),
+	}
 }
 
 func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*tls.UConn, error) {
-	contextDialer, ok := t.dialer.(proxy.ContextDialer)
+	dialer := t.dialer
+	if dialer == nil {
+		dialer = proxy.Direct
+	}
+	contextDialer, ok := dialer.(proxy.ContextDialer)
 	if !ok {
 		return nil, fmt.Errorf("utls: dialer does not support context cancellation")
 	}
@@ -79,7 +313,11 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 		return nil, fmt.Errorf("utls: dial upstream: %w", errDial)
 	}
 
-	tlsConfig := &tls.Config{ServerName: host}
+	tlsConfig := &tls.Config{
+		ServerName:         host,
+		RootCAs:            t.rootCAs,
+		ClientSessionCache: t.sessionCache,
+	}
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
 	handshakeCtx, cancelHandshake := handshakeContext(ctx)
@@ -106,9 +344,48 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	tlsConn, err := t.createConnection(req.Context(), hostname, addr)
+	if h2Conn := t.getPooledH2Conn(addr); h2Conn != nil {
+		resp, err := h2Conn.RoundTrip(req)
+		if err == nil && resp != nil {
+			if resp.Body == nil {
+				resp.Body = http.NoBody
+			}
+			return resp, nil
+		}
+		t.dropPooledH2Conn(addr, h2Conn)
+		if err == nil {
+			return nil, fmt.Errorf("utls: upstream returned an empty response")
+		}
+		retry, ok := prepareRetryOnFreshH2Conn(req, err)
+		if !ok {
+			return nil, err
+		}
+		req = retry
+	}
+
+	tlsConn, err := t.connectWithRetry(req.Context(), hostname, addr)
 	if err != nil {
 		return nil, err
+	}
+	if t.poolH2 && tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
+		h2Conn, errClientConn := t.newH2ClientConn(tlsConn)
+		if errClientConn != nil {
+			_ = tlsConn.Close()
+			return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
+		}
+		t.putPooledH2Conn(addr, h2Conn)
+		resp, errRT := h2Conn.RoundTrip(req)
+		if errRT != nil {
+			t.dropPooledH2Conn(addr, h2Conn)
+			return nil, errRT
+		}
+		if resp == nil {
+			return nil, fmt.Errorf("utls: upstream returned an empty response")
+		}
+		if resp.Body == nil {
+			resp.Body = http.NoBody
+		}
+		return resp, nil
 	}
 	return roundTripUtlsConnection(req, tlsConn)
 }
@@ -444,7 +721,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var chromeRT http.RoundTripper = cachedChatGPTRoundTripper(proxyURL)
 	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {
