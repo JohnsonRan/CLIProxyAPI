@@ -47,13 +47,7 @@ env:
     patch/quota-api
     patch/responses-tool-identity-lite
     patch/commandcode-oauth
-    tmp/patch/commandcode-quota-api
     patch/session-claude-identity-once
-  # Compatibility patches applied as base..tip deltas (see MAINTAIN.md,
-  # "Combination Conflicts"): <branch>=<base commit>. The base merges the
-  # patch tips the compatibility patch was written against.
-  COMPAT_BASES: >-
-    tmp/patch/commandcode-quota-api=bd39912f4ea4bbe3c392cf69492928bf8e18dfd8
 
 jobs:
   sync-main-with-squash-branches:
@@ -100,31 +94,8 @@ jobs:
           fi
           git commit -m "merge ci branch"
 
-          declare -A compat_bases=()
-          for entry in ${COMPAT_BASES}; do
-            compat_bases["${entry%%=*}"]="${entry#*=}"
-          done
-
           for branch in "${patches[@]}"; do
-            if [[ -n "${compat_bases[${branch}]:-}" ]]; then
-              # Squashing would re-add both source patches with no shared ancestry
-              # (add/add conflicts), so apply only the compatibility delta.
-              base="${compat_bases[${branch}]}"
-              if ! git merge-base --is-ancestor "${base}" "origin/${branch}"; then
-                echo "::error::${branch} no longer contains its base ${base}; update COMPAT_BASES"
-                exit 1
-              fi
-              tips=" $(for p in "${patches[@]}"; do git rev-parse "origin/${p}"; done | tr '\n' ' ')"
-              for parent in $(git rev-list --parents -n 1 "${base}" | cut -d' ' -f2-); do
-                if [[ "${tips}" != *" ${parent} "* ]]; then
-                  echo "::warning::${branch} base parent ${parent} is no longer a patch branch tip; revalidate the combination"
-                fi
-              done
-              if ! git diff "${base}" "origin/${branch}" | git apply --3way --index; then
-                echo "::error::${branch} delta does not apply; fix it on the compatibility branch"
-                exit 1
-              fi
-            elif ! git merge --squash "origin/${branch}"; then
+            if ! git merge --squash "origin/${branch}"; then
               # Known combination conflicts, resolved at their step (see MAINTAIN.md,
               # "Combination Conflicts"). The resolver fails closed on any other shape.
               case "${branch}" in
