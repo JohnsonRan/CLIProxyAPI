@@ -366,7 +366,7 @@ func claudeThinkingTypeAcceptsBlockBinding(model, thinkingType string) bool {
 // block, i.e. history Anthropic subjects to prefix binding validation.
 func claudeBodyHasSignedThinkingBlock(body []byte) bool {
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+	util.GetGJSONBytesNoCopy(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
 			switch strings.TrimSpace(block.Get("type").String()) {
 			case "thinking":
@@ -454,14 +454,14 @@ func claudeIncludePerTurnTiming(body []byte, requested map[string]bool) bool {
 	if requested[claudePerTurnTimingBeta] {
 		return true
 	}
-	if !claudeModelHasPerTurnTiming(gjson.GetBytes(body, "model").String()) {
+	if !claudeModelHasPerTurnTiming(util.GetGJSONBytesNoCopy(body, "model").String()) {
 		return false
 	}
-	if gjson.GetBytes(body, "output_config.timing").Exists() {
+	if util.GetGJSONBytesNoCopy(body, "output_config.timing").Exists() {
 		return true
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+	util.GetGJSONBytesNoCopy(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		if msg.Get("output_config.timing").Exists() {
 			found = true
 			return false
@@ -476,7 +476,7 @@ func claudeIncludeInlineTools(body []byte, requested map[string]bool) bool {
 		return true
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+	util.GetGJSONBytesNoCopy(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
 			if strings.EqualFold(strings.TrimSpace(block.Get("type").String()), "tool_addition") && block.Get("tool.definition").Exists() {
 				found = true
@@ -1853,14 +1853,15 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 		// Preserve the first-seen original name if the same upstream name is
 		// produced from multiple call sites; they all map back identically.
 		if _, exists := reverseMap[renamed]; !exists {
-			reverseMap[renamed] = original
+			// original may reference body, which the returned map outlives.
+			reverseMap[renamed] = strings.Clone(original)
 		}
 	}
 
 	// Build one request-specific forward map from declarations. Every client
 	// tool, including typed custom declarations and names resembling Claude
 	// built-ins, gets an MCP alias. Historical references use this same map.
-	tools := gjson.GetBytes(body, "tools")
+	tools := util.GetGJSONBytesNoCopy(body, "tools")
 	forwardMap := make(map[string]string)
 	protectedNames := make(map[string]bool)
 	reservedNames := helps.AugmentClaudeBuiltinToolRegistry(body, nil)
@@ -1990,7 +1991,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 	}
 
 	// 2. Rename tool_choice if it references a declared client tool.
-	toolChoice := gjson.GetBytes(body, "tool_choice")
+	toolChoice := util.GetGJSONBytesNoCopy(body, "tool_choice")
 	if toolChoice.Get("type").String() == "tool" {
 		nameResult := toolChoice.Get("name")
 		tcName := nameResult.String()
@@ -2004,7 +2005,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 
 	// 3. Rename tool references in messages while every Result.Index still
 	// points into the original request bytes.
-	messages := gjson.GetBytes(body, "messages")
+	messages := util.GetGJSONBytesNoCopy(body, "messages")
 	validOffsets := true
 	if messages.Exists() && messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {

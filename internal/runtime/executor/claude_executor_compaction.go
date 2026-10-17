@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -46,7 +47,7 @@ func expandClaudeResponsesCompaction(req *cliproxyexecutor.Request, opts *clipro
 }
 
 func dropForeignClaudeCompactionItems(payload []byte) []byte {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return payload
 	}

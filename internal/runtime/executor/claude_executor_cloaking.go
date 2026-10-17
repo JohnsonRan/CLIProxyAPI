@@ -812,7 +812,7 @@ func claudeCallerSystemReminder(text string) string {
 // advisor result to the conversation layout; any mid-conversation system splice
 // shifts message indices and causes upstream 400 errors.
 func claudeHistoryHasAdvisorCallOrResult(payload []byte) bool {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}
@@ -904,7 +904,7 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 		return payload
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return payload
 	}
@@ -1281,7 +1281,7 @@ Today's date is %s.
 }
 
 func firstClaudeUserMessageIndex(payload []byte) int {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return -1
 	}
@@ -1940,19 +1940,19 @@ func stripClaudeCacheControlTTL(payload []byte) []byte {
 // forEachClaudeCacheControlBlock walks every block that can carry cache_control
 // in Anthropic's evaluation order: tools, then system, then messages.
 func forEachClaudeCacheControlBlock(payload []byte, visit func(path string, block gjson.Result)) {
-	if tools := gjson.GetBytes(payload, "tools"); tools.IsArray() {
+	if tools := util.GetGJSONBytesNoCopy(payload, "tools"); tools.IsArray() {
 		tools.ForEach(func(idx, item gjson.Result) bool {
 			visit(fmt.Sprintf("tools.%d", int(idx.Int())), item)
 			return true
 		})
 	}
-	if system := gjson.GetBytes(payload, "system"); system.IsArray() {
+	if system := util.GetGJSONBytesNoCopy(payload, "system"); system.IsArray() {
 		system.ForEach(func(idx, item gjson.Result) bool {
 			visit(fmt.Sprintf("system.%d", int(idx.Int())), item)
 			return true
 		})
 	}
-	if messages := gjson.GetBytes(payload, "messages"); messages.IsArray() {
+	if messages := util.GetGJSONBytesNoCopy(payload, "messages"); messages.IsArray() {
 		messages.ForEach(func(msgIdx, message gjson.Result) bool {
 			content := message.Get("content")
 			if !content.IsArray() {
@@ -2018,7 +2018,7 @@ func countCacheControls(payload []byte) int {
 	count := 0
 
 	// Check system
-	system := gjson.GetBytes(payload, "system")
+	system := util.GetGJSONBytesNoCopy(payload, "system")
 	if system.IsArray() {
 		system.ForEach(func(_, item gjson.Result) bool {
 			if isValidClaudeCacheControl(item.Get("cache_control")) {
@@ -2029,7 +2029,7 @@ func countCacheControls(payload []byte) int {
 	}
 
 	// Check tools
-	tools := gjson.GetBytes(payload, "tools")
+	tools := util.GetGJSONBytesNoCopy(payload, "tools")
 	if tools.IsArray() {
 		tools.ForEach(func(_, item gjson.Result) bool {
 			if isValidClaudeCacheControl(item.Get("cache_control")) {
@@ -2040,7 +2040,7 @@ func countCacheControls(payload []byte) int {
 	}
 
 	// Check messages
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2101,7 +2101,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		modified = true
 	}
 
-	tools := gjson.GetBytes(payload, "tools")
+	tools := util.GetGJSONBytesNoCopy(payload, "tools")
 	if tools.IsArray() {
 		tools.ForEach(func(idx, item gjson.Result) bool {
 			processBlock(fmt.Sprintf("tools.%d", int(idx.Int())), item)
@@ -2109,7 +2109,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		})
 	}
 
-	system := gjson.GetBytes(payload, "system")
+	system := util.GetGJSONBytesNoCopy(payload, "system")
 	if system.IsArray() {
 		system.ForEach(func(idx, item gjson.Result) bool {
 			processBlock(fmt.Sprintf("system.%d", int(idx.Int())), item)
@@ -2117,7 +2117,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		})
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2340,7 +2340,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 // stamping the last element of an existing array. Markers on other messages must
 // not suppress this rolling write.
 func injectMessagesCacheControl(payload []byte) []byte {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return payload
 	}
@@ -2371,7 +2371,7 @@ func injectMessagesCacheControl(payload []byte) []byte {
 	}
 
 	contentPath := fmt.Sprintf("messages.%d.content", lastEligibleIndex)
-	content := gjson.GetBytes(payload, contentPath)
+	content := util.GetGJSONBytesNoCopy(payload, contentPath)
 	if messageContentHasCacheControl(content) {
 		return payload
 	}

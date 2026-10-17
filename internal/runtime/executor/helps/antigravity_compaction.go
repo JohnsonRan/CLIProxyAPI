@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -35,7 +36,7 @@ func RecognizedAntigravityCompactionCapsule(encryptedContent string) bool {
 
 // HasResponsesCompactionTrigger checks whether input contains a compaction_trigger item.
 func HasResponsesCompactionTrigger(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -49,7 +50,7 @@ func HasResponsesCompactionTrigger(payload []byte) bool {
 
 // HasResponsesCompactionItem checks whether input contains a compaction item.
 func HasResponsesCompactionItem(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
