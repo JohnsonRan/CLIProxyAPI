@@ -196,6 +196,8 @@ func clientUsageProvider(auth *coreauth.Auth) string {
 		return "antigravity"
 	case "xai", "grok":
 		return "xai"
+	case clientUsageCommandCodeProvider:
+		return clientUsageCommandCodeProvider
 	default:
 		return ""
 	}
@@ -304,6 +306,8 @@ func (h *Handler) probeClientUsage(auth *coreauth.Auth) clientUsageProbeResult {
 		result.responses, errProbe = h.probeAntigravityClientUsage(ctx, auth, token)
 	case "xai":
 		result.responses = h.probeXAIClientUsage(ctx, auth, token)
+	case clientUsageCommandCodeProvider:
+		result.responses = h.probeCommandCodeClientUsage(ctx, auth, token)
 	default:
 		errProbe = fmt.Errorf("unsupported provider")
 	}
