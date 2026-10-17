@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,57 +25,6 @@ const (
 	responsesHTTPExpandedFromCacheContextKey  = "responsesHTTPExpandedFromCache"
 )
 
-type responsesHTTPStateEntry struct {
-	// owner identifies the client credential that created the response; only
-	// the same caller may continue it.
-	owner              string
-	request            []byte
-	responseOutput     []byte
-	pendingToolCallIDs []string
-	authID             string
-	updatedAt          time.Time
-}
-
-func (e responsesHTTPStateEntry) size() int {
-	size := len(e.owner) + len(e.request) + len(e.responseOutput) + len(e.authID)
-	for _, id := range e.pendingToolCallIDs {
-		size += len(id)
-	}
-	return size
-}
-
-type responsesHTTPStateCache struct {
-	mu         sync.Mutex
-	ttl        time.Duration
-	maxEntries int
-	maxBytes   int
-	totalBytes int
-	nowFunc    func() time.Time
-	entries    map[string]responsesHTTPStateEntry
-	order      []string
-}
-
-var defaultResponsesHTTPStateCache = newResponsesHTTPStateCache(responsesHTTPStateCacheTTL, responsesHTTPStateCacheMaxEntries, responsesHTTPStateCacheMaxBytes)
-
-func newResponsesHTTPStateCache(ttl time.Duration, maxEntries int, maxBytes int) *responsesHTTPStateCache {
-	if ttl <= 0 {
-		ttl = responsesHTTPStateCacheTTL
-	}
-	if maxEntries <= 0 {
-		maxEntries = responsesHTTPStateCacheMaxEntries
-	}
-	if maxBytes <= 0 {
-		maxBytes = responsesHTTPStateCacheMaxBytes
-	}
-	return &responsesHTTPStateCache{
-		ttl:        ttl,
-		maxEntries: maxEntries,
-		maxBytes:   maxBytes,
-		nowFunc:    time.Now,
-		entries:    make(map[string]responsesHTTPStateEntry),
-	}
-}
-
 // responsesHTTPStateOwner derives the cache owner from the authenticated client
 // credential, so a leaked response id cannot continue another caller's session.
 func responsesHTTPStateOwner(c *gin.Context) string {
@@ -85,109 +33,6 @@ func responsesHTTPStateOwner(c *gin.Context) string {
 	}
 	sum := sha256.Sum256([]byte(c.GetString("accessProvider") + "\x00" + c.GetString("userApiKey")))
 	return hex.EncodeToString(sum[:])
-}
-
-func (c *responsesHTTPStateCache) now() time.Time {
-	if c != nil && c.nowFunc != nil {
-		return c.nowFunc()
-	}
-	return time.Now()
-}
-
-func (c *responsesHTTPStateCache) put(responseID string, entry responsesHTTPStateEntry) {
-	responseID = strings.TrimSpace(responseID)
-	if c == nil || responseID == "" || len(entry.request) == 0 {
-		return
-	}
-	now := c.now()
-	entry.updatedAt = now
-	entry.request = bytes.Clone(entry.request)
-	entry.responseOutput = bytes.Clone(entry.responseOutput)
-	entry.pendingToolCallIDs = append([]string(nil), entry.pendingToolCallIDs...)
-	entrySize := entry.size()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.cleanupLocked(now)
-	if previous, exists := c.entries[responseID]; exists {
-		c.removeLocked(responseID, previous)
-	}
-	if entrySize > c.maxBytes {
-		return
-	}
-	c.order = append(c.order, responseID)
-	c.entries[responseID] = entry
-	c.totalBytes += entrySize
-
-	for len(c.order) > 0 && (len(c.order) > c.maxEntries || c.totalBytes > c.maxBytes) {
-		evict := c.order[0]
-		c.order[0] = ""
-		c.order = c.order[1:]
-		if evicted, ok := c.entries[evict]; ok {
-			delete(c.entries, evict)
-			c.totalBytes -= evicted.size()
-		}
-	}
-}
-
-// removeLocked drops responseID from the entries, the byte total, and the order.
-func (c *responsesHTTPStateCache) removeLocked(responseID string, entry responsesHTTPStateEntry) {
-	delete(c.entries, responseID)
-	c.totalBytes -= entry.size()
-	for i, key := range c.order {
-		if key == responseID {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			break
-		}
-	}
-}
-
-func (c *responsesHTTPStateCache) get(responseID string, owner string) (responsesHTTPStateEntry, bool) {
-	responseID = strings.TrimSpace(responseID)
-	if c == nil || responseID == "" {
-		return responsesHTTPStateEntry{}, false
-	}
-	now := c.now()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.cleanupLocked(now)
-	entry, ok := c.entries[responseID]
-	if !ok || entry.owner != owner {
-		return responsesHTTPStateEntry{}, false
-	}
-	entry.updatedAt = now
-	c.entries[responseID] = entry
-	return responsesHTTPStateEntry{
-		owner:              entry.owner,
-		request:            bytes.Clone(entry.request),
-		responseOutput:     bytes.Clone(entry.responseOutput),
-		pendingToolCallIDs: append([]string(nil), entry.pendingToolCallIDs...),
-		authID:             entry.authID,
-		updatedAt:          entry.updatedAt,
-	}, true
-}
-
-func (c *responsesHTTPStateCache) cleanupLocked(now time.Time) {
-	if c == nil || c.ttl <= 0 {
-		return
-	}
-	kept := c.order[:0]
-	for _, key := range c.order {
-		entry, ok := c.entries[key]
-		if !ok {
-			continue
-		}
-		if now.Sub(entry.updatedAt) > c.ttl {
-			delete(c.entries, key)
-			c.totalBytes -= entry.size()
-			continue
-		}
-		kept = append(kept, key)
-	}
-	c.order = kept
 }
 
 func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gin.Context, rawJSON []byte) []byte {
