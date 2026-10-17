@@ -300,6 +300,11 @@ go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelC
 go test -run "CommandCode" ./internal/watcher/synthesizer
 go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope|TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions" ./internal/runtime/executor
 go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
+# Race detector over the packages with shared no-copy buffers and the locked
+# HTTP continuation cache. Needs cgo (gcc); on Windows run it in WSL.
+CGO_ENABLED=1 go test -race ./internal/util/... ./internal/translator/common/... ./internal/translator/claude/openai/responses/... ./internal/thinking/... ./internal/signature/... ./internal/runtime/executor/helps/...
+CGO_ENABLED=1 go test -race -run "ResponsesHTTPState|HTTPIncremental" ./sdk/api/handlers/openai
+CGO_ENABLED=1 go test -race -run "TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions" ./internal/runtime/executor
 git push --force-with-lease origin HEAD:main
 ```
 
