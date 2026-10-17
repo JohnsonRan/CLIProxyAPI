@@ -955,7 +955,7 @@ func claudeMidConversationSystemMessagesAtEnd(payload []byte) bool {
 		return false
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}
@@ -1162,7 +1162,7 @@ func reconcileClaudeCodeSystemPlacementAfterPayload(payload []byte, state claude
 	if len(state.insertedRaw) == 0 || !claudeUsesLegacySystemReminder(payload) {
 		return payload
 	}
-	messages := gjson.GetBytes(payload, "messages").Array()
+	messages := util.GetGJSONBytesNoCopy(payload, "messages").Array()
 	if state.insertAt < 0 || state.insertAt+len(state.insertedRaw) > len(messages) {
 		return payload
 	}
@@ -2525,7 +2525,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 		return payload
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			if excess <= 0 {
