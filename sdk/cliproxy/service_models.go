@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	commandcodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/commandcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -190,6 +191,8 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	case "devin":
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
+	case commandcodeauth.ProviderKey:
+		models = applyExcludedModels(commandCodeModels.get(ctx, cfg, a), excluded)
 	case "meta":
 		models = registry.GetMetaModels()
 		if entry := resolveConfigMetaKeyForConfig(cfg, a); entry != nil {
