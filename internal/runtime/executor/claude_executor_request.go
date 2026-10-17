@@ -933,24 +933,24 @@ func normalizeClaudeSamplingForUpstream(body []byte, nativeOwned bool) []byte {
 		thinkingActive = true
 	}
 
+	// The keys are removed in one pass: one sjson delete per key copied the
+	// whole conversation each time.
 	if !nativeOwned {
-		body, _ = sjson.DeleteBytes(body, "temperature")
-		body, _ = sjson.DeleteBytes(body, "top_p")
 		if thinkingActive {
-			body, _ = sjson.DeleteBytes(body, "top_k")
+			return util.DeleteTopLevelJSONKeys(body, "temperature", "top_p", "top_k")
 		}
-		return body
+		return util.DeleteTopLevelJSONKeys(body, "temperature", "top_p")
 	}
 
 	if thinkingActive {
-		if temperature := gjson.GetBytes(body, "temperature"); temperature.Exists() && temperature.Num != 1 {
-			body, _ = sjson.DeleteBytes(body, "temperature")
+		drop := make([]string, 0, 3)
+		if temperature := util.GetGJSONBytesNoCopy(body, "temperature"); temperature.Exists() && temperature.Num != 1 {
+			drop = append(drop, "temperature")
 		}
-		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && topP.Num < 0.95 {
-			body, _ = sjson.DeleteBytes(body, "top_p")
+		if topP := util.GetGJSONBytesNoCopy(body, "top_p"); topP.Exists() && topP.Num < 0.95 {
+			drop = append(drop, "top_p")
 		}
-		body, _ = sjson.DeleteBytes(body, "top_k")
-		return body
+		return util.DeleteTopLevelJSONKeys(body, append(drop, "top_k")...)
 	}
 	// Anthropic accepts either one but not both; temperature is the knob native
 	// Claude Code actually sends, so top_p is the one that gives way.
