@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -411,6 +412,16 @@ func checkSystemInstructionsWithSigningModeAt(
 	keepCallerSystemTopLevel bool,
 	turnOrigin ...string,
 ) []byte {
+	system, systemBlocks, isExplicit := claudeCloakSystemBlocks(payload, cchSigning, version, entrypoint, workload, isSubagent, prevReq, promptID, turnOrigin...)
+	if merged, ok := mergedClaudeSystemInstructions(payload, system, systemBlocks, strictMode, currentDate, keepCallerSystemTopLevel, isExplicit); ok {
+		return merged
+	}
+	return sequentialClaudeSystemInstructions(payload, system, systemBlocks, strictMode, currentDate, keepCallerSystemTopLevel, isExplicit)
+}
+
+// claudeCloakSystemBlocks returns the caller's system value and the
+// billing, identity and model-specific blocks that lead the cloaked system.
+func claudeCloakSystemBlocks(payload []byte, cchSigning bool, version, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnOrigin ...string) (gjson.Result, []string, bool) {
 	system := gjson.GetBytes(payload, "system")
 	messageText := claudeBillingFingerprintMessageText(payload)
 
@@ -429,6 +440,15 @@ func checkSystemInstructionsWithSigningModeAt(
 	if isClaudeFable51Model(model) && !helps.IsClaudeProbeOrHelperRequest(payload) {
 		systemBlocks = append(systemBlocks, buildTextBlock(claudeCodeFableReportingOutcomes, nil))
 	}
+	return system, systemBlocks, isExplicit
+}
+
+// sequentialClaudeSystemInstructions rewrites the system array, places the
+// caller's system blocks and stamps the currentDate reminder one step at a
+// time. It handles what mergedClaudeSystemInstructions declines and is the
+// oracle for it in tests.
+func sequentialClaudeSystemInstructions(payload []byte, system gjson.Result, systemBlocks []string, strictMode bool, currentDate string, keepCallerSystemTopLevel, isExplicit bool) []byte {
+	systemBlocks = slices.Clip(systemBlocks)
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte("["+strings.Join(systemBlocks, ",")+"]"))
 	if strictMode {
 		return injectClaudeCodeCurrentDateInternal(payload, currentDate, isExplicit)
@@ -456,6 +476,60 @@ func checkSystemInstructionsWithSigningModeAt(
 		payload = insertClaudeMidConversationSystemBlocks(payload, forwardedSystemBlocks, isExplicit)
 	}
 	return injectClaudeCodeCurrentDateInternal(payload, currentDate, isExplicit)
+}
+
+// mergedClaudeSystemInstructions applies the system rewrite, the optional
+// mid-conversation system messages and the currentDate reminder as one splice
+// of the original payload. The sequential path rewrote the whole conversation
+// once per step. The three edits touch disjoint ranges (the system value, a
+// boundary after the leading user run, the first user message's content) and
+// none of the decisions read system, so splicing them together gives the bytes
+// of the sequential rewrite. It reports false, leaving sequentialClaudeSystemInstructions to
+// run, for the legacy system-reminder models, a request without a system value
+// at a known offset, and a non-compact messages array.
+func mergedClaudeSystemInstructions(payload []byte, system gjson.Result, systemBlocks []string, strictMode bool, currentDate string, keepCallerSystemTopLevel, isExplicit bool) ([]byte, bool) {
+	systemBlocks = slices.Clip(systemBlocks)
+	current := util.GetGJSONBytesNoCopy(payload, "system")
+	start, end := current.Index, current.Index+len(current.Raw)
+	if !current.Exists() || start <= 0 || end > len(payload) || string(payload[start:end]) != current.Raw {
+		return nil, false
+	}
+
+	var insert *claudeMidConversationInsert
+	if !strictMode {
+		forwardedSystemBlocks := collectForwardedClaudeSystemPromptBlocksWithCache(system)
+		if len(forwardedSystemBlocks) > 0 {
+			switch {
+			case claudeHistoryHasAdvisorCallOrResult(payload),
+				!claudeUsesLegacySystemReminder(payload) && keepCallerSystemTopLevel && claudeMidConversationSystemMessagesAtEnd(payload):
+				for _, block := range forwardedSystemBlocks {
+					systemBlocks = append(systemBlocks, buildForwardedSystemBlock(block.Text, block, isExplicit))
+				}
+			case claudeUsesLegacySystemReminder(payload):
+				return nil, false
+			default:
+				plan := planClaudeMidConversationSystemBlocks(payload, forwardedSystemBlocks, isExplicit)
+				insert = &plan
+			}
+		}
+	}
+
+	edits := []claudeRawJSONEdit{{start: start, end: end, replacement: "[" + strings.Join(systemBlocks, ",") + "]"}}
+	if insert != nil && !insert.noop {
+		edit, ok := insert.compactEdit(payload)
+		if !ok {
+			return nil, false
+		}
+		edits = append(edits, edit)
+	}
+	if _, content, replacement, ok := claudeCurrentDateContent(payload, currentDate, isExplicit); ok {
+		cStart, cEnd := content.Index, content.Index+len(content.Raw)
+		if cStart <= 0 || cEnd > len(payload) || string(payload[cStart:cEnd]) != content.Raw {
+			return nil, false
+		}
+		edits = append(edits, claudeRawJSONEdit{start: cStart, end: cEnd, replacement: replacement})
+	}
+	return applyClaudeRawJSONEdits(payload, edits)
 }
 
 // relocateClaudeSystemPromptForCountTokens keeps a cloaked count_tokens request
@@ -899,14 +973,36 @@ func insertClaudeMidConversationSystemMessages(payload []byte, texts []string) [
 }
 
 func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedClaudeSystemPromptBlock, isExplicit bool) []byte {
+	plan := planClaudeMidConversationSystemBlocks(payload, blocks, isExplicit)
+	if plan.noop {
+		return payload
+	}
+	if edit, ok := plan.compactEdit(payload); ok {
+		updated, _ := applyClaudeRawJSONEdits(payload, []claudeRawJSONEdit{edit})
+		return updated
+	}
+	return rebuildClaudeMessagesWithInserted(payload, plan.messageBlocks, plan.insertAt, plan.systemMessages)
+}
+
+// claudeMidConversationInsert is where forwarded system blocks go as
+// mid-conversation system messages.
+type claudeMidConversationInsert struct {
+	noop           bool
+	messages       gjson.Result
+	messageBlocks  []gjson.Result
+	insertAt       int
+	systemMessages []string
+}
+
+func planClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedClaudeSystemPromptBlock, isExplicit bool) claudeMidConversationInsert {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
 	if firstUserIdx < 0 || len(blocks) == 0 {
-		return payload
+		return claudeMidConversationInsert{noop: true}
 	}
 
 	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
-		return payload
+		return claudeMidConversationInsert{noop: true}
 	}
 	messageBlocks := messages.Array()
 	insertAt := claudeLeadingUserRunEnd(messageBlocks, firstUserIdx)
@@ -920,7 +1016,7 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 			}
 		}
 		if matches {
-			return payload
+			return claudeMidConversationInsert{noop: true}
 		}
 	}
 
@@ -929,15 +1025,12 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 		content := "[" + buildForwardedSystemBlock(block.Text, block, isExplicit) + "]"
 		systemMessages = append(systemMessages, `{"role":"system","content":`+content+"}")
 	}
-	if inserted, ok := insertCompactClaudeMessages(payload, messages, messageBlocks, insertAt, systemMessages); ok {
-		return inserted
-	}
-	return rebuildClaudeMessagesWithInserted(payload, messageBlocks, insertAt, systemMessages)
+	return claudeMidConversationInsert{messages: messages, messageBlocks: messageBlocks, insertAt: insertAt, systemMessages: systemMessages}
 }
 
 // rebuildClaudeMessagesWithInserted rewrites messages with systemMessages
 // inserted before messageBlocks[insertAt]. It is the fallback for arrays that
-// are not compact and the oracle for insertCompactClaudeMessages in tests.
+// are not compact and the oracle for the in-place insert in tests.
 func rebuildClaudeMessagesWithInserted(payload []byte, messageBlocks []gjson.Result, insertAt int, systemMessages []string) []byte {
 	rawMessages := make([]string, 0, len(messageBlocks)+len(systemMessages))
 	for idx, message := range messageBlocks {
@@ -953,18 +1046,19 @@ func rebuildClaudeMessagesWithInserted(payload []byte, messageBlocks []gjson.Res
 	return payload
 }
 
-// insertCompactClaudeMessages inserts raw messages before messageBlocks[at]
-// (or at the end) with one exactly sized allocation. Rebuilding the array as
-// "[" + elements joined by "," + "]" and setting it with sjson cost four
-// copies of the conversation; for an array that is already in that compact
-// form, inserting in place gives the same bytes. Otherwise it reports false.
-func insertCompactClaudeMessages(payload []byte, messages gjson.Result, messageBlocks []gjson.Result, at int, inserted []string) ([]byte, bool) {
-	if len(messageBlocks) == 0 || len(inserted) == 0 || at < 0 || at > len(messageBlocks) {
-		return nil, false
+// compactEdit inserts the system messages at their offset without touching
+// the rest of the array. Rebuilding the array as "[" + elements joined by ","
+// + "]" and setting it with sjson cost four copies of the conversation; for
+// an array already in that compact form, the insert gives the same bytes.
+// It reports false for any other array.
+func (p claudeMidConversationInsert) compactEdit(payload []byte) (claudeRawJSONEdit, bool) {
+	messageBlocks, at := p.messageBlocks, p.insertAt
+	if p.noop || len(messageBlocks) == 0 || len(p.systemMessages) == 0 || at < 0 || at > len(messageBlocks) {
+		return claudeRawJSONEdit{}, false
 	}
-	start, end := messages.Index, messages.Index+len(messages.Raw)
-	if start <= 0 || end > len(payload) || string(payload[start:end]) != messages.Raw {
-		return nil, false
+	start, end := p.messages.Index, p.messages.Index+len(p.messages.Raw)
+	if start <= 0 || end > len(payload) || string(payload[start:end]) != p.messages.Raw {
+		return claudeRawJSONEdit{}, false
 	}
 	// The elements are consecutive substrings of the raw array, so the array
 	// is compact exactly when its length is theirs plus brackets and commas.
@@ -978,33 +1072,15 @@ func insertCompactClaudeMessages(payload []byte, messages gjson.Result, messageB
 		}
 		compactLen += len(message.Raw)
 	}
-	if compactLen+1 != len(messages.Raw) {
-		return nil, false
+	if compactLen+1 != len(p.messages.Raw) {
+		return claudeRawJSONEdit{}, false
 	}
-	pos := end - 1 // before ']'
-	if offset >= 0 {
-		pos = start + offset
-	}
-
-	size := len(payload) + len(inserted)
-	for _, message := range inserted {
-		size += len(message)
-	}
-	out := make([]byte, 0, size)
-	out = append(out, payload[:pos]...)
+	joined := strings.Join(p.systemMessages, ",")
 	if offset < 0 {
-		out = append(out, ',')
+		// After the last element, before ']'.
+		return claudeRawJSONEdit{start: end - 1, end: end - 1, replacement: "," + joined}, true
 	}
-	for i, message := range inserted {
-		if i > 0 {
-			out = append(out, ',')
-		}
-		out = append(out, message...)
-	}
-	if offset >= 0 {
-		out = append(out, ',')
-	}
-	return append(out, payload[pos:]...), true
+	return claudeRawJSONEdit{start: start + offset, end: start + offset, replacement: joined + ","}, true
 }
 
 func claudeMessageContentText(content gjson.Result) string {
@@ -1491,13 +1567,25 @@ func injectClaudeCodeCurrentDate(payload []byte, date string) []byte {
 }
 
 func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit bool) []byte {
+	contentPath, _, replacement, ok := claudeCurrentDateContent(payload, date, isExplicit)
+	if !ok {
+		return payload
+	}
+	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(replacement))
+	return payload
+}
+
+// claudeCurrentDateContent returns the first user message's content (read in
+// place, so its Index points into payload) and the content with the
+// currentDate reminder stamped in. ok is false when nothing changes.
+func claudeCurrentDateContent(payload []byte, date string, isExplicit bool) (string, gjson.Result, string, bool) {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
 	if firstUserIdx < 0 {
-		return payload
+		return "", gjson.Result{}, "", false
 	}
 
 	contentPath := fmt.Sprintf("messages.%d.content", firstUserIdx)
-	content := gjson.GetBytes(payload, contentPath)
+	content := util.GetGJSONBytesNoCopy(payload, contentPath)
 	dateText := claudeCodeCurrentDateReminder(date)
 	dateBlock := buildTextBlock(dateText, nil)
 
@@ -1507,12 +1595,10 @@ func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit
 			userCC = nil
 		}
 		userBlock := buildTextBlock(content.String(), userCC)
-		newArray := "[" + dateBlock + "," + userBlock + "]"
-		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(newArray))
-		return payload
+		return contentPath, content, "[" + dateBlock + "," + userBlock + "]", true
 	}
 	if !content.IsArray() {
-		return payload
+		return "", gjson.Result{}, "", false
 	}
 
 	blocks := content.Array()
@@ -1545,8 +1631,7 @@ func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit
 	rawBlocks = append(rawBlocks, "")
 	copy(rawBlocks[insertAt+1:], rawBlocks[insertAt:])
 	rawBlocks[insertAt] = dateBlock
-	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
-	return payload
+	return contentPath, content, "[" + strings.Join(rawBlocks, ",") + "]", true
 }
 
 // claudeCodeContextManagement is the context_management object Claude Code
