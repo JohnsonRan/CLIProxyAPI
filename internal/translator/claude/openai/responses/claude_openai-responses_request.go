@@ -630,7 +630,9 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	if len(messageBlocks) == 0 && (len(systemBlocks) > 0 || hadMessages) {
 		messageBlocks = append(messageBlocks, []byte(`{"role":"user","content":[{"type":"text","text":""}]}`))
 	}
-	out = common.SetRawArrayItems(out, "messages", messageBlocks)
+	// messages is spliced into its "[]" placeholder last: every sjson write
+	// below copies out, which is small until the conversation is in it. The
+	// placeholder keeps its key position, so the bytes are the same.
 	if len(systemBlocks) > 0 {
 		out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))
 	}
@@ -731,7 +733,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
-	return thinking.ApplyTranslatedSummaryToClaude(out, rawJSON, "openai-response", modelName), drops.Err()
+	out = thinking.ApplyTranslatedSummaryToClaude(out, rawJSON, "openai-response", modelName)
+	return common.SetRawArrayItems(out, "messages", messageBlocks), drops.Err()
 }
 
 func defaultClaudeResponsesMaxTokensForModel(modelName string) int {

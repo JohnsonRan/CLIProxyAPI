@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/tidwall/gjson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/sjson"
 )
 
@@ -55,21 +55,31 @@ func JoinRawArray(items [][]byte) []byte {
 }
 
 // SetRawArrayItems replaces an empty JSON array at path with raw items.
-// The single-item path avoids allocating an intermediate joined array.
+// An empty array at a verified offset is filled in one exactly sized
+// allocation, without an intermediate joined array; the result is the same
+// as sjson.SetRawBytes(data, path, JoinRawArray(items)).
 func SetRawArrayItems(data []byte, path string, items [][]byte) []byte {
 	if len(items) == 0 {
 		return data
 	}
-	if len(items) == 1 {
-		array := gjson.GetBytes(data, path)
-		if array.Raw == "[]" && array.Index >= 0 && array.Index+len(array.Raw) <= len(data) {
-			out := make([]byte, 0, len(data)+len(items[0]))
-			out = append(out, data[:array.Index]...)
-			out = append(out, '[')
-			out = append(out, items[0]...)
-			out = append(out, ']')
-			return append(out, data[array.Index+len(array.Raw):]...)
+	array := util.GetGJSONBytesNoCopy(data, path)
+	if array.Raw == "[]" && array.Index > 0 && array.Index+len(array.Raw) <= len(data) &&
+		data[array.Index] == '[' && data[array.Index+1] == ']' {
+		size := len(data) + len(items) - 1
+		for _, item := range items {
+			size += len(item)
 		}
+		out := make([]byte, 0, size)
+		out = append(out, data[:array.Index]...)
+		out = append(out, '[')
+		for i, item := range items {
+			if i > 0 {
+				out = append(out, ',')
+			}
+			out = append(out, item...)
+		}
+		out = append(out, ']')
+		return append(out, data[array.Index+len(array.Raw):]...)
 	}
 	data, _ = sjson.SetRawBytes(data, path, JoinRawArray(items))
 	return data
