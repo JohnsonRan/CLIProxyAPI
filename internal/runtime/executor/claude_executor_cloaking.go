@@ -929,6 +929,16 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 		content := "[" + buildForwardedSystemBlock(block.Text, block, isExplicit) + "]"
 		systemMessages = append(systemMessages, `{"role":"system","content":`+content+"}")
 	}
+	if inserted, ok := insertCompactClaudeMessages(payload, messages, messageBlocks, insertAt, systemMessages); ok {
+		return inserted
+	}
+	return rebuildClaudeMessagesWithInserted(payload, messageBlocks, insertAt, systemMessages)
+}
+
+// rebuildClaudeMessagesWithInserted rewrites messages with systemMessages
+// inserted before messageBlocks[insertAt]. It is the fallback for arrays that
+// are not compact and the oracle for insertCompactClaudeMessages in tests.
+func rebuildClaudeMessagesWithInserted(payload []byte, messageBlocks []gjson.Result, insertAt int, systemMessages []string) []byte {
 	rawMessages := make([]string, 0, len(messageBlocks)+len(systemMessages))
 	for idx, message := range messageBlocks {
 		if idx == insertAt {
@@ -941,6 +951,60 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 	}
 	payload, _ = sjson.SetRawBytes(payload, "messages", []byte("["+strings.Join(rawMessages, ",")+"]"))
 	return payload
+}
+
+// insertCompactClaudeMessages inserts raw messages before messageBlocks[at]
+// (or at the end) with one exactly sized allocation. Rebuilding the array as
+// "[" + elements joined by "," + "]" and setting it with sjson cost four
+// copies of the conversation; for an array that is already in that compact
+// form, inserting in place gives the same bytes. Otherwise it reports false.
+func insertCompactClaudeMessages(payload []byte, messages gjson.Result, messageBlocks []gjson.Result, at int, inserted []string) ([]byte, bool) {
+	if len(messageBlocks) == 0 || len(inserted) == 0 || at < 0 || at > len(messageBlocks) {
+		return nil, false
+	}
+	start, end := messages.Index, messages.Index+len(messages.Raw)
+	if start <= 0 || end > len(payload) || string(payload[start:end]) != messages.Raw {
+		return nil, false
+	}
+	// The elements are consecutive substrings of the raw array, so the array
+	// is compact exactly when its length is theirs plus brackets and commas.
+	compactLen, offset := 1, -1
+	for i, message := range messageBlocks {
+		if i > 0 {
+			compactLen++
+		}
+		if i == at {
+			offset = compactLen
+		}
+		compactLen += len(message.Raw)
+	}
+	if compactLen+1 != len(messages.Raw) {
+		return nil, false
+	}
+	pos := end - 1 // before ']'
+	if offset >= 0 {
+		pos = start + offset
+	}
+
+	size := len(payload) + len(inserted)
+	for _, message := range inserted {
+		size += len(message)
+	}
+	out := make([]byte, 0, size)
+	out = append(out, payload[:pos]...)
+	if offset < 0 {
+		out = append(out, ',')
+	}
+	for i, message := range inserted {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, message...)
+	}
+	if offset >= 0 {
+		out = append(out, ',')
+	}
+	return append(out, payload[pos:]...), true
 }
 
 func claudeMessageContentText(content gjson.Result) string {
