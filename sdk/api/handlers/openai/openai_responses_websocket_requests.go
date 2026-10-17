@@ -28,7 +28,8 @@ func normalizeResponsesWebsocketRequestWithLastResponseID(rawJSON []byte, lastRe
 }
 
 func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, lastResponseID string, lastResponsePendingToolCallIDs []string, allowIncrementalInputWithPreviousResponseID bool, allowCompactionReplayBypass bool) ([]byte, []byte, *interfaces.ErrorMessage) {
-	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
+	rawJSON = coerceResponsesWebsocketStringInput(rawJSON)
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	switch requestType {
 	case wsRequestTypeCreate:
 		// log.Infof("responses websocket: response.create request")
@@ -45,6 +46,35 @@ func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, last
 			Error:      fmt.Errorf("unsupported websocket request type: %s", requestType),
 		}
 	}
+}
+
+func resolveResponsesWebsocketRequestType(rawJSON []byte) string {
+	typeResult := gjson.GetBytes(rawJSON, "type")
+	if typeResult.Exists() {
+		return strings.TrimSpace(typeResult.String())
+	}
+	parsed := gjson.ParseBytes(rawJSON)
+	if parsed.IsObject() && (parsed.Get("model").Exists() || parsed.Get("input").Exists() || parsed.Get("previous_response_id").Exists()) {
+		return wsRequestTypeCreate
+	}
+	return ""
+}
+
+func coerceResponsesWebsocketStringInput(rawJSON []byte) []byte {
+	input := gjson.GetBytes(rawJSON, "input")
+	if !input.Exists() || input.Type != gjson.String {
+		return rawJSON
+	}
+	msgItem := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
+	msgItem, errSet := sjson.SetBytes(msgItem, "0.content.0.text", input.String())
+	if errSet != nil {
+		return rawJSON
+	}
+	updated, errReplace := sjson.SetRawBytes(rawJSON, "input", msgItem)
+	if errReplace != nil {
+		return rawJSON
+	}
+	return updated
 }
 
 func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
@@ -142,7 +172,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	var mergedInput []byte
 	if allowCompactionReplayBypass && inputContainsFullTranscript(nextInput) {
 		log.Infof("responses websocket: full transcript detected, skipping stale merge (input items=%d)", len(nextInput.Array()))
-		mergedInput = []byte(nextInput.Raw)
+		mergedInput = responsesWebsocketInputWithInheritedAdditionalTools(nextInput, lastRequest)
 	} else {
 		appendInputRaw := nextInput.Raw
 		if inputContainsFullTranscript(nextInput) {
@@ -176,6 +206,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 		}
 	}
+	normalized = inheritResponsesWebsocketRequestSettings(normalized, lastRequest)
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	var errSet error
 	normalized, errSet = sjson.SetRawBytes(normalized, "input", mergedInput)
@@ -189,7 +220,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 }
 
 func shouldReplaceWebsocketTranscript(rawJSON []byte, nextInput gjson.Result) bool {
-	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	if requestType != wsRequestTypeCreate && requestType != wsRequestTypeAppend {
 		return false
 	}
@@ -318,8 +349,57 @@ func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) 
 			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 		}
 	}
+	normalized = inheritResponsesWebsocketRequestSettings(normalized, lastRequest)
+	input := gjson.GetBytes(normalized, "input")
+	if input.IsArray() {
+		normalized, _ = sjson.SetRawBytes(normalized, "input", responsesWebsocketInputWithInheritedAdditionalTools(input, lastRequest))
+	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return bytes.Clone(normalized)
+}
+
+func inheritResponsesWebsocketRequestSettings(normalized []byte, lastRequest []byte) []byte {
+	if len(lastRequest) == 0 {
+		return normalized
+	}
+	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+		if !gjson.GetBytes(normalized, field).Exists() {
+			if prev := gjson.GetBytes(lastRequest, field); prev.Exists() && prev.Type != gjson.Null {
+				normalized, _ = sjson.SetRawBytes(normalized, field, []byte(prev.Raw))
+			}
+		}
+	}
+	return normalized
+}
+
+func responsesWebsocketInputWithInheritedAdditionalTools(input gjson.Result, lastRequest []byte) []byte {
+	if !input.IsArray() {
+		return []byte(input.Raw)
+	}
+	for _, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "additional_tools" {
+			return []byte(input.Raw)
+		}
+	}
+
+	previousInput := gjson.GetBytes(lastRequest, "input")
+	if !previousInput.IsArray() {
+		return []byte(input.Raw)
+	}
+
+	items := make([]string, 0, len(previousInput.Array())+len(input.Array()))
+	for _, item := range previousInput.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "additional_tools" {
+			items = append(items, item.Raw)
+		}
+	}
+	if len(items) == 0 {
+		return []byte(input.Raw)
+	}
+	for _, item := range input.Array() {
+		items = append(items, item.Raw)
+	}
+	return []byte("[" + strings.Join(items, ",") + "]")
 }
 
 type responsesWebsocketInputItem struct {
@@ -719,7 +799,8 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 		}
 	}
 
-	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
+	rawJSON = coerceResponsesWebsocketStringInput(rawJSON)
+	requestType := resolveResponsesWebsocketRequestType(rawJSON)
 	switch requestType {
 	case wsRequestTypeCreate, wsRequestTypeAppend:
 	default:
@@ -730,6 +811,9 @@ func normalizeResponsesWebsocketPassthroughRequest(rawJSON []byte, modelName str
 	}
 
 	normalized := bytes.Clone(rawJSON)
+	if !gjson.GetBytes(normalized, "type").Exists() {
+		normalized, _ = sjson.SetBytes(normalized, "type", requestType)
+	}
 	if strings.TrimSpace(gjson.GetBytes(normalized, "model").String()) == "" {
 		modelName = strings.TrimSpace(modelName)
 		if modelName == "" {
