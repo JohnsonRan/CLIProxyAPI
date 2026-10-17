@@ -230,6 +230,10 @@ type AntigravityConnectionPoolConfig struct {
 type CodexConfig struct {
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
+	// UpstreamRequestCompression compresses Codex /responses and /responses/compact upstream
+	// request bodies sent to the official ChatGPT backend (chatgpt.com). Accepted values:
+	// "zstd" (default when empty/"auto"), "gzip", "br", or "off" for identity bodies.
+	UpstreamRequestCompression string `yaml:"upstream-request-compression,omitempty" json:"upstream-request-compression,omitempty"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
 	// which the client has seen anything from - the handshake (response.created, response.in_progress,
 	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item

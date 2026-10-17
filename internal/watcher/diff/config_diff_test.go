@@ -199,6 +199,14 @@ func TestBuildConfigChangeDetails_GeminiVertexHeaders(t *testing.T) {
 	expectContains(t, details, "gemini[0].excluded-models: updated (1 -> 2 entries)")
 }
 
+func TestBuildConfigChangeDetails_CodexUpstreamRequestCompression(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{Codex: config.CodexConfig{UpstreamRequestCompression: "zstd"}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, `codex.upstream-request-compression: "" -> "zstd"`)
+}
+
 func TestBuildConfigChangeDetails_ModelPrefixes(t *testing.T) {
 	oldCfg := &config.Config{
 		GeminiKey: []config.GeminiKey{
