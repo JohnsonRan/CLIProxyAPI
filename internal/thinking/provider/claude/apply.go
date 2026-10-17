@@ -11,6 +11,7 @@ package claude
 import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -99,9 +100,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		// Adaptive thinking effort is only valid when the model advertises discrete levels.
 		// (Claude 4.6 uses output_config.effort.)
 		if supportsAdaptive && config.Level != "" {
-			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
+			result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "adaptive")
 			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-			result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
+			result, _ = util.SetJSONBytesIfChanged(result, "output_config.effort", string(config.Level))
 			return result, nil
 		}
 
@@ -128,8 +129,8 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 			return result, nil
 		}
 
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "enabled")
+		result, _ = util.SetJSONBytesIfChanged(result, "thinking.budget_tokens", config.Budget)
 		result, _ = sjson.DeleteBytes(result, "output_config.effort")
 		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
 			result, _ = sjson.DeleteBytes(result, "output_config")
@@ -142,7 +143,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	case thinking.ModeAuto:
 		// For Claude 4.6 models, auto maps to adaptive thinking with upstream defaults.
 		if supportsAdaptive {
-			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
+			result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "adaptive")
 			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
 			// Explicit effort is optional for adaptive thinking; omit it to allow upstream default.
 			result, _ = sjson.DeleteBytes(result, "output_config.effort")
@@ -153,7 +154,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		}
 
 		// Legacy fallback: enable thinking without specifying budget_tokens.
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "enabled")
 		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
 		result, _ = sjson.DeleteBytes(result, "output_config.effort")
 		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
@@ -181,7 +182,7 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 
 	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
 	if setDefaultMax && effectiveMax > 0 {
-		body, _ = sjson.SetBytes(body, "max_tokens", effectiveMax)
+		body, _ = util.SetJSONBytesIfChanged(body, "max_tokens", effectiveMax)
 	}
 
 	// Compute the budget we would apply after enforcing budget_tokens < max_tokens.
@@ -201,7 +202,7 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 	}
 
 	if adjustedBudget != budgetTokens {
-		body, _ = sjson.SetBytes(body, "thinking.budget_tokens", adjustedBudget)
+		body, _ = util.SetJSONBytesIfChanged(body, "thinking.budget_tokens", adjustedBudget)
 	}
 
 	return body
@@ -231,7 +232,7 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 
 	switch config.Mode {
 	case thinking.ModeNone:
-		result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "disabled")
 		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
 		// Summary display only applies to an active thinking block.
 		result, _ = sjson.DeleteBytes(result, "thinking.display")
@@ -241,7 +242,7 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 		}
 		return result, nil
 	case thinking.ModeAuto:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "enabled")
 		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
 		result, _ = sjson.DeleteBytes(result, "output_config.effort")
 		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
@@ -254,13 +255,13 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 		if config.Level == "" {
 			return body, nil
 		}
-		result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "adaptive")
 		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
+		result, _ = util.SetJSONBytesIfChanged(result, "output_config.effort", string(config.Level))
 		return result, nil
 	default:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
+		result, _ := util.SetJSONBytesIfChanged(body, "thinking.type", "enabled")
+		result, _ = util.SetJSONBytesIfChanged(result, "thinking.budget_tokens", config.Budget)
 		result, _ = sjson.DeleteBytes(result, "output_config.effort")
 		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
 			result, _ = sjson.DeleteBytes(result, "output_config")

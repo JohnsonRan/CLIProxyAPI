@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -208,9 +209,9 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 		if enabled {
 			value = "summarized"
 		}
-		body, _ = sjson.SetBytes(body, "thinking.display", value)
+		body, _ = util.SetJSONBytesIfChanged(body, "thinking.display", value)
 	case "gemini":
-		body, _ = sjson.SetBytes(body, "generationConfig.thinkingConfig.includeThoughts", enabled)
+		body, _ = util.SetJSONBytesIfChanged(body, "generationConfig.thinkingConfig.includeThoughts", enabled)
 		for _, path := range []string{
 			"generationConfig.thinkingConfig.include_thoughts",
 			"generation_config.thinking_config.include_thoughts",
@@ -219,7 +220,7 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 			body, _ = sjson.DeleteBytes(body, path)
 		}
 	case "antigravity":
-		body, _ = sjson.SetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts", enabled)
+		body, _ = util.SetJSONBytesIfChanged(body, "request.generationConfig.thinkingConfig.includeThoughts", enabled)
 		for _, path := range []string{
 			"request.generationConfig.thinkingConfig.include_thoughts",
 			"request.generationConfig.thinking_config.include_thoughts",
@@ -234,11 +235,11 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 		if enabled {
 			value = "auto"
 		}
-		body, _ = sjson.SetBytes(body, "generation_config.thinking_summaries", value)
+		body, _ = util.SetJSONBytesIfChanged(body, "generation_config.thinking_summaries", value)
 		body, _ = sjson.DeleteBytes(body, "generation_config.thinkingSummaries")
 	case "openai-response", "codex":
 		if enabled {
-			body, _ = sjson.SetBytes(body, "reasoning.summary", normalizedSummaryDetail(config.Detail))
+			body, _ = util.SetJSONBytesIfChanged(body, "reasoning.summary", normalizedSummaryDetail(config.Detail))
 			body, _ = sjson.DeleteBytes(body, "reasoning.generate_summary")
 			break
 		}
@@ -303,10 +304,10 @@ func claudeThinkingAcceptsDisplay(body []byte) bool {
 // https://platform.kimi.ai/docs/api/chat
 func applyOpenAIChatSummaryConfig(body []byte, provider string, enabled bool) []byte {
 	if isOpenRouterProvider(provider) || gjson.GetBytes(body, "reasoning.exclude").IsBool() {
-		body, _ = sjson.SetBytes(body, "reasoning.exclude", !enabled)
+		body, _ = util.SetJSONBytesIfChanged(body, "reasoning.exclude", !enabled)
 	}
 	if gjson.GetBytes(body, "include_reasoning").IsBool() {
-		body, _ = sjson.SetBytes(body, "include_reasoning", enabled)
+		body, _ = util.SetJSONBytesIfChanged(body, "include_reasoning", enabled)
 	}
 	return body
 }
@@ -506,7 +507,7 @@ func enableClaudeThinkingForSummary(body []byte, model string, resolvedModelInfo
 	}
 
 	if len(modelInfo.Thinking.Levels) > 0 {
-		body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+		body, _ = util.SetJSONBytesIfChanged(body, "thinking.type", "adaptive")
 		body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		return body
 	}
@@ -518,8 +519,8 @@ func enableClaudeThinkingForSummary(body []byte, model string, resolvedModelInfo
 	if maxTokens := gjson.GetBytes(body, "max_tokens"); maxTokens.Exists() && maxTokens.Int() <= int64(budget) {
 		return body
 	}
-	body, _ = sjson.SetBytes(body, "thinking.type", "enabled")
-	body, _ = sjson.SetBytes(body, "thinking.budget_tokens", budget)
+	body, _ = util.SetJSONBytesIfChanged(body, "thinking.type", "enabled")
+	body, _ = util.SetJSONBytesIfChanged(body, "thinking.budget_tokens", budget)
 	return body
 }
 
