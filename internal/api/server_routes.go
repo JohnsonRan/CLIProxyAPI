@@ -31,6 +31,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
@@ -395,6 +396,16 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	if errRoute != nil {
 		log.WithError(errRoute).Warn("codex alpha search: model router returned an unsupported target")
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
+		return
+	}
+	// Enforce per-key model rules on the model the client asked for; fall back to
+	// the selected model when the request names none.
+	accessModel := strings.TrimSpace(routing.Model)
+	if accessModel == "" {
+		accessModel = selectionModel
+	}
+	if apiKey := c.GetString("userApiKey"); s.cfg != nil && s.cfg.HasClientModelRestrictions(apiKey) && !s.cfg.IsModelAllowedForClient(apiKey, accessModel) {
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("model %q is not allowed for this API key", accessModel)})
 		return
 	}
 	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
@@ -1005,6 +1016,19 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 
 	action := strings.TrimPrefix(c.Param("action"), "/")
 	action = strings.TrimSpace(action)
+	apiKey := c.GetString("userApiKey")
+	if apiKey == "" && c.Request != nil {
+		apiKey = coreusage.APIKeyFromContext(c.Request.Context())
+	}
+	if s != nil && s.cfg != nil && s.cfg.HasClientModelRestrictions(apiKey) && !s.cfg.IsModelAllowedForClient(apiKey, action) {
+		c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Not Found",
+				Type:    "not_found",
+			},
+		})
+		return
+	}
 	for _, entry := range entries {
 		if homeGeminiModelMatches(entry, action) {
 			c.JSON(http.StatusOK, formatHomeGeminiModel(entry))
