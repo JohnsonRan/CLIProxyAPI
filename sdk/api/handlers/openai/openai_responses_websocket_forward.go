@@ -127,6 +127,16 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
 		case chunk, ok := <-data:
 			if !ok {
+				// A failing stream buffers its terminal error and then closes both
+				// channels, so select may pick the closed data channel first. Let
+				// the next iteration deliver the buffered error instead of
+				// reporting a stream that ended before response.completed, which
+				// closed the socket without a close frame (1006). The HTTP
+				// forwarders check handlers.PendingStreamError for the same race.
+				if len(errs) > 0 {
+					data = nil
+					continue
+				}
 				if opts.duplexStream != nil && opts.duplexStream() {
 					// A duplex stream ends with its socket, not an individual response.
 					// The data channel may close before select observes its final error.
