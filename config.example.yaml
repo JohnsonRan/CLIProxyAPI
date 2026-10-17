@@ -938,6 +938,13 @@ upstream:
 #           alias: "claude-opus-4.66"
 #         - name: "kimi-k2.5"
 #           alias: "claude-opus-4.66"
+#     # TypeSafe System One decision models are served on POST /v1/systemone, which forwards
+#     # the request unchanged to <base-url>/systemone (https://docs.typesafe.ai/api). Add a
+#     # provider like the one above with base-url "https://api.typesafe.ai/v1" and model
+#     # "jev-latest", or Command Code "https://api.commandcode.ai/provider/v1" and "typesafe/jev".
+#     # Builds with the Command Code login list "typesafe/jev" for a logged-in Command Code
+#     # credential already; add the provider only to use a Command Code API key without logging in.
+#     # Set "systemone: true" on such models so management connectivity tests use /systemone and /v1/models lists them with output modality "decisions".
 
 # END API KEY EXAMPLES
 
