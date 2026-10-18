@@ -848,6 +848,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		selectedAuthObserved := false
 		nativeRequest := util.IsCodexResponsesLiteRequest(payload, c.Request.Header)
 		var preserveNativeOutput atomic.Bool
+		// Read by the completion hook while the executor may still report a selection.
+		var turnUsesUpstreamWebsocket atomic.Bool
+		var turnAuthID atomic.Value
+		turnAuthID.Store(pinnedAuthID)
 		codexDuplexStream.Store(false)
 		pinnedAuthAttempted := false
 		turnStartEpoch := inputEpoch.Load()
@@ -881,12 +885,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
 		cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 			preserveNativeOutput.Store(false)
+			turnUsesUpstreamWebsocket.Store(false)
 			codexDuplexStream.Store(false)
 			authID = strings.TrimSpace(authID)
 			if authID == "" || h == nil || h.AuthManager == nil {
 				return
 			}
 			lastAttemptedAuthID = authID
+			turnAuthID.Store(authID)
 			selectedAuthObserved = true
 			pinnedAuthAttempted = pinnedAuthAttempted || (pinnedAuthID != "" && authID == pinnedAuthID)
 			selectedAuth, ok := sessionAuthByID(authID)
@@ -894,6 +900,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				return
 			}
 			attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
+			turnUsesUpstreamWebsocket.Store(attemptedUpstreamMode == responsesWebsocketUpstreamModeWS)
 			codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 		})
@@ -953,6 +960,20 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				localInterrupt:           localInterrupt,
 				websocketOwned: func() bool {
 					return attemptedUpstreamMode == responsesWebsocketUpstreamModeWS
+				},
+				onCompleted: func(output []byte, responseID string, pendingToolCallIDs []string) {
+					// A native WebSocket upstream keeps the transcript itself.
+					if nativeWebsocketPassthrough || turnUsesUpstreamWebsocket.Load() {
+						return
+					}
+					authID, _ := turnAuthID.Load().(string)
+					defaultResponsesHTTPStateCache.put(responseID, responsesHTTPStateEntry{
+						owner:              stateOwner,
+						request:            canonicalHTTPIncrementalRequestSnapshot(nextLastRequest),
+						responseOutput:     output,
+						pendingToolCallIDs: pendingToolCallIDs,
+						authID:             authID,
+					})
 				},
 			},
 		)
@@ -1059,15 +1080,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			lastResponseID = strings.TrimSpace(completedResponseID)
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)
-			if lastResponseID != "" && len(lastRequest) > 0 {
-				defaultResponsesHTTPStateCache.put(lastResponseID, responsesHTTPStateEntry{
-					owner:              stateOwner,
-					request:            canonicalHTTPIncrementalRequestSnapshot(lastRequest),
-					responseOutput:     lastResponseOutput,
-					pendingToolCallIDs: lastResponsePendingToolCallIDs,
-					authID:             lastAttemptedAuthID,
-				})
-			}
 		}
 	}
 }
