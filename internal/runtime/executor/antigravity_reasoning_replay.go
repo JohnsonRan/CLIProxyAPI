@@ -1626,8 +1626,11 @@ func (f *antigravityReplayContextFingerprints) at(beforeContentIndex int) string
 		f.writeByte(0)
 		for _, part := range content.parts {
 			normalized := []byte(part.Raw)
-			for _, signaturePath := range []string{"thoughtSignature", "thought_signature", "extra_content.google.thought_signature"} {
-				normalized, _ = sjson.DeleteBytes(normalized, signaturePath)
+			// Every signature key contains "hought" unless a \u escape spells it.
+			if strings.Contains(part.Raw, "hought") || strings.Contains(part.Raw, `\u`) {
+				for _, signaturePath := range []string{"thoughtSignature", "thought_signature", "extra_content.google.thought_signature"} {
+					normalized, _ = sjson.DeleteBytes(normalized, signaturePath)
+				}
 			}
 			f.write(antigravityCanonicalReplayJSON(normalized))
 			f.writeByte(0)
