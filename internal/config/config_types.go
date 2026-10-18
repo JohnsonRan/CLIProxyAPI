@@ -408,16 +408,23 @@ type QuotaAPIConfig struct {
 	// Default: 300. Minimum: 30.
 	CacheTTLSeconds int `yaml:"cache-ttl-seconds,omitempty" json:"cache-ttl-seconds,omitempty"`
 
+	// HideNames reports every credential by its provider instead of its note.
+	HideNames bool `yaml:"hide-names,omitempty" json:"hide-names,omitempty"`
+
+	// IncludeRaw adds the redacted upstream responses behind each summary.
+	IncludeRaw bool `yaml:"include-raw,omitempty" json:"include-raw,omitempty"`
+
 	// Keys grants client API keys visibility of selected OAuth credentials.
 	// A key that is not listed sees no credentials.
 	Keys []QuotaAPIKey `yaml:"keys,omitempty" json:"keys,omitempty"`
 }
 
-// QuotaAPIKey lists the OAuth credentials one client API key may read.
+// QuotaAPIKey lists the credentials one client API key may read: OAuth
+// credentials, and API-key upstreams whose own GET /v1/usage is relayed.
 type QuotaAPIKey struct {
 	APIKey string `yaml:"api-key" json:"api-key"`
 
-	// Credentials are auth IDs (auth file names) visible to the key.
+	// Credentials are auth IDs (auth file names) or auth indexes visible to the key.
 	Credentials []string `yaml:"credentials,omitempty" json:"credentials,omitempty"`
 }
 

@@ -53,15 +53,19 @@ func TestClientUsageRequestPassesThroughAnyStatus(t *testing.T) {
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
 	auth := &coreauth.Auth{ID: "a", Provider: "codex"}
 
-	ok := h.clientUsageRequest(context.Background(), auth, "tok", http.MethodGet, server.URL+"/ok", nil, nil)
+	ok := h.clientUsageRequest(context.Background(), auth, "tok", clientUsageCall{url: server.URL + "/ok"})
 	if !clientUsageUpstreamOK(ok) || string(ok.Body) != `{"plan_type":"pro"}` || ok.Endpoint != server.URL+"/ok" {
 		t.Fatalf("ok response = %+v body=%s", ok, ok.Body)
 	}
-	failed := h.clientUsageRequest(context.Background(), auth, "tok", http.MethodGet, server.URL+"/fail", nil, nil)
+	picked := h.clientUsageRequest(context.Background(), auth, "tok", clientUsageCall{url: server.URL + "/ok", fields: []string{"plan_type", "absent"}})
+	if string(picked.Body) != `{"plan_type":"pro"}` {
+		t.Fatalf("picked body = %s", picked.Body)
+	}
+	failed := h.clientUsageRequest(context.Background(), auth, "tok", clientUsageCall{url: server.URL + "/fail"})
 	if clientUsageUpstreamOK(failed) || failed.StatusCode != http.StatusTooManyRequests || string(failed.Body) != `{"error":{"message":"slow down"}}` {
 		t.Fatalf("failed response = %+v body=%s", failed, failed.Body)
 	}
-	html := h.clientUsageRequest(context.Background(), auth, "tok", http.MethodGet, server.URL+"/html", nil, nil)
+	html := h.clientUsageRequest(context.Background(), auth, "tok", clientUsageCall{url: server.URL + "/html"})
 	if clientUsageUpstreamOK(html) || html.StatusCode != http.StatusOK || html.Body != nil || html.Error == "" {
 		t.Fatalf("html response = %+v", html)
 	}
@@ -156,13 +160,14 @@ func TestClientUsageAuthsFiltersAndOrders(t *testing.T) {
 		{ID: "key", Provider: "codex", Attributes: map[string]string{coreauth.AttributeAPIKey: "sk-test"}},
 		{ID: "off", Provider: "claude", Attributes: oauth, Disabled: true},
 		{ID: "gem", Provider: "gemini", Attributes: oauth},
+		{ID: "relay", Provider: "openai-compatibility", Attributes: map[string]string{coreauth.AttributeAPIKey: "sk-up", "base_url": "https://up.example/v1"}},
 	}
 	auths := clientUsageAuths(list)
 	got := make([]string, 0, len(auths))
 	for _, auth := range auths {
 		got = append(got, auth.ID)
 	}
-	want := []string{"z", "a", "b"}
+	want := []string{"z", "a", "b", "relay"}
 	if len(got) != len(want) {
 		t.Fatalf("ids = %v, want %v", got, want)
 	}
@@ -185,7 +190,7 @@ func serveClientUsage(t *testing.T, h *Handler, apiKey string) clientUsageRespon
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); strings.Contains(body, "secret@example.com") || strings.Contains(body, "null") {
+	if body := rec.Body.String(); strings.Contains(body, "secret@example.com") {
 		t.Fatalf("unexpected content in response: %s", body)
 	}
 	var resp clientUsageResponse
@@ -195,7 +200,7 @@ func serveClientUsage(t *testing.T, h *Handler, apiKey string) clientUsageRespon
 	return resp
 }
 
-func newClientUsageTestHandler(t *testing.T, keys []config.QuotaAPIKey) *Handler {
+func newClientUsageTestHandler(t *testing.T, keys []config.QuotaAPIKey, configure ...func(*config.QuotaAPIConfig)) *Handler {
 	t.Helper()
 	manager := coreauth.NewManager(nil, nil, nil)
 	for _, auth := range []*coreauth.Auth{
@@ -208,12 +213,16 @@ func newClientUsageTestHandler(t *testing.T, keys []config.QuotaAPIKey) *Handler
 	}
 	cfg := &config.Config{AuthDir: t.TempDir()}
 	cfg.QuotaAPI.Keys = keys
+	for _, apply := range configure {
+		apply(&cfg.QuotaAPI)
+	}
 	h := NewHandlerWithoutConfigFilePath(cfg, manager)
 	observedAt := time.Now().UTC()
 	h.clientUsage.entries = map[string]clientUsageCacheEntry{
 		"codex-a.json": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
 			observedAt: observedAt,
 			responses:  []clientUsageUpstream{{Endpoint: clientUsageCodexURL, StatusCode: 200, Body: json.RawMessage(`{"plan_type":"plus"}`)}},
+			summary:    clientUsageSummary{Plan: "plus", Windows: []clientUsageWindow{{ID: "five_hour", UsedPercent: clientUsageFloat(40)}}},
 		}},
 		"claude-a.json": {expiresAt: time.Now().Add(time.Hour), result: clientUsageProbeResult{
 			err: "auth token refresh failed", observedAt: observedAt,
@@ -243,7 +252,7 @@ func TestGetClientUsageReturnsSelectedCredentialsOnly(t *testing.T) {
 		t.Fatalf("credentials = %+v", resp.Credentials)
 	}
 	codex := resp.Credentials[0]
-	if codex.Name != "work" || codex.Provider != "codex" || codex.Status != "ok" || len(codex.Responses) != 1 || string(codex.Responses[0].Body) != `{"plan_type":"plus"}` {
+	if codex.Name != "work" || codex.Provider != "codex" || codex.Status != "ok" || codex.Plan != "plus" || len(codex.Windows) != 1 || *codex.Windows[0].UsedPercent != 40 || codex.Responses != nil {
 		t.Fatalf("codex credential = %+v", codex)
 	}
 	resp = serveClientUsage(t, h, "sk-b")
@@ -251,7 +260,7 @@ func TestGetClientUsageReturnsSelectedCredentialsOnly(t *testing.T) {
 		t.Fatalf("credentials = %+v", resp.Credentials)
 	}
 	claude := resp.Credentials[0]
-	if claude.Name != "claude" || claude.Status != "error" || claude.Error != "auth token refresh failed" || claude.Responses == nil {
+	if claude.Name != "claude" || claude.Status != "error" || claude.Error != "auth token refresh failed" || claude.Windows == nil {
 		t.Fatalf("claude credential = %+v", claude)
 	}
 	if _, ok := h.clientUsage.entries["deleted.json"]; ok {

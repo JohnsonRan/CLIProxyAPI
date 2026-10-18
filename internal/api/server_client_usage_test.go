@@ -25,7 +25,7 @@ func TestClientUsageRouteRequiresClientKey(t *testing.T) {
 	if authorized.Code != http.StatusOK {
 		t.Fatalf("authenticated status = %d, want %d body=%s", authorized.Code, http.StatusOK, authorized.Body.String())
 	}
-	if got := authorized.Body.String(); got != `{"credentials":[]}` {
+	if got := authorized.Body.String(); got != `{"version":2,"credentials":[]}` {
 		t.Fatalf("body = %s, want no credentials", got)
 	}
 }

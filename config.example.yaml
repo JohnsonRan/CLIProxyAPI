@@ -1171,15 +1171,22 @@ observability:
     # Record proxy request/response logs. Management requests are excluded.
     request-log: false
 
-  # Client-facing OAuth quota endpoint (GET /v1/usage).
-  # A client API key reads the upstream quota responses of the Codex, Claude, Antigravity,
-  # xAI and Command Code OAuth credentials selected for it below, as returned upstream minus
-  # email, user and account IDs. Keys that are not listed get an empty list. Credentials are named by their
-  # note, or by provider when no note is set.
+  # Client-facing quota endpoint (GET /v1/usage).
+  # A client API key reads a quota summary (plan, rate-limit windows with used percent and
+  # reset time, balances) of the Codex, Claude, Antigravity, xAI and Command Code OAuth
+  # credentials selected for it below. Selecting an API-key provider entry whose base URL
+  # points at another proxy relays that proxy's own GET /v1/usage (up to 3 proxies deep).
+  # Keys that are not listed get an empty list; removing a key's selection turns it off.
+  # Credentials are named by their note, or by provider when no note is set.
   quota-api:
     # How long upstream quota results are reused. Default: 300. Minimum: 30.
     # cache-ttl-seconds: 300
-    # Client API keys and the auth IDs (auth file names) each of them may read.
+    # Name every credential by its provider instead of its note.
+    # hide-names: false
+    # Also return the upstream responses behind each summary, minus emails, user and
+    # account IDs; identity endpoints keep only their plan fields.
+    # include-raw: false
+    # Client API keys and the auth IDs (auth file names) or auth indexes each of them may read.
     keys: []
     # keys:
     #   - api-key: "your-api-key-1"
