@@ -26,7 +26,6 @@ env:
     patch/management-ua-shim
     patch/downstream-panel-source
     patch/fix-interrupt-test-race
-    patch/claude-thinking-off
     patch/claude-search-recovery
     patch/codex-oauth-resilience
     patch/embeddings-and-rerank
@@ -50,7 +49,6 @@ env:
     patch/session-claude-identity-once
     patch/claude-request-nocopy-reads
     patch/responses-ws-terminal-error-race
-    patch/antigravity-tool-schema-single-pass
     patch/antigravity-replay-signature-guard
     patch/responses-ws-interrupt-window
     patch/thinking-validate-once
@@ -136,7 +134,7 @@ jobs:
           go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/translator/claude/openai/responses/... ./internal/translator/common/... ./internal/translator/gemini/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./internal/auth/commandcode/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./sdk/cliproxy/usage/... ./internal/util/... ./internal/signature/...
           go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs|TestCompatDiscoveryCacheKey|CommandCode" ./sdk/cliproxy
           go test -run "CommandCode" ./internal/watcher/synthesizer
-          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope|TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions|TestSanitizeAntigravityToolSchemas|TestAntigravityReplayFingerprintSkipsSignatureDeletesSafely|TestOpenAICompatStreamFrame" ./internal/runtime/executor
+          go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope|TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions|TestAntigravityReplayFingerprintSkipsSignatureDeletesSafely|TestOpenAICompatStreamFrame" ./internal/runtime/executor
           go test -run "TestSystemOneRoute|TestDecisionsRouteRegistered|TestResponsesInputTokensRoutesRegistered|KeyScope|CodexOnly" ./internal/api
           # Race detector over the packages with shared no-copy buffers and the
           # locked HTTP continuation cache (needs cgo; ubuntu runners have gcc).
