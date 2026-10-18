@@ -203,22 +203,18 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
-					// Close the local interrupt window before the client can see the
-					// terminal event. The upstream channel may stay open a little
-					// longer; an interrupt arriving then belongs to no running turn
-					// and must be rejected, not answered with a synthetic
-					// response.incomplete for its response_id.
-					if opts.localInterrupt != nil {
-						opts.localInterrupt.end()
-					}
-				} else if eventType == "response.failed" {
-					// response.failed is terminal as well. It carries no completed
-					// output, so only the local interrupt window is closed here.
-					if opts.localInterrupt != nil {
-						opts.localInterrupt.end()
-					}
 				}
 				markAPIResponseTimestamp(c)
+				// Close the local interrupt window before the client can see the
+				// terminal event. The upstream channel may stay open a little
+				// longer; an interrupt arriving then belongs to no running turn
+				// and must be rejected, not answered with a synthetic
+				// response.incomplete for its response_id. response.failed is
+				// terminal as well, though it carries no completed output.
+				terminal := isResponsesWebsocketCompletionEvent(eventType) || eventType == "response.incomplete" || eventType == "response.failed"
+				if opts.localInterrupt != nil && terminal {
+					opts.localInterrupt.end()
+				}
 				if payloadErrMsg != nil {
 					if matched, errClose := writer.closeForUpstreamError(payloadErrMsg.Error); matched {
 						cancel(payloadErrMsg.Error)
