@@ -101,9 +101,10 @@ func TestGetClientUsageRelaysUpstreamProxy(t *testing.T) {
 	upstream := newClientUsageTestHandler(t, []config.QuotaAPIKey{{APIKey: "sk-friend", Credentials: []string{"codex-a.json"}}}, func(c *config.QuotaAPIConfig) {
 		c.IncludeRaw = true
 	})
-	var sawDepth string
+	var sawDepth, sawVia string
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawDepth = r.Header.Get(clientUsageDepthHeader)
+		sawVia = r.Header.Get(clientUsageViaHeader)
 		serveClientUsageHTTP(upstream).Config.Handler.ServeHTTP(w, r)
 	}))
 	defer upstreamServer.Close()
@@ -130,6 +131,9 @@ func TestGetClientUsageRelaysUpstreamProxy(t *testing.T) {
 	}
 	if sawDepth != "1" {
 		t.Fatalf("upstream saw depth %q, want 1", sawDepth)
+	}
+	if sawVia == "" || sawVia != downstream.clientUsageInstanceID() {
+		t.Fatalf("upstream saw via %q, want the downstream instance ID", sawVia)
 	}
 }
 
@@ -192,17 +196,93 @@ func TestGetClientUsageRelayRejectsMissingOrOldVersion(t *testing.T) {
 	}
 }
 
-// Two proxies relaying each other stop at the depth limit instead of
-// recursing or waiting on their own in-flight probe.
-func TestGetClientUsageRelayLoopTerminates(t *testing.T) {
+func TestClientUsageRequestTrace(t *testing.T) {
+	cases := []struct {
+		name, depth, via string
+		wantDepth        int
+		wantVia          []string
+		wantLoop         bool
+	}{
+		{name: "direct", wantVia: nil},
+		{name: "relayed", depth: "2", via: " a , ,b ", wantDepth: 2, wantVia: []string{"a", "b"}},
+		{name: "own id", depth: "1", via: "a,self", wantDepth: 1, wantLoop: true},
+		{name: "too many hops", via: "a,b,c,d", wantLoop: true},
+		{name: "oversized", via: strings.Repeat("x", clientUsageMaxViaBytes+1), wantLoop: true},
+	}
+	for _, tc := range cases {
+		trace, loop := clientUsageRequestTrace(tc.depth, tc.via, "self")
+		if loop != tc.wantLoop {
+			t.Fatalf("%s: loop = %v, want %v", tc.name, loop, tc.wantLoop)
+		}
+		if loop {
+			continue
+		}
+		if trace.depth != tc.wantDepth || strings.Join(trace.via, ",") != strings.Join(tc.wantVia, ",") {
+			t.Fatalf("%s: trace = %+v", tc.name, trace)
+		}
+	}
+}
+
+// loopTestServer serves h's GET /v1/usage once h is set, optionally without
+// the Via header, the way a proxy that predates it forwards a request.
+func loopTestServer(h **Handler, stripVia bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if stripVia {
+			r.Header.Del(clientUsageViaHeader)
+		}
+		serveClientUsageHTTP(*h).Config.Handler.ServeHTTP(w, r)
+	}))
+}
+
+// A relay whose base URL and key lead back to the same proxy stops at the
+// first hop with a loop error, instead of nesting itself to the depth limit.
+func TestGetClientUsageRelayToSelfStopsAtFirstHop(t *testing.T) {
+	var self *Handler
+	server := loopTestServer(&self, false)
+	defer server.Close()
+	self = newRelayTestHandler(t, []*coreauth.Auth{relayTestAuth("to-self", server.URL+"/v1", "sk-me")}, []config.QuotaAPIKey{{APIKey: "sk-me", Credentials: []string{"to-self"}}}, false)
+
+	resp := serveClientUsage(t, self, "sk-me")
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("response = %+v", resp)
+	}
+	node := resp.Credentials[0]
+	if node.Status != "error" || node.Error != clientUsageLoopError || len(node.Upstream) != 0 {
+		t.Fatalf("relay credential = %+v", node)
+	}
+}
+
+// Two proxies relaying each other stop as soon as the request reaches the
+// proxy it started from.
+func TestGetClientUsageRelayLoopStopsAtOrigin(t *testing.T) {
 	var a, b *Handler
-	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveClientUsageHTTP(a).Config.Handler.ServeHTTP(w, r)
-	}))
+	serverA := loopTestServer(&a, false)
 	defer serverA.Close()
-	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveClientUsageHTTP(b).Config.Handler.ServeHTTP(w, r)
-	}))
+	serverB := loopTestServer(&b, false)
+	defer serverB.Close()
+	a = newRelayTestHandler(t, []*coreauth.Auth{relayTestAuth("to-b", serverB.URL, "sk-b")}, []config.QuotaAPIKey{{APIKey: "sk-a", Credentials: []string{"to-b"}}}, false)
+	b = newRelayTestHandler(t, []*coreauth.Auth{relayTestAuth("to-a", serverA.URL, "sk-a")}, []config.QuotaAPIKey{{APIKey: "sk-b", Credentials: []string{"to-a"}}}, false)
+
+	resp := serveClientUsage(t, a, "sk-a")
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("response = %+v", resp)
+	}
+	toB := resp.Credentials[0]
+	if toB.Status != "ok" || len(toB.Upstream) != 1 {
+		t.Fatalf("to-b = %+v", toB)
+	}
+	if toA := toB.Upstream[0]; toA.Status != "error" || toA.Error != clientUsageLoopError || len(toA.Upstream) != 0 {
+		t.Fatalf("to-a = %+v", toA)
+	}
+}
+
+// Through proxies that do not forward Via, a loop still ends at the depth
+// limit instead of recursing or waiting on its own in-flight probe.
+func TestGetClientUsageRelayLoopWithoutViaStopsAtDepthLimit(t *testing.T) {
+	var a, b *Handler
+	serverA := loopTestServer(&a, true)
+	defer serverA.Close()
+	serverB := loopTestServer(&b, true)
 	defer serverB.Close()
 	a = newRelayTestHandler(t, []*coreauth.Auth{relayTestAuth("to-b", serverB.URL, "sk-b")}, []config.QuotaAPIKey{{APIKey: "sk-a", Credentials: []string{"to-b"}}}, false)
 	b = newRelayTestHandler(t, []*coreauth.Auth{relayTestAuth("to-a", serverA.URL, "sk-a")}, []config.QuotaAPIKey{{APIKey: "sk-b", Credentials: []string{"to-a"}}}, false)
