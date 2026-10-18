@@ -53,6 +53,7 @@ env:
     patch/antigravity-tool-schema-single-pass
     patch/antigravity-replay-signature-guard
     patch/responses-ws-interrupt-window
+    patch/thinking-validate-once
 
 jobs:
   sync-main-with-squash-branches:
