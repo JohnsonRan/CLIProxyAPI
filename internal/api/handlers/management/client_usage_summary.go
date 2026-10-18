@@ -64,6 +64,11 @@ type clientUsageSummary struct {
 	Balances      []clientUsageBalance `json:"balances,omitempty"`
 }
 
+// empty reports whether no quota fact could be read from the responses.
+func (s clientUsageSummary) empty() bool {
+	return s.Plan == "" && s.PlanExpiresAt == nil && len(s.Windows) == 0 && len(s.Balances) == 0
+}
+
 // summarizeClientUsage derives the quota summary from a credential's upstream
 // responses. Failed or missing responses contribute nothing.
 func summarizeClientUsage(provider string, responses []clientUsageUpstream, observedAt time.Time) clientUsageSummary {

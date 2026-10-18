@@ -392,11 +392,17 @@ func (h *Handler) probeClientUsage(auth *coreauth.Auth, depth int) clientUsagePr
 	if errProbe == nil && !clientUsageAnyOK(result.responses) {
 		errProbe = fmt.Errorf("no upstream quota endpoint succeeded")
 	}
+	result.summary = summarizeClientUsage(provider, result.responses, result.observedAt)
+	if errProbe == nil && result.summary.empty() {
+		// An endpoint answered but nothing in it parsed: the upstream format
+		// changed. Report it instead of an "ok" credential without quota.
+		errProbe = fmt.Errorf("upstream quota response not recognized")
+		log.WithFields(log.Fields{"provider": provider, "auth_index": auth.Index}).Warn("client usage: upstream quota response not recognized")
+	}
 	if errProbe != nil {
 		log.WithFields(log.Fields{"provider": provider, "auth_index": auth.Index}).WithError(errProbe).Debug("client usage: quota probe failed")
 		result.err = errProbe.Error()
 	}
-	result.summary = summarizeClientUsage(provider, result.responses, result.observedAt)
 	return result
 }
 
