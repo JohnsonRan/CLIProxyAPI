@@ -71,6 +71,30 @@ func TestClientUsageRelayURL(t *testing.T) {
 	}
 }
 
+func TestClientUsageRequestDepth(t *testing.T) {
+	cases := []struct {
+		header string
+		want   int
+	}{
+		{"", 0},
+		{"garbage", 0},
+		{"-1", 0},
+		{"-99", 0},
+		{"0", 0},
+		{"1", 1},
+		{"2", 2},
+		{"3", 3},
+		{"4", clientUsageMaxDepth},
+		{"100", clientUsageMaxDepth},
+		{"99999999", clientUsageMaxDepth},
+	}
+	for _, tc := range cases {
+		if got := clientUsageRequestDepth(tc.header); got != tc.want {
+			t.Fatalf("clientUsageRequestDepth(%q) = %d, want %d", tc.header, got, tc.want)
+		}
+	}
+}
+
 // A downstream proxy relays the quota its upstream exposes to the key it was
 // given, selected by auth index, and passes the depth along.
 func TestGetClientUsageRelaysUpstreamProxy(t *testing.T) {
@@ -136,6 +160,35 @@ func TestGetClientUsageRelayHidesNamesAndReportsMissingEndpoint(t *testing.T) {
 	missing := byID["relay-2"]
 	if missing.Status != "error" || missing.Error != "upstream quota endpoint returned 404" || missing.Upstream != nil {
 		t.Fatalf("plain upstream = %+v", missing)
+	}
+}
+
+func TestGetClientUsageRelayRejectsMissingOrOldVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/no-version/v1/usage":
+			_, _ = w.Write([]byte(`{"credentials":[]}`))
+		case "/old-version/v1/usage":
+			_, _ = w.Write([]byte(`{"version":1,"credentials":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	downstream := newRelayTestHandler(t, []*coreauth.Auth{
+		relayTestAuth("no-version", server.URL+"/no-version/v1", "sk-test"),
+		relayTestAuth("old-version", server.URL+"/old-version/v1", "sk-test"),
+	}, []config.QuotaAPIKey{{APIKey: "sk-me", Credentials: []string{"no-version", "old-version"}}}, false)
+
+	resp := serveClientUsage(t, downstream, "sk-me")
+	if len(resp.Credentials) != 2 {
+		t.Fatalf("response = %+v", resp)
+	}
+	for _, cred := range resp.Credentials {
+		if cred.Status != "error" || cred.Error != "upstream does not report quota" {
+			t.Fatalf("credential %s = %+v, want error 'upstream does not report quota'", cred.Name, cred)
+		}
 	}
 }
 
