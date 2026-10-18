@@ -65,3 +65,32 @@ func TestProbeClientUsageCommandCodeReadsCreditsAndSubscription(t *testing.T) {
 		t.Fatalf("subscription body = %s", got)
 	}
 }
+
+// TestProbeClientUsageReportsUnrecognizedResponse pins that a 2xx body with no
+// field the summary knows fails the credential instead of reporting it "ok"
+// without quota, so an upstream format change is noticed.
+func TestProbeClientUsageReportsUnrecognizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/alpha/billing/credits" {
+			_, _ = w.Write([]byte(`{"balanceV2":{"amount":12.5}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	creditsURL, subscriptionURL := clientUsageCommandCodeCreditsURL, clientUsageCommandCodeSubscriptionURL
+	clientUsageCommandCodeCreditsURL = server.URL + "/alpha/billing/credits"
+	clientUsageCommandCodeSubscriptionURL = server.URL + "/alpha/billing/subscriptions"
+	defer func() {
+		clientUsageCommandCodeCreditsURL, clientUsageCommandCodeSubscriptionURL = creditsURL, subscriptionURL
+	}()
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
+	result := h.probeClientUsage(commandCodeQuotaTestAuth("cc.json"), 0)
+	if result.err != "upstream quota response not recognized" {
+		t.Fatalf("err = %q, want unrecognized", result.err)
+	}
+	if len(result.responses) != 2 || string(result.responses[0].Body) != `{"balanceV2":{"amount":12.5}}` {
+		t.Fatalf("responses = %+v", result.responses)
+	}
+}
