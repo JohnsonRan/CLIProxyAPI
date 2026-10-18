@@ -5,10 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -35,20 +39,32 @@ func responsesHTTPStateOwner(c *gin.Context) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gin.Context, rawJSON []byte) []byte {
+// responsesHTTPPreviousResponseNotFoundError reports a previous_response_id the
+// proxy cannot expand. No executor forwards previous_response_id upstream, so
+// sending the delta alone would silently drop the conversation history; the
+// client must resend the full input instead, as with OpenAI's own API.
+func responsesHTTPPreviousResponseNotFoundError(prevID string) *interfaces.ErrorMessage {
+	body, _ := sjson.SetBytes([]byte(`{"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`), "error.message", fmt.Sprintf("Previous response with id '%s' not found.", prevID))
+	return &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(string(body))}
+}
+
+// prepareHTTPResponsesIncrementalRequest expands previous_response_id into the
+// cached history. It fails when the id is unknown to the caller or the delta
+// cannot be merged, instead of forwarding a context-less request.
+func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gin.Context, rawJSON []byte) ([]byte, *interfaces.ErrorMessage) {
 	if len(rawJSON) == 0 {
-		return rawJSON
+		return rawJSON, nil
 	}
 	prevID := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String())
 	if prevID == "" {
-		return rawJSON
+		return rawJSON, nil
 	}
 	if c != nil {
 		c.Set(responsesHTTPPreviousResponseIDContextKey, prevID)
 	}
 	entry, ok := defaultResponsesHTTPStateCache.get(prevID, responsesHTTPStateOwner(c))
 	if !ok {
-		return rawJSON
+		return nil, responsesHTTPPreviousResponseNotFoundError(prevID)
 	}
 	if c != nil && entry.authID != "" {
 		c.Set(responsesHTTPPinnedAuthIDContextKey, entry.authID)
@@ -70,8 +86,11 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 		false,
 		true,
 	)
-	if errMsg != nil || len(normalized) == 0 {
-		return rawJSON
+	if errMsg != nil {
+		return nil, errMsg
+	}
+	if len(normalized) == 0 {
+		return nil, responsesHTTPPreviousResponseNotFoundError(prevID)
 	}
 	if !wasStreaming {
 		if streamResult.Exists() {
@@ -83,7 +102,7 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 	if c != nil {
 		c.Set(responsesHTTPExpandedFromCacheContextKey, true)
 	}
-	return normalized
+	return normalized, nil
 }
 
 func httpIncrementalPreviousResponseIDFromContext(c *gin.Context) string {
