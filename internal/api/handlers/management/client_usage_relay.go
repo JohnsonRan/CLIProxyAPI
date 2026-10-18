@@ -54,6 +54,9 @@ func clientUsageRequestDepth(header string) int {
 	if errParse != nil || depth < 0 {
 		return 0
 	}
+	if depth > clientUsageMaxDepth {
+		return clientUsageMaxDepth
+	}
 	return depth
 }
 
@@ -102,9 +105,10 @@ func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth
 		return result
 	}
 	var upstream struct {
+		Version     int                      `json:"version"`
 		Credentials *[]clientUsageCredential `json:"credentials"`
 	}
-	if errDecode := json.Unmarshal(payload, &upstream); errDecode != nil || upstream.Credentials == nil {
+	if errDecode := json.Unmarshal(payload, &upstream); errDecode != nil || upstream.Credentials == nil || upstream.Version < clientUsageVersion {
 		result.err = "upstream does not report quota"
 		return result
 	}

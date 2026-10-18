@@ -270,3 +270,52 @@ func TestGetClientUsageReturnsSelectedCredentialsOnly(t *testing.T) {
 		t.Fatal("serving one key evicted another key's cached credential")
 	}
 }
+
+func TestClientUsageCachePruneDepthEntries(t *testing.T) {
+	cache := clientUsageCache{
+		entries: map[string]clientUsageCacheEntry{
+			"keep.json":      {expiresAt: time.Now().Add(time.Hour)},
+			"keep.json\x001": {expiresAt: time.Now().Add(time.Hour)},
+			"keep.json\x002": {expiresAt: time.Now().Add(time.Hour)},
+			"drop.json":      {expiresAt: time.Now().Add(time.Hour)},
+			"drop.json\x001": {expiresAt: time.Now().Add(time.Hour)},
+			"drop.json\x003": {expiresAt: time.Now().Add(time.Hour)},
+		},
+	}
+	cache.prune(map[string]struct{}{"keep.json": {}})
+	if len(cache.entries) != 3 {
+		t.Fatalf("prune kept %d entries, want 3", len(cache.entries))
+	}
+	for _, key := range []string{"keep.json", "keep.json\x001", "keep.json\x002"} {
+		if _, ok := cache.entries[key]; !ok {
+			t.Fatalf("prune dropped %q", key)
+		}
+	}
+	for _, key := range []string{"drop.json", "drop.json\x001", "drop.json\x003"} {
+		if _, ok := cache.entries[key]; ok {
+			t.Fatalf("prune kept %q", key)
+		}
+	}
+}
+
+func TestGetClientUsageIncludeRaw(t *testing.T) {
+	h := newClientUsageTestHandler(t, []config.QuotaAPIKey{
+		{APIKey: "sk-raw", Credentials: []string{"codex-a.json"}},
+	}, func(c *config.QuotaAPIConfig) {
+		c.IncludeRaw = true
+	})
+	resp := serveClientUsage(t, h, "sk-raw")
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("credentials = %+v", resp.Credentials)
+	}
+	codex := resp.Credentials[0]
+	if len(codex.Responses) != 1 {
+		t.Fatalf("responses length = %d, want 1", len(codex.Responses))
+	}
+	if string(codex.Responses[0].Body) != `{"plan_type":"plus"}` {
+		t.Fatalf("response body = %s, want %s", codex.Responses[0].Body, `{"plan_type":"plus"}`)
+	}
+	if codex.Responses[0].Endpoint != clientUsageCodexURL {
+		t.Fatalf("response endpoint = %q, want %q", codex.Responses[0].Endpoint, clientUsageCodexURL)
+	}
+}
