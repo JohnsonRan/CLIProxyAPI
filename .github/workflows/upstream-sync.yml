@@ -52,6 +52,7 @@ env:
     patch/responses-ws-terminal-error-race
     patch/antigravity-tool-schema-single-pass
     patch/antigravity-replay-signature-guard
+    patch/responses-ws-interrupt-window
 
 jobs:
   sync-main-with-squash-branches:
