@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,33 +31,46 @@ const (
 // /v1/usage requests, not just within one.
 var clientUsageProbeSlots = make(chan struct{}, clientUsageProbeConcurrency)
 
+// clientUsageVersion identifies the summary contract of GET /v1/usage.
+const clientUsageVersion = 2
+
 // clientUsageUpstream is one upstream quota response. Body is the upstream
-// JSON as returned, minus the account identifiers in clientUsageRedactedKeys.
+// JSON as returned, minus the account identifiers in clientUsageRedactedKeys
+// and, for identity endpoints, reduced to plan fields.
 type clientUsageUpstream struct {
 	Endpoint   string          `json:"endpoint"`
 	StatusCode int             `json:"status_code,omitempty"`
 	Body       json.RawMessage `json:"body,omitempty"`
 	Error      string          `json:"error,omitempty"`
+
+	kind     string
+	optional bool
 }
 
-// clientUsageCredential is one OAuth credential with the upstream quota
-// responses the management panel reads for it. Name is the credential's note,
-// or its provider when no note is set.
+// clientUsageCredential is one credential's quota summary. Name is the
+// credential's note, or its provider when no note is set or names are hidden.
+// A relay credential (provider "relay") carries the credentials its upstream
+// proxy reports in Upstream instead of windows of its own.
 type clientUsageCredential struct {
-	Name       string                `json:"name"`
-	Provider   string                `json:"provider"`
-	Status     string                `json:"status"`
-	Error      string                `json:"error,omitempty"`
-	ObservedAt time.Time             `json:"observed_at"`
-	Responses  []clientUsageUpstream `json:"responses"`
+	Name       string    `json:"name"`
+	Provider   string    `json:"provider"`
+	Status     string    `json:"status"`
+	Error      string    `json:"error,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
+	clientUsageSummary
+	Upstream  []clientUsageCredential `json:"upstream,omitempty"`
+	Responses []clientUsageUpstream   `json:"responses,omitempty"`
 }
 
 type clientUsageResponse struct {
+	Version     int                     `json:"version"`
 	Credentials []clientUsageCredential `json:"credentials"`
 }
 
 type clientUsageProbeResult struct {
 	responses  []clientUsageUpstream
+	summary    clientUsageSummary
+	upstream   []clientUsageCredential
 	err        string
 	observedAt time.Time
 }
@@ -113,20 +127,24 @@ func (c *clientUsageCache) get(id string, ttl time.Duration, probe func() client
 	return result
 }
 
-// prune drops entries of credentials that no longer exist.
+// prune drops entries of credentials that no longer exist, including their
+// per-depth relay entries.
 func (c *clientUsageCache) prune(keep map[string]struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for id := range c.entries {
+	for key := range c.entries {
+		id, _, _ := strings.Cut(key, "\x00")
 		if _, ok := keep[id]; !ok {
-			delete(c.entries, id)
+			delete(c.entries, key)
 		}
 	}
 }
 
 // GetClientUsage handles GET /v1/usage for client API keys. It returns the
-// upstream quota responses of the OAuth credentials selected for the caller's
-// key in quota-api.keys; a key without a selection gets an empty list.
+// quota summaries of the credentials selected for the caller's key in
+// quota-api.keys; a key without a selection gets an empty list. Selected
+// API-key upstreams relay their own GET /v1/usage, up to clientUsageMaxDepth
+// proxies deep.
 func (h *Handler) GetClientUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "handler unavailable", "type": "server_error"}})
@@ -151,20 +169,26 @@ func (h *Handler) GetClientUsage(c *gin.Context) {
 
 	auths := clientUsageVisibleAuths(pool, cfg.QuotaAPI.VisibleCredentials(c.GetString("userApiKey")))
 	if len(auths) == 0 {
-		c.JSON(http.StatusOK, clientUsageResponse{Credentials: []clientUsageCredential{}})
+		c.JSON(http.StatusOK, clientUsageResponse{Version: clientUsageVersion, Credentials: []clientUsageCredential{}})
 		return
 	}
+	depth := clientUsageRequestDepth(c.GetHeader(clientUsageDepthHeader))
 	ttl := clientUsageCacheTTL(cfg.QuotaAPI.CacheTTLSeconds)
-	results := h.clientUsageResults(auths, ttl, h.probeClientUsage)
-	c.JSON(http.StatusOK, clientUsageResponse{Credentials: clientUsageCredentials(auths, results)})
+	results := h.clientUsageResults(auths, ttl, depth, h.probeClientUsage)
+	c.JSON(http.StatusOK, clientUsageResponse{
+		Version:     clientUsageVersion,
+		Credentials: clientUsageCredentials(auths, results, cfg.QuotaAPI.HideNames, cfg.QuotaAPI.IncludeRaw),
+	})
 }
 
-// clientUsageVisibleAuths keeps the credentials selected for the caller's key.
-// Unknown or unsupported IDs in the selection are ignored.
+// clientUsageVisibleAuths keeps the credentials selected for the caller's key,
+// matched by auth ID or auth index. Unknown or unsupported entries are ignored.
 func clientUsageVisibleAuths(pool []*coreauth.Auth, visible map[string]struct{}) []*coreauth.Auth {
 	out := make([]*coreauth.Auth, 0, len(visible))
 	for _, auth := range pool {
-		if _, ok := visible[auth.ID]; ok {
+		_, byID := visible[auth.ID]
+		_, byIndex := visible[auth.EnsureIndex()]
+		if byID || (byIndex && auth.Index != "") {
 			out = append(out, auth)
 		}
 	}
@@ -187,6 +211,12 @@ func clientUsageProvider(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
+	if clientUsageIsRelay(auth) {
+		return clientUsageRelayProvider
+	}
+	if auth.AuthKind() != coreauth.AuthKindOAuth {
+		return ""
+	}
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
 	case "codex":
 		return "codex"
@@ -203,15 +233,16 @@ func clientUsageProvider(auth *coreauth.Auth) string {
 	}
 }
 
-// clientUsageAuths keeps enabled OAuth credentials of supported providers,
-// ordered by provider and ID so the response order stays stable.
+// clientUsageAuths keeps enabled OAuth credentials of supported providers and
+// API-key upstreams with a base URL, ordered by provider and ID so the
+// response order stays stable.
 func clientUsageAuths(list []*coreauth.Auth) []*coreauth.Auth {
 	out := make([]*coreauth.Auth, 0, len(list))
 	for _, auth := range list {
 		if auth == nil || strings.TrimSpace(auth.ID) == "" || auth.Disabled || auth.Status == coreauth.StatusDisabled {
 			continue
 		}
-		if auth.AuthKind() != coreauth.AuthKindOAuth || clientUsageProvider(auth) == "" {
+		if clientUsageProvider(auth) == "" {
 			continue
 		}
 		out = append(out, auth)
@@ -226,17 +257,27 @@ func clientUsageAuths(list []*coreauth.Auth) []*coreauth.Auth {
 	return out
 }
 
-func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, probe func(*coreauth.Auth) clientUsageProbeResult) []clientUsageProbeResult {
+// clientUsageResults probes the credentials concurrently. Results are cached
+// per credential; relays are cached per request depth as well, so a request
+// arriving back through a relay loop never waits on the probe that caused it.
+// Relays hold no probe slot: they wait on another proxy, not on a provider.
+func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, depth int, probe func(*coreauth.Auth, int) clientUsageProbeResult) []clientUsageProbeResult {
 	results := make([]clientUsageProbeResult, len(auths))
 	var wg sync.WaitGroup
 	for i, auth := range auths {
 		wg.Add(1)
 		go func(index int, candidate *coreauth.Auth) {
 			defer wg.Done()
-			results[index] = h.clientUsage.get(candidate.ID, ttl, func() clientUsageProbeResult {
-				clientUsageProbeSlots <- struct{}{}
-				defer func() { <-clientUsageProbeSlots }()
-				return probe(candidate)
+			key := candidate.ID
+			if depth > 0 && clientUsageIsRelay(candidate) {
+				key += "\x00" + strconv.Itoa(depth)
+			}
+			results[index] = h.clientUsage.get(key, ttl, func() clientUsageProbeResult {
+				if !clientUsageIsRelay(candidate) {
+					clientUsageProbeSlots <- struct{}{}
+					defer func() { <-clientUsageProbeSlots }()
+				}
+				return probe(candidate, depth)
 			})
 		}(i, auth)
 	}
@@ -252,22 +293,37 @@ func clientUsageName(auth *coreauth.Auth) string {
 	if note := clientUsageString(auth.Metadata, "note"); note != "" {
 		return note
 	}
+	if clientUsageIsRelay(auth) {
+		if label := strings.TrimSpace(auth.Label); label != "" {
+			return label
+		}
+	}
 	return clientUsageProvider(auth)
 }
 
-func clientUsageCredentials(auths []*coreauth.Auth, results []clientUsageProbeResult) []clientUsageCredential {
+func clientUsageCredentials(auths []*coreauth.Auth, results []clientUsageProbeResult, hideNames, includeRaw bool) []clientUsageCredential {
 	out := make([]clientUsageCredential, 0, len(auths))
 	for i, auth := range auths {
 		result := results[i]
 		credential := clientUsageCredential{
-			Name:       clientUsageName(auth),
-			Provider:   clientUsageProvider(auth),
-			Status:     clientUsageCredentialOK,
-			ObservedAt: result.observedAt,
-			Responses:  result.responses,
+			Name:               clientUsageName(auth),
+			Provider:           clientUsageProvider(auth),
+			Status:             clientUsageCredentialOK,
+			ObservedAt:         result.observedAt,
+			clientUsageSummary: result.summary,
+			Upstream:           clientUsageScrubUpstream(result.upstream, hideNames),
 		}
-		if credential.Responses == nil {
-			credential.Responses = []clientUsageUpstream{}
+		if credential.Windows == nil {
+			credential.Windows = []clientUsageWindow{}
+		}
+		if hideNames {
+			credential.Name = credential.Provider
+		}
+		if includeRaw {
+			credential.Responses = result.responses
+			if credential.Responses == nil {
+				credential.Responses = []clientUsageUpstream{}
+			}
 		}
 		if result.err != "" {
 			credential.Status = clientUsageCredentialFailure
@@ -278,14 +334,36 @@ func clientUsageCredentials(auths []*coreauth.Auth, results []clientUsageProbeRe
 	return out
 }
 
-// probeClientUsage queries one credential's upstream quota endpoints. It runs on
-// a detached, bounded context so a disconnecting client cannot fail the probe
-// shared with other callers, and a stalled upstream cannot pin the cache slot.
-func (h *Handler) probeClientUsage(auth *coreauth.Auth) clientUsageProbeResult {
+// clientUsageScrubUpstream copies relayed credentials without their raw
+// responses, which stay with the proxy that read them, and with names hidden
+// when this proxy hides its own.
+func clientUsageScrubUpstream(upstream []clientUsageCredential, hideNames bool) []clientUsageCredential {
+	if upstream == nil {
+		return nil
+	}
+	out := make([]clientUsageCredential, len(upstream))
+	for i, credential := range upstream {
+		credential.Responses = nil
+		if hideNames {
+			credential.Name = credential.Provider
+		}
+		credential.Upstream = clientUsageScrubUpstream(credential.Upstream, hideNames)
+		out[i] = credential
+	}
+	return out
+}
+
+// probeClientUsage queries one credential's quota. It runs on a detached,
+// bounded context so a disconnecting client cannot fail the probe shared with
+// other callers, and a stalled upstream cannot pin the cache slot.
+func (h *Handler) probeClientUsage(auth *coreauth.Auth, depth int) clientUsageProbeResult {
 	ctx, cancel := context.WithTimeout(context.Background(), clientUsageProbeTimeout)
 	defer cancel()
-	result := clientUsageProbeResult{observedAt: time.Now().UTC()}
 	provider := clientUsageProvider(auth)
+	if provider == clientUsageRelayProvider {
+		return h.probeRelayClientUsage(ctx, auth, depth)
+	}
+	result := clientUsageProbeResult{observedAt: time.Now().UTC()}
 
 	token, errToken := h.resolveTokenForAuth(ctx, auth, "")
 	if token == "" {
@@ -318,12 +396,15 @@ func (h *Handler) probeClientUsage(auth *coreauth.Auth) clientUsageProbeResult {
 		log.WithFields(log.Fields{"provider": provider, "auth_index": auth.Index}).WithError(errProbe).Debug("client usage: quota probe failed")
 		result.err = errProbe.Error()
 	}
+	result.summary = summarizeClientUsage(provider, result.responses, result.observedAt)
 	return result
 }
 
+// clientUsageAnyOK reports whether a required quota endpoint answered.
+// Optional endpoints only add detail.
 func clientUsageAnyOK(responses []clientUsageUpstream) bool {
 	for _, response := range responses {
-		if clientUsageUpstreamOK(response) {
+		if !response.optional && clientUsageUpstreamOK(response) {
 			return true
 		}
 	}

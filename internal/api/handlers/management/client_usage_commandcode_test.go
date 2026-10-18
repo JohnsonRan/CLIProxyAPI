@@ -54,7 +54,7 @@ func TestProbeClientUsageCommandCodeReadsCreditsAndSubscription(t *testing.T) {
 	}()
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
-	result := h.probeClientUsage(commandCodeQuotaTestAuth("cc.json"))
+	result := h.probeClientUsage(commandCodeQuotaTestAuth("cc.json"), 0)
 	if result.err != "" || len(result.responses) != 2 {
 		t.Fatalf("result = %+v", result)
 	}
