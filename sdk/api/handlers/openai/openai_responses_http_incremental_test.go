@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -215,4 +217,145 @@ func TestNormalizeResponsesWebsocketStandardPayloadAndToolInheritance(t *testing
 			t.Fatalf("replacement inherited top-level tool = %q, want bash: %s", got, repNorm)
 		}
 	})
+}
+
+func newHTTPIncrementalTestRouter(t *testing.T, exec coreauth.ProviderExecutor, provider, authID, model string) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{})
+	manager.RegisterExecutor(exec)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: authID, Provider: provider, Status: coreauth.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authID, provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+
+	handler := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, manager))
+	router := gin.New()
+	router.POST("/v1/responses", handler.Responses)
+	router.GET("/v1/responses", handler.ResponsesWebsocket)
+	return router
+}
+
+func TestHTTPResponsesIncrementalUnknownPreviousResponseIsRejected(t *testing.T) {
+	const model = "claude-http-incremental-miss-test"
+	exec := &httpIncrementalCaptureExecutor{}
+	router := newHTTPIncrementalTestRouter(t, exec, "codex", "http-incremental-miss-auth", model)
+
+	for _, stream := range []bool{true, false} {
+		body := `{"model":"` + model + `","stream":` + boolString(stream) + `,"previous_response_id":"resp_unknown_miss","input":[{"type":"message","role":"user","content":"continue"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("stream=%t status = %d, want 400, body = %s", stream, rec.Code, rec.Body.String())
+		}
+		if got := gjson.Get(rec.Body.String(), "error.code").String(); got != "previous_response_not_found" {
+			t.Fatalf("stream=%t error.code = %q, want previous_response_not_found, body = %s", stream, got, rec.Body.String())
+		}
+		if got := gjson.Get(rec.Body.String(), "error.param").String(); got != "previous_response_id" {
+			t.Fatalf("stream=%t error.param = %q, want previous_response_id, body = %s", stream, got, rec.Body.String())
+		}
+	}
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.payloads) != 0 {
+		t.Fatalf("a delta without its history must not reach the upstream, got %d payloads", len(exec.payloads))
+	}
+}
+
+// websocketReconnectExecutor answers every turn with a unique response id.
+type websocketReconnectExecutor struct {
+	httpIncrementalCaptureExecutor
+	prefix string
+}
+
+func (e *websocketReconnectExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
+	id := e.prefix + "_" + strconv.Itoa(len(e.payloads))
+	e.mu.Unlock()
+
+	ch := make(chan coreexecutor.StreamChunk, 1)
+	ch <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"" + id + "\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_" + id + "\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"" + id + "\"}]}]}}\n\n")}
+	close(ch)
+	return &coreexecutor.StreamResult{Chunks: ch}, nil
+}
+
+func TestResponsesWebsocketContinuesPreviousResponseAcrossConnections(t *testing.T) {
+	const model = "claude-ws-reconnect-test"
+	exec := &websocketReconnectExecutor{prefix: "resp_ws_reconnect"}
+	router := newHTTPIncrementalTestRouter(t, exec, "codex", "ws-reconnect-auth", model)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+
+	turn := func(request string) []byte {
+		t.Helper()
+		conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+		if errDial != nil {
+			t.Fatalf("dial websocket: %v", errDial)
+		}
+		defer func() { _ = conn.Close() }()
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(request)); errWrite != nil {
+			t.Fatalf("write websocket request: %v", errWrite)
+		}
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Fatalf("read websocket response: %v", errRead)
+		}
+		return payload
+	}
+
+	// Turn 1 on its own socket, turn 2 on a fresh socket, turn 3 over HTTP:
+	// every hop continues from the previous id with only the delta.
+	first := turn(`{"type":"response.create","model":"` + model + `","instructions":"Be concise","input":[{"type":"message","id":"u1","role":"user","content":"hi"}]}`)
+	if got := gjson.GetBytes(first, "response.id").String(); got != "resp_ws_reconnect_1" {
+		t.Fatalf("turn 1 response = %s", first)
+	}
+	second := turn(`{"type":"response.create","previous_response_id":"resp_ws_reconnect_1","input":[{"type":"message","id":"u2","role":"user","content":"again"}]}`)
+	if got := gjson.GetBytes(second, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("turn 2 on a new socket = %s, want %s", second, wsEventTypeCompleted)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"previous_response_id":"resp_ws_reconnect_2","input":[{"type":"message","id":"u3","role":"user","content":"last"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP continuation of a websocket turn status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	exec.mu.Lock()
+	payloads := append([][]byte(nil), exec.payloads...)
+	exec.mu.Unlock()
+	if len(payloads) != 3 {
+		t.Fatalf("upstream payloads = %d, want 3", len(payloads))
+	}
+	wantIDs := [][]string{
+		{"u1", "msg_resp_ws_reconnect_1", "u2"},
+		{"u1", "msg_resp_ws_reconnect_1", "u2", "msg_resp_ws_reconnect_2", "u3"},
+	}
+	for i, want := range wantIDs {
+		payload := payloads[i+1]
+		if gjson.GetBytes(payload, "previous_response_id").Exists() {
+			t.Fatalf("turn %d kept previous_response_id: %s", i+2, payload)
+		}
+		if got := gjson.GetBytes(payload, "model").String(); got != model {
+			t.Fatalf("turn %d model = %q, want inherited %q: %s", i+2, got, model, payload)
+		}
+		if got := gjson.GetBytes(payload, "instructions").String(); got != "Be concise" {
+			t.Fatalf("turn %d instructions = %q, want inherited: %s", i+2, got, payload)
+		}
+		var got []string
+		for _, item := range gjson.GetBytes(payload, "input").Array() {
+			got = append(got, item.Get("id").String())
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("turn %d input ids = %v, want %v: %s", i+2, got, want, payload)
+		}
+	}
 }
