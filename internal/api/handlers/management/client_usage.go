@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -144,10 +143,16 @@ func (c *clientUsageCache) prune(keep map[string]struct{}) {
 // quota summaries of the credentials selected for the caller's key in
 // quota-api.keys; a key without a selection gets an empty list. Selected
 // API-key upstreams relay their own GET /v1/usage, up to clientUsageMaxDepth
-// proxies deep.
+// proxies deep; a relayed request that comes back to this proxy is refused
+// with 508 Loop Detected.
 func (h *Handler) GetClientUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "handler unavailable", "type": "server_error"}})
+		return
+	}
+	trace, loop := clientUsageRequestTrace(c.GetHeader(clientUsageDepthHeader), c.GetHeader(clientUsageViaHeader), h.clientUsageInstanceID())
+	if loop {
+		c.JSON(http.StatusLoopDetected, gin.H{"error": gin.H{"message": clientUsageLoopError, "type": "invalid_request_error"}})
 		return
 	}
 	h.mu.Lock()
@@ -172,9 +177,8 @@ func (h *Handler) GetClientUsage(c *gin.Context) {
 		c.JSON(http.StatusOK, clientUsageResponse{Version: clientUsageVersion, Credentials: []clientUsageCredential{}})
 		return
 	}
-	depth := clientUsageRequestDepth(c.GetHeader(clientUsageDepthHeader))
 	ttl := clientUsageCacheTTL(cfg.QuotaAPI.CacheTTLSeconds)
-	results := h.clientUsageResults(auths, ttl, depth, h.probeClientUsage)
+	results := h.clientUsageResults(auths, ttl, trace, h.probeClientUsage)
 	c.JSON(http.StatusOK, clientUsageResponse{
 		Version:     clientUsageVersion,
 		Credentials: clientUsageCredentials(auths, results, cfg.QuotaAPI.HideNames, cfg.QuotaAPI.IncludeRaw),
@@ -258,10 +262,10 @@ func clientUsageAuths(list []*coreauth.Auth) []*coreauth.Auth {
 }
 
 // clientUsageResults probes the credentials concurrently. Results are cached
-// per credential; relays are cached per request depth as well, so a request
+// per credential; relays are cached per relay chain as well, so a request
 // arriving back through a relay loop never waits on the probe that caused it.
 // Relays hold no probe slot: they wait on another proxy, not on a provider.
-func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, depth int, probe func(*coreauth.Auth, int) clientUsageProbeResult) []clientUsageProbeResult {
+func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, trace clientUsageTrace, probe func(*coreauth.Auth, clientUsageTrace) clientUsageProbeResult) []clientUsageProbeResult {
 	results := make([]clientUsageProbeResult, len(auths))
 	var wg sync.WaitGroup
 	for i, auth := range auths {
@@ -269,15 +273,15 @@ func (h *Handler) clientUsageResults(auths []*coreauth.Auth, ttl time.Duration, 
 		go func(index int, candidate *coreauth.Auth) {
 			defer wg.Done()
 			key := candidate.ID
-			if depth > 0 && clientUsageIsRelay(candidate) {
-				key += "\x00" + strconv.Itoa(depth)
+			if clientUsageIsRelay(candidate) {
+				key += trace.cacheKey()
 			}
 			results[index] = h.clientUsage.get(key, ttl, func() clientUsageProbeResult {
 				if !clientUsageIsRelay(candidate) {
 					clientUsageProbeSlots <- struct{}{}
 					defer func() { <-clientUsageProbeSlots }()
 				}
-				return probe(candidate, depth)
+				return probe(candidate, trace)
 			})
 		}(i, auth)
 	}
@@ -356,12 +360,12 @@ func clientUsageScrubUpstream(upstream []clientUsageCredential, hideNames bool) 
 // probeClientUsage queries one credential's quota. It runs on a detached,
 // bounded context so a disconnecting client cannot fail the probe shared with
 // other callers, and a stalled upstream cannot pin the cache slot.
-func (h *Handler) probeClientUsage(auth *coreauth.Auth, depth int) clientUsageProbeResult {
+func (h *Handler) probeClientUsage(auth *coreauth.Auth, trace clientUsageTrace) clientUsageProbeResult {
 	ctx, cancel := context.WithTimeout(context.Background(), clientUsageProbeTimeout)
 	defer cancel()
 	provider := clientUsageProvider(auth)
 	if provider == clientUsageRelayProvider {
-		return h.probeRelayClientUsage(ctx, auth, depth)
+		return h.probeRelayClientUsage(ctx, auth, trace)
 	}
 	result := clientUsageProbeResult{observedAt: time.Now().UTC()}
 

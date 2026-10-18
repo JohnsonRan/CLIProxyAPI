@@ -1175,7 +1175,8 @@ observability:
   # A client API key reads a quota summary (plan, rate-limit windows with used percent and
   # reset time, balances) of the Codex, Claude, Antigravity, xAI and Command Code OAuth
   # credentials selected for it below. Selecting an API-key provider entry whose base URL
-  # points at another proxy relays that proxy's own GET /v1/usage (up to 3 proxies deep).
+  # points at another proxy relays that proxy's own GET /v1/usage (up to 3 proxies deep); a
+  # relay that leads back to this proxy reports "relay loop detected".
   # Keys that are not listed get an empty list; removing a key's selection turns it off.
   # Credentials are named by their note, or by provider when no note is set.
   quota-api:
