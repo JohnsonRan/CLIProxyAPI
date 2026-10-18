@@ -627,24 +627,38 @@ func hasThinkingConfig(config ThinkingConfig) bool {
 func ExtractReasoningEffort(body []byte, provider, model string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if isResponsesFormat(provider) {
-		if effort := reasoningEffortFromConfig(extractConfigurationUpdateConfig(body)); effort != "" {
-			return effort
-		}
+		return responsesReasoningEffort(body, model)
 	}
 	if effort := reasoningEffortFromSuffix(ParseSuffix(model)); effort != "" {
 		return effort
 	}
 
 	config := extractThinkingConfigForUsage(body, provider)
-	if !hasThinkingConfig(config) {
-		switch provider {
-		case "openai-response":
-			config = extractCodexUsageConfig(body)
-		case "openai":
-			config = extractCodexUsageConfig(body)
-		}
+	if !hasThinkingConfig(config) && provider == "openai" {
+		config = extractCodexUsageConfig(body)
 	}
 	return reasoningEffortFromConfig(config)
+}
+
+// responsesReasoningEffort is ExtractReasoningEffort for Responses bodies. It
+// validates the body and reads its input items once, where the general path
+// validated it up to five times and walked the input up to three times.
+func responsesReasoningEffort(body []byte, model string) string {
+	valid := len(body) > 0 && gjson.ValidBytes(body)
+	if valid {
+		// A configuration_update effort is never empty, so an update always
+		// returns here and the top-level effort is the only remaining field.
+		if effort := reasoningEffortFromConfig(configurationUpdateConfig(body, true)); effort != "" {
+			return effort
+		}
+	}
+	if effort := reasoningEffortFromSuffix(ParseSuffix(model)); effort != "" {
+		return effort
+	}
+	if !valid {
+		return ""
+	}
+	return reasoningEffortFromConfig(extractCodexConfig(body))
 }
 
 // ExtractTranslatedReasoningEffort returns the final provider payload's thinking
@@ -654,11 +668,14 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	config := extractThinkingConfigForUsage(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
-		case "openai", "openai-response":
+		case "openai":
 			config = extractCodexUsageConfig(body)
 			if !hasThinkingConfig(config) {
 				config = extractOpenAIConfig(body)
 			}
+		case "openai-response":
+			// extractThinkingConfigForUsage already read the Responses fields.
+			config = extractOpenAIConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -967,7 +984,7 @@ func extractCodexUsageConfig(body []byte) ThinkingConfig {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
-	if config := extractConfigurationUpdateConfig(body); hasThinkingConfig(config) {
+	if config := configurationUpdateConfig(body, true); hasThinkingConfig(config) {
 		return config
 	}
 	return extractCodexConfig(body)

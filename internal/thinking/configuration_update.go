@@ -13,7 +13,13 @@ func isResponsesFormat(format string) bool {
 
 // extractConfigurationUpdateConfig returns the last nonempty Responses effort update.
 func extractConfigurationUpdateConfig(body []byte) ThinkingConfig {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	return configurationUpdateConfig(body, false)
+}
+
+// configurationUpdateConfig skips the validation when the caller has already
+// validated the body, so the body is not scanned a second time.
+func configurationUpdateConfig(body []byte, validated bool) ThinkingConfig {
+	if len(body) == 0 || (!validated && !gjson.ValidBytes(body)) {
 		return ThinkingConfig{}
 	}
 	input := gjson.GetBytes(body, "input")
