@@ -79,7 +79,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 12. **`patch/claude-search-recovery`**
     - **Goal**: Recover Claude conversations after OAuth credential failover when an earlier turn's encrypted `web_search_tool_result` is rejected with HTTP 400.
     - **Scope**: `internal/runtime/executor/helps/claude_search_recovery.go` and the Claude execute/stream paths, applied before user payload rules.
-    - **Related Upstream Work**: PR [#6576](https://github.com/router-for-me/CLIProxyAPI/pull/6576).
+    - **Related Upstream Work**: None found (searched `web_search_tool_result`, `encrypted_content`, web search failover on 2026-10-18). PR [#5237](https://github.com/router-for-me/CLIProxyAPI/pull/5237) (open) keeps Claude server-side web search across the Responses translation, not the failover rejection. PR [#6576](https://github.com/router-for-me/CLIProxyAPI/pull/6576), listed here before, is unrelated: it assembled multi-line Codex SSE events and was superseded by upstream `7795de19`.
 
 13. **`patch/codex-oauth-resilience`**
     - **Goal**: Codex OAuth refresh resilience.
