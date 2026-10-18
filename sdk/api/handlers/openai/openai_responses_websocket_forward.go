@@ -28,6 +28,9 @@ type responsesWebsocketForwardOptions struct {
 	suppressError            func(*interfaces.ErrorMessage) bool
 	keepAliveInterval        *time.Duration
 	localInterrupt           *responsesLocalInterrupt
+	// onCompleted runs before the terminal event is written, so the turn is
+	// continuable by the time the client observes it.
+	onCompleted func(output []byte, responseID string, pendingToolCallIDs []string)
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
@@ -202,6 +205,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
+					if opts.onCompleted != nil {
+						opts.onCompleted(completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs))
+					}
 				}
 				markAPIResponseTimestamp(c)
 				if payloadErrMsg != nil {
