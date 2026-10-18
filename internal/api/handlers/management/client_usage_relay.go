@@ -112,9 +112,7 @@ func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth
 		result.err = "upstream does not report quota"
 		return result
 	}
+	// A non-nil pointer means the body held a JSON array, so the slice is non-nil too.
 	result.upstream = *upstream.Credentials
-	if result.upstream == nil {
-		result.upstream = []clientUsageCredential{}
-	}
 	return result
 }
