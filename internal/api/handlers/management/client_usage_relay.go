@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,7 +24,68 @@ const (
 	// passed through, so relay loops end.
 	clientUsageDepthHeader = "X-CLIProxy-Usage-Depth"
 	clientUsageMaxDepth    = 3
+	// clientUsageViaHeader lists the instance IDs of the proxies a relayed
+	// quota request has passed through, so a request that comes back to a
+	// proxy (a relay pointing at itself, or two proxies relaying each other)
+	// stops there instead of at the depth limit. Proxies without it still
+	// stop at the depth limit.
+	clientUsageViaHeader = "X-CLIProxy-Usage-Via"
+	// clientUsageMaxViaBytes bounds the Via header; an honest chain holds at
+	// most clientUsageMaxDepth IDs.
+	clientUsageMaxViaBytes = 256
+	clientUsageLoopError   = "relay loop detected"
 )
+
+// clientUsageTrace is where a quota request sits in a relay chain: how many
+// proxies it passed and which ones.
+type clientUsageTrace struct {
+	depth int
+	via   []string
+}
+
+// cacheKey separates relay results by chain, since what comes back through
+// an upstream depends on which proxies the request already passed.
+func (t clientUsageTrace) cacheKey() string {
+	if t.depth == 0 && len(t.via) == 0 {
+		return ""
+	}
+	return "\x00" + strconv.Itoa(t.depth) + "\x00" + strings.Join(t.via, ",")
+}
+
+// clientUsageInstanceID identifies this proxy in the Via header of relayed
+// quota requests. It is random per handler and never sent to clients.
+func (h *Handler) clientUsageInstanceID() string {
+	h.clientUsageIDOnce.Do(func() {
+		h.clientUsageID = rand.Text()
+	})
+	return h.clientUsageID
+}
+
+// clientUsageRequestTrace reads the relay chain of an inbound quota request.
+// loop reports that self already handled it, or that the Via header is longer
+// than any chain a proxy builds; an oversized header fails closed rather than
+// being dropped.
+func clientUsageRequestTrace(depthHeader, viaHeader, self string) (trace clientUsageTrace, loop bool) {
+	trace.depth = clientUsageRequestDepth(depthHeader)
+	viaHeader = strings.TrimSpace(viaHeader)
+	if viaHeader == "" {
+		return trace, false
+	}
+	if len(viaHeader) > clientUsageMaxViaBytes {
+		return trace, true
+	}
+	for _, id := range strings.Split(viaHeader, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if id == self {
+			return trace, true
+		}
+		trace.via = append(trace.via, id)
+	}
+	return trace, len(trace.via) > clientUsageMaxDepth
+}
 
 // clientUsageIsRelay reports whether auth is an API-key credential pointing
 // at a custom base URL, the shape of one proxy configured on top of another.
@@ -63,9 +125,9 @@ func clientUsageRequestDepth(header string) int {
 // probeRelayClientUsage reads the upstream proxy's quota summary with this
 // credential's API key. An upstream without the endpoint, or one that reports
 // nothing, is an error: the caller keeps not knowing, as before.
-func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth, depth int) clientUsageProbeResult {
+func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth, trace clientUsageTrace) clientUsageProbeResult {
 	result := clientUsageProbeResult{observedAt: time.Now().UTC()}
-	if depth >= clientUsageMaxDepth {
+	if trace.depth >= clientUsageMaxDepth {
 		result.err = "relay depth limit reached"
 		return result
 	}
@@ -81,7 +143,9 @@ func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authAttribute(auth, coreauth.AttributeAPIKey)))
-	req.Header.Set(clientUsageDepthHeader, strconv.Itoa(depth+1))
+	req.Header.Set(clientUsageDepthHeader, strconv.Itoa(trace.depth+1))
+	via := append(append([]string(nil), trace.via...), h.clientUsageInstanceID())
+	req.Header.Set(clientUsageViaHeader, strings.Join(via, ","))
 
 	client := &http.Client{Transport: h.apiCallTransport(auth, "")}
 	resp, errDo := client.Do(req)
@@ -95,6 +159,10 @@ func (h *Handler) probeRelayClientUsage(ctx context.Context, auth *coreauth.Auth
 			log.Errorf("client usage: relay response body close error: %v", errClose)
 		}
 	}()
+	if resp.StatusCode == http.StatusLoopDetected {
+		result.err = clientUsageLoopError
+		return result
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		result.err = fmt.Sprintf("upstream quota endpoint returned %d", resp.StatusCode)
 		return result
