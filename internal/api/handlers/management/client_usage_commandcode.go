@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"net/http"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -22,8 +21,8 @@ var (
 // plan the panel combines into its Command Code quota card.
 func (h *Handler) probeCommandCodeClientUsage(ctx context.Context, auth *coreauth.Auth, token string) []clientUsageUpstream {
 	headers := map[string]string{"Accept": "application/json"}
-	return []clientUsageUpstream{
-		h.clientUsageRequest(ctx, auth, token, http.MethodGet, clientUsageCommandCodeCreditsURL, nil, headers),
-		h.clientUsageRequest(ctx, auth, token, http.MethodGet, clientUsageCommandCodeSubscriptionURL, nil, headers),
-	}
+	return h.clientUsageRequests(ctx, auth, token, []clientUsageCall{
+		{kind: clientUsageKindUsage, url: clientUsageCommandCodeCreditsURL, headers: headers},
+		{kind: clientUsageKindSubscription, optional: true, url: clientUsageCommandCodeSubscriptionURL, headers: headers},
+	})
 }
