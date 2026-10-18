@@ -441,6 +441,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		wsTimelineLog.SetContext(c)
 	}()
 
+	// Locally merged turns are shared with HTTP continuation, so a new socket can
+	// continue a response created on an earlier connection.
+	stateOwner := responsesHTTPStateOwner(c)
 	var lastRequest []byte
 	lastResponseOutput := []byte("[]")
 	var observedCompaction responsesWebsocketObservedCompactionState
@@ -747,8 +750,20 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 		} else if nativeWebsocketPassthrough {
 			requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
-		} else if len(lastRequest) == 0 && strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
-			errMsg = responsesWebsocketPreviousResponseNotFoundError()
+		} else if len(lastRequest) == 0 && previousResponseID != "" {
+			if entry, ok := defaultResponsesHTTPStateCache.get(previousResponseID, stateOwner); ok {
+				requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
+					payload,
+					entry.request,
+					entry.responseOutput,
+					previousResponseID,
+					entry.pendingToolCallIDs,
+					false,
+					allowCompactionReplayBypass,
+				)
+			} else {
+				errMsg = responsesWebsocketPreviousResponseNotFoundError()
+			}
 		} else {
 			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
 				payload,
@@ -1035,6 +1050,15 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			lastResponseID = strings.TrimSpace(completedResponseID)
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)
+			if lastResponseID != "" && len(lastRequest) > 0 {
+				defaultResponsesHTTPStateCache.put(lastResponseID, responsesHTTPStateEntry{
+					owner:              stateOwner,
+					request:            canonicalHTTPIncrementalRequestSnapshot(lastRequest),
+					responseOutput:     lastResponseOutput,
+					pendingToolCallIDs: lastResponsePendingToolCallIDs,
+					authID:             lastAttemptedAuthID,
+				})
+			}
 		}
 	}
 }
