@@ -66,6 +66,7 @@ func TestCopilotPluginCatalogPublishesExecutableRoutes(t *testing.T) {
 			catalog := copilotPluginCatalog{models: []pluginapi.ModelInfo{
 				{ID: alpha, DisplayName: "Plugin Alpha"},
 				{ID: "copilot/" + beta, DisplayName: "Plugin Beta (Copilot)"},
+				{ID: "gamma"},
 				{ID: hidden},
 			}}
 			var caps pluginapi.Capabilities
@@ -84,9 +85,13 @@ func TestCopilotPluginCatalogPublishesExecutableRoutes(t *testing.T) {
 			host.RegisterModels(ctx, reg)
 			host.RegisterExecutors(manager, reg)
 			service := &Service{cfg: cfg, coreManager: manager, pluginHost: host}
-			auth := registerCopilotRoutingTestAuth(t, manager, "team", "alpha", "beta", "hidden")
+			auth := registerCopilotRoutingTestAuth(t, manager, "team", "alpha", "beta", "gamma", "hidden")
+			if auth.Attributes == nil {
+				auth.Attributes = make(map[string]string)
+			}
+			auth.Attributes["allowed_models"] = "copilot/alpha*,copilot/beta*,copilot/hidden*"
 			var entries []copilot.Model
-			for _, id := range []string{"alpha", "beta", "hidden"} {
+			for _, id := range []string{"alpha", "beta", "gamma", "hidden"} {
 				entry := copilot.Model{ID: id, Endpoints: []string{copilot.Chat}}
 				entry.Capabilities.Supports.Reasoning = json.RawMessage(`["low","high"]`)
 				entries = append(entries, entry)
@@ -101,7 +106,7 @@ func TestCopilotPluginCatalogPublishesExecutableRoutes(t *testing.T) {
 			}
 
 			registered := reg.GetModelsForClient(auth.ID)
-			for _, unexpected := range []string{alpha, alias, beta, "team/" + alpha, "team/copilot/" + alpha, "team/copilot/copilot/" + beta, "team/copilot/" + hidden, "team/excluded-copilot-plugin-alias"} {
+			for _, unexpected := range []string{alpha, alias, beta, "team/" + alpha, "team/copilot/" + alpha, "team/copilot/copilot/" + beta, "team/copilot/" + hidden, "team/excluded-copilot-plugin-alias", "team/copilot/gamma"} {
 				if slices.ContainsFunc(registered, func(info *ModelInfo) bool { return info.ID == unexpected }) {
 					t.Errorf("unexpected published model %q", unexpected)
 				}

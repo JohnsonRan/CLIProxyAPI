@@ -381,9 +381,9 @@ func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, req map[string]json.Raw
 		if errDecode != nil {
 			return &authFileFieldPatchError{message: fmt.Sprintf("invalid field %s", fieldPath)}
 		}
-		if rootAuthFileField(fieldPath) == "excluded_models" {
-			if fieldPath != "excluded_models" {
-				return &authFileFieldPatchError{message: "excluded_models does not support nested fields"}
+		if root := rootAuthFileField(fieldPath); root == "excluded_models" || root == "allowed_models" {
+			if fieldPath != root {
+				return &authFileFieldPatchError{message: root + " does not support nested fields"}
 			}
 			if value != nil {
 				models, okModels := value.([]any)
@@ -395,7 +395,7 @@ func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, req map[string]json.Raw
 					}
 				}
 				if !validModels {
-					return &authFileFieldPatchError{message: "excluded_models must be a string array or null"}
+					return &authFileFieldPatchError{message: root + " must be a string array or null"}
 				}
 			}
 		}
@@ -452,6 +452,13 @@ func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, req map[string]json.Raw
 			// Store only the credential's own rules; global rules are resolved at model registration.
 			// An empty authKind keeps the existing auth_kind attribute unchanged.
 			synthesizer.ApplyAuthExcludedModelsMeta(targetAuth, excluded, "")
+		}
+		if _, touched := touchedRoots["allowed_models"]; touched {
+			allowed, errAllowed := synthesizer.ExtractAllowedModelsFromMetadata(targetAuth.Metadata)
+			if errAllowed != nil {
+				return &authFileFieldPatchError{message: errAllowed.Error()}
+			}
+			synthesizer.ApplyAuthAllowedModelsMeta(targetAuth, allowed)
 		}
 	}
 
