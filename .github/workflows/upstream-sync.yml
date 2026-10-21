@@ -54,6 +54,7 @@ env:
     patch/thinking-validate-once
     patch/openai-compat-stream-validate-once
     patch/pluginhost-hooks-noalloc
+    patch/responses-ws-previous-response-400
 
 jobs:
   sync-main-with-squash-branches:
