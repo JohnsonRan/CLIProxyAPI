@@ -103,6 +103,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	if errExcluded != nil {
 		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
 	}
+	perAccountAllowed, errAllowed := ExtractAllowedModelsFromMetadata(metadata)
+	if errAllowed != nil {
+		log.WithError(errAllowed).Warnf("ignoring invalid allowed models in auth file %s", filepath.Base(fullPath))
+	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {
@@ -167,6 +171,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				applyVertexOpenAPISettingsAttribute(auth, metadata)
 				ApplyAuthExcludedModelsMeta(auth, perAccountExcluded, "oauth")
+				ApplyAuthAllowedModelsMeta(auth, perAccountAllowed)
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
 				auth.BindFileSnapshot(fullPath, data)
@@ -250,6 +255,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	applyOpenAPIModelsAttribute(a, metadata)
 	applyVertexOpenAPISettingsAttribute(a, metadata)
 	ApplyAuthExcludedModelsMeta(a, perAccountExcluded, "oauth")
+	ApplyAuthAllowedModelsMeta(a, perAccountAllowed)
 	applyFingerprintProfileAttribute(a, metadata)
 	// For Kimi auth files, preserve domain and base_url attributes.
 	if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
@@ -488,13 +494,22 @@ func applyOpenAPIModelsAttribute(auth *coreauth.Auth, metadata map[string]any) {
 // is an error. For non-string elements the valid string entries are still returned with the
 // error, so lenient readers can keep the usable rules while strict writers reject the value.
 func ExtractExcludedModelsFromMetadata(metadata map[string]any) ([]string, error) {
+	return extractModelRulesFromMetadata(metadata, "excluded_models", "excluded-models")
+}
+
+// ExtractAllowedModelsFromMetadata reads per-account allowed models ("allowed_models") from the
+// OAuth JSON metadata, with the same value rules as ExtractExcludedModelsFromMetadata.
+func ExtractAllowedModelsFromMetadata(metadata map[string]any) ([]string, error) {
+	return extractModelRulesFromMetadata(metadata, "allowed_models", "")
+}
+
+func extractModelRulesFromMetadata(metadata map[string]any, key, legacyKey string) ([]string, error) {
 	if metadata == nil {
 		return nil, nil
 	}
-	key := "excluded_models"
 	raw, ok := metadata[key]
-	if !ok {
-		key = "excluded-models"
+	if !ok && legacyKey != "" {
+		key = legacyKey
 		raw, ok = metadata[key]
 	}
 	if !ok || raw == nil {

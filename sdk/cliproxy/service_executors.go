@@ -506,7 +506,13 @@ func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
 // Callers filter native models before applying OAuth aliases, so plugin models are filtered
 // here by their original IDs instead of re-filtering the merged list by alias names.
 func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo, excluded []string) []*ModelInfo {
-	pluginModels := applyExcludedModels(s.pluginModelsForProvider(providerKey), excluded)
+	return s.appendFilteredPluginModels(providerKey, models, excluded, nil)
+}
+
+// appendFilteredPluginModels is appendPluginModels that also keeps only plugin
+// models matching the credential's allow-list.
+func (s *Service) appendFilteredPluginModels(providerKey string, models []*ModelInfo, excluded, allowed []string) []*ModelInfo {
+	pluginModels := applyAllowedModels(applyExcludedModels(s.pluginModelsForProvider(providerKey), excluded), allowed)
 	if len(pluginModels) == 0 {
 		return models
 	}
@@ -642,7 +648,7 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 	if ctx != nil && ctx.Err() != nil {
 		return true, true
 	}
-	models := applyExcludedModels(result.Models, activeExcluded)
+	models := applyAllowedModels(applyExcludedModels(result.Models, activeExcluded), authAllowedModels(activeAuth))
 	models = applyOAuthModelAliasForAuth(cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	publicationFence := fence
 	if pluginAuthCommitted {
