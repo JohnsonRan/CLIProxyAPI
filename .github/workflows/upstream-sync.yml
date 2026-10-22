@@ -44,7 +44,6 @@ env:
     patch/management-key-bcrypt-cache
     patch/pgo
     patch/quota-api
-    patch/responses-tool-identity-lite
     patch/commandcode-oauth
     patch/session-claude-identity-once
     patch/claude-request-nocopy-reads
