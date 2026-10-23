@@ -609,6 +609,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			ResolvedClientIP: strings.TrimSpace(c.ClientIP()),
 			XForwardedFor:    strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
 			UserAgent:        strings.TrimSpace(c.Request.UserAgent()),
+			WebSocket:        isWebSocketUpgrade(c.Request),
 			SessionID:        sessionID,
 			ParentSessionID:  parentSessionID,
 		})
@@ -755,3 +756,16 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // APIHandlerCancelFunc is a function type for canceling an API handler's context.
 // It can optionally accept parameters, which are used for logging the response.
 type APIHandlerCancelFunc func(params ...interface{})
+
+// isWebSocketUpgrade reports whether r asks to upgrade to a WebSocket connection.
+func isWebSocketUpgrade(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, value := range r.Header.Values("Upgrade") {
+		if strings.EqualFold(strings.TrimSpace(value), "websocket") {
+			return true
+		}
+	}
+	return false
+}
