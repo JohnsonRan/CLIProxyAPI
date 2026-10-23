@@ -69,7 +69,8 @@ func parseUsageTZ(c *gin.Context) (int, bool) {
 }
 
 // GetUsageStoreStats returns aggregated usage and estimated cost for a time range.
-// Query: from, to (unix seconds or RFC3339; default last 24h), bucket (hour|day), tz_offset (minutes east of UTC).
+// Query: from, to (unix seconds or RFC3339; default last 24h), bucket (hour|day), tz_offset (minutes east of UTC),
+// and optional model, provider, api_key_id, auth_index filters.
 func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -83,7 +84,13 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	if !ok {
 		return
 	}
-	stats, err := s.Stats(c.Request.Context(), from, to, c.Query("bucket"), tz)
+	filter := usagestore.StatsFilter{
+		Model:     strings.TrimSpace(c.Query("model")),
+		Provider:  strings.TrimSpace(c.Query("provider")),
+		APIKeyID:  strings.TrimSpace(c.Query("api_key_id")),
+		AuthIndex: strings.TrimSpace(c.Query("auth_index")),
+	}
+	stats, err := s.Stats(c.Request.Context(), from, to, c.Query("bucket"), tz, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
