@@ -182,7 +182,8 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 			&t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total); errScan != nil {
 			return nil, errScan
 		}
-		prices.apply(&a, model, tier)
+		// Hourly rollups have no context bands, so the heatmap uses base prices.
+		prices.apply(&a, model, tier, 0)
 		local := hour + off
 		if local < 0 {
 			continue

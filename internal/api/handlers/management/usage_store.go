@@ -110,7 +110,7 @@ func parseUsageDimensionFilter(c *gin.Context) (usagestore.StatsFilter, bool) {
 
 // GetUsageStoreStats returns aggregated usage and estimated cost for a time range.
 // Query: from, to (unix seconds or RFC3339; default last 24h), bucket (hour|day), tz_offset (minutes east of UTC),
-// and optional model, provider, api_key_id, auth_index filters.
+// optional model, provider, api_key_id, auth_index filters, and failed / substituted result filters.
 func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -128,12 +128,35 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if filter.Failed, filter.Substituted, ok = parseUsageResultFilter(c); !ok {
+		return
+	}
 	stats, err := s.Stats(c.Request.Context(), from, to, c.Query("bucket"), tz, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, stats)
+}
+
+// parseUsageResultFilter reads the optional failed and substituted booleans.
+func parseUsageResultFilter(c *gin.Context) (failed, substituted *bool, ok bool) {
+	for _, p := range []struct {
+		name string
+		dst  **bool
+	}{{"failed", &failed}, {"substituted", &substituted}} {
+		v := strings.TrimSpace(c.Query(p.name))
+		if v == "" {
+			continue
+		}
+		b, errBool := strconv.ParseBool(v)
+		if errBool != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": p.name + " must be true or false"})
+			return nil, nil, false
+		}
+		*p.dst = &b
+	}
+	return failed, substituted, true
 }
 
 // parseUsageEventFilter reads from, to, model, provider, api_key_id, auth_index, failed, substituted, before, after, limit.
@@ -156,21 +179,8 @@ func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return f, false
 	}
-	if v := strings.TrimSpace(c.Query("failed")); v != "" {
-		failed, errBool := strconv.ParseBool(v)
-		if errBool != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed must be true or false"})
-			return f, false
-		}
-		f.Failed = &failed
-	}
-	if v := strings.TrimSpace(c.Query("substituted")); v != "" {
-		substituted, errBool := strconv.ParseBool(v)
-		if errBool != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "substituted must be true or false"})
-			return f, false
-		}
-		f.Substituted = &substituted
+	if f.Failed, f.Substituted, ok = parseUsageResultFilter(c); !ok {
+		return f, false
 	}
 	if v := strings.TrimSpace(c.Query("before")); v != "" {
 		before, errBefore := strconv.ParseInt(v, 10, 64)
