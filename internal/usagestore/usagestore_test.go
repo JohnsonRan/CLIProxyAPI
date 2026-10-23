@@ -206,7 +206,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	approx(t, "event cost", events[1].Cost, 22)
 	failed := true
-	page, err := s.Events(ctx, EventFilter{Failed: &failed, Model: "gpt-x"})
+	page, err := s.Events(ctx, EventFilter{Failed: &failed, Model: []string{"gpt-x"}})
 	if err != nil || len(page) != 1 || page[0].StatusCode != 500 {
 		t.Fatalf("failed filter: %v %+v", err, page)
 	}
@@ -274,7 +274,7 @@ func TestAnalysis(t *testing.T) {
 	}
 	defer s.Close()
 
-	a, err := s.Analysis(context.Background(), base, base.Add(48*time.Hour), 8*60)
+	a, err := s.Analysis(context.Background(), base, base.Add(48*time.Hour), 8*60, StatsFilter{})
 	if err != nil {
 		t.Fatalf("analysis: %v", err)
 	}
@@ -299,8 +299,17 @@ func TestAnalysis(t *testing.T) {
 	}
 	approx(t, "heat cost", a.Heatmap[0].Cost, 100*10*1.0/1e6)
 
+	aFiltered, err := s.Analysis(context.Background(), base, base.Add(48*time.Hour), 8*60, StatsFilter{Model: []string{"gpt-x"}})
+	if err != nil || aFiltered.Latency.Count != 100 {
+		t.Fatalf("filtered analysis: count=%d, err=%v", aFiltered.Latency.Count, err)
+	}
+	aNone, err := s.Analysis(context.Background(), base, base.Add(48*time.Hour), 8*60, StatsFilter{Model: []string{"nope"}})
+	if err != nil || aNone.Latency.Count != 0 || len(aNone.Heatmap) != 0 {
+		t.Fatalf("filtered none analysis: count=%d, heatmap=%d, err=%v", aNone.Latency.Count, len(aNone.Heatmap), err)
+	}
+
 	var exported int
-	if err = s.ExportEvents(context.Background(), EventFilter{Model: "gpt-x"}, func(e *Event) error {
+	if err = s.ExportEvents(context.Background(), EventFilter{Model: []string{"gpt-x"}}, func(e *Event) error {
 		exported++
 		if !e.Priced {
 			t.Fatalf("exported events must be priced: %+v", e)
@@ -355,11 +364,14 @@ func TestStatsFilterAndCredentialLabels(t *testing.T) {
 		filter StatsFilter
 		want   int64
 	}{
-		{StatsFilter{Model: "gpt-x"}, 2},
-		{StatsFilter{Provider: "codex"}, 1},
-		{StatsFilter{APIKeyID: "k1"}, 2},
-		{StatsFilter{AuthIndex: "a1", APIKeyID: "k2"}, 1},
-		{StatsFilter{Model: "nope"}, 0},
+		{StatsFilter{Model: []string{"gpt-x"}}, 2},
+		{StatsFilter{Provider: []string{"codex"}}, 1},
+		{StatsFilter{APIKeyID: []string{"k1"}}, 2},
+		{StatsFilter{AuthIndex: []string{"a1"}, APIKeyID: []string{"k2"}}, 1},
+		{StatsFilter{Model: []string{"nope"}}, 0},
+		{StatsFilter{Model: []string{"gpt-x", "gpt-y"}}, 3},
+		{StatsFilter{Model: []string{"gpt-x", "gpt-y"}, Provider: []string{"codex"}}, 1},
+		{StatsFilter{Model: []string{"gpt-x"}, Provider: []string{"codex"}}, 0},
 	} {
 		got, errStats := s.Stats(ctx, now.Add(-2*time.Hour), now.Add(time.Minute), "", 0, tc.filter)
 		if errStats != nil || got.Totals.Requests != tc.want {
@@ -537,4 +549,178 @@ CREATE TABLE IF NOT EXISTS hourly (
 	if len(unsubEvents) != 1 || unsubEvents[0].Substituted || unsubEvents[0].ResponseModel != "gpt-5" {
 		t.Fatalf("unexpected unsubstituted events: %+v", unsubEvents)
 	}
+}
+
+func TestEventsAfterPagination(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	now := time.Now()
+	tok := Tokens{InputUncached: 10, Total: 10}
+	for i := 1; i <= 5; i++ {
+		s.Enqueue(Event{
+			Timestamp: now.Add(time.Duration(i) * time.Second).UnixMilli(),
+			Model:     "gpt-x",
+			Tokens:    tok,
+		})
+	}
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	// Test after: query events after ID 2
+	events, err := s.Events(ctx, EventFilter{AfterID: 2, Limit: 2})
+	if err != nil {
+		t.Fatalf("events after: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].ID != 3 || events[1].ID != 4 {
+		t.Fatalf("expected IDs 3, 4 (ASC order), got %d, %d", events[0].ID, events[1].ID)
+	}
+}
+
+func TestOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now()
+	tok := Tokens{InputUncached: 10, Total: 10}
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "p1", Model: "m1", APIKeyID: "k1", APIKey: "sk-1", AuthIndex: "a1", Tokens: tok})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "p1", Model: "m1", APIKeyID: "k1", APIKey: "sk-1", AuthIndex: "a1", Tokens: tok})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "p2", Model: "m2", APIKeyID: "k2", APIKey: "sk-2", AuthIndex: "a2", Tokens: tok})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	opts, err := s.Options(context.Background(), now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("options: %v", err)
+	}
+	if len(opts.Models) != 2 || opts.Models[0].Model != "m1" || opts.Models[0].Requests != 2 {
+		t.Fatalf("models: %+v", opts.Models)
+	}
+	if len(opts.Providers) != 2 || opts.Providers[0].Provider != "p1" || opts.Providers[0].Requests != 2 {
+		t.Fatalf("providers: %+v", opts.Providers)
+	}
+	if len(opts.APIKeys) != 2 || opts.APIKeys[0].APIKeyID != "k1" || opts.APIKeys[0].Requests != 2 {
+		t.Fatalf("api keys: %+v", opts.APIKeys)
+	}
+	if len(opts.Credentials) != 2 || opts.Credentials[0].AuthIndex != "a1" || opts.Credentials[0].Requests != 2 {
+		t.Fatalf("credentials: %+v", opts.Credentials)
+	}
+}
+
+func TestRealtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	p := testPricer(t)
+	s, err := Open(path, 30, p)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now()
+	// Event 30s ago (within 1m and 5m): model gpt-x (input 1, output 10)
+	tok1 := Tokens{InputUncached: 100, Output: 100, Total: 200}
+	s.Enqueue(Event{
+		Timestamp:   now.Add(-30 * time.Second).UnixMilli(),
+		Model:       "gpt-x",
+		Provider:    "openai",
+		Tokens:      tok1,
+		LatencyMs:   200,
+		Failed:      false,
+		Substituted: false,
+	})
+	// Event 2m ago (within 5m, outside 1m): 1 failed request, 50 tokens
+	tok2 := Tokens{InputUncached: 50, Total: 50}
+	s.Enqueue(Event{
+		Timestamp:   now.Add(-2 * time.Minute).UnixMilli(),
+		Model:       "gpt-x",
+		Provider:    "openai",
+		Tokens:      tok2,
+		LatencyMs:   400,
+		Failed:      true,
+		Substituted: true,
+	})
+	// Event 10m ago (outside 5m, inside 60m): model other
+	tok3 := Tokens{InputUncached: 10, Total: 10}
+	s.Enqueue(Event{
+		Timestamp: now.Add(-10 * time.Minute).UnixMilli(),
+		Model:     "other",
+		Provider:  "p2",
+		Tokens:    tok3,
+		LatencyMs: 100,
+	})
+	s.Close()
+	s, err = Open(path, 30, p)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// 1. Unfiltered 60 minutes
+	rt, err := s.Realtime(ctx, 60, StatsFilter{})
+	if err != nil {
+		t.Fatalf("realtime: %v", err)
+	}
+	if len(rt.Series) != 60 {
+		t.Fatalf("expected 60 series points, got %d", len(rt.Series))
+	}
+	// Check zero-filling: timestamps are multiples of 60
+	for i, pt := range rt.Series {
+		if pt.Time%60 != 0 {
+			t.Fatalf("bucket %d time %d not aligned to 60s", i, pt.Time)
+		}
+	}
+	if rt.LastID != 3 {
+		t.Fatalf("expected last_id 3, got %d", rt.LastID)
+	}
+
+	// Check current metrics
+	// 1m: 1 request, 200 tokens
+	approx(t, "rpm_1m", rt.Current.RPM1m, 1.0)
+	approx(t, "tpm_1m", rt.Current.TPM1m, 200.0)
+	// 5m: 2 requests, 250 tokens -> rpm_5m = 2/5 = 0.4, tpm_5m = 250/5 = 50.0
+	approx(t, "rpm_5m", rt.Current.RPM5m, 0.4)
+	approx(t, "tpm_5m", rt.Current.TPM5m, 50.0)
+	if rt.Current.Failed5m != 1 {
+		t.Fatalf("expected 1 failed in 5m, got %d", rt.Current.Failed5m)
+	}
+	// avg_latency_5m: (200 + 400) / 2 = 300
+	approx(t, "avg_latency_5m", rt.Current.AvgLatency5m, 300.0)
+
+	// 2. Filtered by model gpt-x
+	rtFiltered, err := s.Realtime(ctx, 60, StatsFilter{Model: []string{"gpt-x"}})
+	if err != nil {
+		t.Fatalf("realtime filtered: %v", err)
+	}
+	var totalFilteredReqs int64
+	for _, pt := range rtFiltered.Series {
+		totalFilteredReqs += pt.Requests
+	}
+	if totalFilteredReqs != 2 {
+		t.Fatalf("expected 2 filtered requests, got %d", totalFilteredReqs)
+	}
+
+	// 3. Filtered by non-existent model
+	rtNone, err := s.Realtime(ctx, 60, StatsFilter{Model: []string{"none"}})
+	if err != nil {
+		t.Fatalf("realtime none: %v", err)
+	}
+	approx(t, "rpm_1m none", rtNone.Current.RPM1m, 0.0)
+	approx(t, "rpm_5m none", rtNone.Current.RPM5m, 0.0)
 }
