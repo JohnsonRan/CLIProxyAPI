@@ -1,11 +1,14 @@
 package management
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -54,5 +57,46 @@ func TestUsageStoreHandlers(t *testing.T) {
 	}
 	if w = do("/pricing"); w.Code != http.StatusOK {
 		t.Fatalf("pricing: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUsageStoreExportAndAnalysis(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{}
+	r := gin.New()
+	r.GET("/export", h.ExportUsageStoreEvents)
+	r.GET("/analysis", h.GetUsageStoreAnalysis)
+	cfg := &config.Config{}
+	cfg.UsageStore = config.UsageStoreConfig{Enable: true, Path: filepath.Join(t.TempDir(), "usage.db"),
+		Pricing: config.UsagePricingConfig{DisableModelsDev: true}}
+	usagestore.Apply(cfg)
+	usagestore.Current().Enqueue(usagestore.Event{Timestamp: time.Now().UnixMilli(), Model: "m", Error: "a,\"b\"\nc"})
+	usagestore.Shutdown()
+	usagestore.Apply(cfg)
+	defer usagestore.Shutdown()
+	do := func(url string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+		return w
+	}
+
+	w := do("/export")
+	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Disposition"), ".csv") {
+		t.Fatalf("csv export: %d %v", w.Code, w.Header())
+	}
+	records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(w.Body.String(), "\ufeff"))).ReadAll()
+	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" {
+		t.Fatalf("csv must quote fields: %v %q", err, records)
+	}
+	w = do("/export?format=json&model=m")
+	var events []usagestore.Event
+	if err = json.Unmarshal(w.Body.Bytes(), &events); err != nil || len(events) != 1 {
+		t.Fatalf("json export: %v %s", err, w.Body.String())
+	}
+	if w = do("/export?format=xml"); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad format: %d", w.Code)
+	}
+	if w = do("/analysis?tz_offset=480"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"heatmap":[`) {
+		t.Fatalf("analysis: %d %s", w.Code, w.Body.String())
 	}
 }
