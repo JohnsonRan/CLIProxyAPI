@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -179,6 +180,14 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 	}
 
 	b := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType).TokenBreakdown
+
+	served := strings.TrimSpace(record.ResponseModel)
+	expectedModel := strings.TrimSpace(record.UpstreamModel)
+	if expectedModel == "" {
+		expectedModel = record.Model
+	}
+	substituted := served != "" && helps.IsModelSubstituted(expectedModel, served) && (record.Model == "" || helps.IsModelSubstituted(record.Model, served))
+
 	return Event{
 		Timestamp:       ts.UnixMilli(),
 		RequestID:       strings.TrimSpace(internallogging.GetRequestID(ctx)),
@@ -210,8 +219,10 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 			Unclassified:  b.UnclassifiedTokens,
 			Total:         b.TotalTokens,
 		},
-		ClientIP:  firstNonEmpty(meta.ResolvedClientIP, meta.ClientIP),
-		UserAgent: truncate(meta.UserAgent, 256),
+		ClientIP:      firstNonEmpty(meta.ResolvedClientIP, meta.ClientIP),
+		UserAgent:     truncate(meta.UserAgent, 256),
+		ResponseModel: served,
+		Substituted:   substituted,
 	}
 }
 
