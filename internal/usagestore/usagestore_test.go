@@ -2,6 +2,7 @@ package usagestore
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"path/filepath"
 	"testing"
@@ -364,5 +365,176 @@ func TestStatsFilterAndCredentialLabels(t *testing.T) {
 		if errStats != nil || got.Totals.Requests != tc.want {
 			t.Fatalf("filter %+v: %v requests=%d want %d", tc.filter, errStats, got.Totals.Requests, tc.want)
 		}
+	}
+}
+
+func TestEventFromRecord_Substituted(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. served differs from model and upstreamModel -> true
+	rec1 := coreusage.Record{Model: "grok-4.7", ResponseModel: "grok-4.7-build"}
+	e1 := eventFromRecord(ctx, rec1)
+	if !e1.Substituted || e1.ResponseModel != "grok-4.7-build" {
+		t.Fatalf("rec1: expected substituted true, got %v (%s)", e1.Substituted, e1.ResponseModel)
+	}
+
+	// 2. served equals UpstreamModel but differs from Model -> false (claude/kimi mapping)
+	rec2 := coreusage.Record{
+		Model:         "claude-sonnet-4-5",
+		UpstreamModel: "claude-3-5-sonnet-20241022",
+		ResponseModel: "claude-3-5-sonnet-20241022",
+	}
+	e2 := eventFromRecord(ctx, rec2)
+	if e2.Substituted {
+		t.Fatalf("rec2: mapped upstream model must not be flagged substituted: %+v", e2)
+	}
+
+	// 3. dated snapshot: requested "claude-sonnet-4-5" served "claude-sonnet-4-5-20250929" -> false
+	rec3 := coreusage.Record{
+		Model:         "claude-sonnet-4-5",
+		ResponseModel: "claude-sonnet-4-5-20250929",
+	}
+	e3 := eventFromRecord(ctx, rec3)
+	if e3.Substituted {
+		t.Fatalf("rec3: dated snapshot alias must not be flagged substituted: %+v", e3)
+	}
+
+	// 4. empty served -> false
+	rec4 := coreusage.Record{
+		Model:         "gpt-5",
+		ResponseModel: "",
+	}
+	e4 := eventFromRecord(ctx, rec4)
+	if e4.Substituted || e4.ResponseModel != "" {
+		t.Fatalf("rec4: empty response model must not be substituted: %+v", e4)
+	}
+}
+
+func TestMigrationAndSubstitutedStats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old_usage.db")
+	oldSchema := `
+CREATE TABLE IF NOT EXISTS events (
+	id INTEGER PRIMARY KEY,
+	ts INTEGER NOT NULL,
+	request_id TEXT NOT NULL DEFAULT '',
+	provider TEXT NOT NULL DEFAULT '',
+	executor_type TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	alias TEXT NOT NULL DEFAULT '',
+	endpoint TEXT NOT NULL DEFAULT '',
+	auth_type TEXT NOT NULL DEFAULT '',
+	auth_index TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT '',
+	api_key_id TEXT NOT NULL DEFAULT '',
+	api_key TEXT NOT NULL DEFAULT '',
+	access_provider TEXT NOT NULL DEFAULT '',
+	reasoning_effort TEXT NOT NULL DEFAULT '',
+	service_tier TEXT NOT NULL DEFAULT '',
+	stream INTEGER NOT NULL DEFAULT 0,
+	failed INTEGER NOT NULL DEFAULT 0,
+	status_code INTEGER NOT NULL DEFAULT 0,
+	error TEXT NOT NULL DEFAULT '',
+	latency_ms INTEGER NOT NULL DEFAULT 0,
+	ttft_ms INTEGER NOT NULL DEFAULT 0,
+	input_uncached INTEGER NOT NULL DEFAULT 0,
+	cache_read INTEGER NOT NULL DEFAULT 0,
+	cache_write INTEGER NOT NULL DEFAULT 0,
+	output INTEGER NOT NULL DEFAULT 0,
+	reasoning INTEGER NOT NULL DEFAULT 0,
+	unclassified INTEGER NOT NULL DEFAULT 0,
+	total INTEGER NOT NULL DEFAULT 0,
+	client_ip TEXT NOT NULL DEFAULT '',
+	user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS hourly (
+	hour INTEGER NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	api_key_id TEXT NOT NULL,
+	auth_index TEXT NOT NULL,
+	service_tier TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	requests INTEGER NOT NULL DEFAULT 0,
+	failed INTEGER NOT NULL DEFAULT 0,
+	input_uncached INTEGER NOT NULL DEFAULT 0,
+	cache_read INTEGER NOT NULL DEFAULT 0,
+	cache_write INTEGER NOT NULL DEFAULT 0,
+	output INTEGER NOT NULL DEFAULT 0,
+	reasoning INTEGER NOT NULL DEFAULT 0,
+	unclassified INTEGER NOT NULL DEFAULT 0,
+	total INTEGER NOT NULL DEFAULT 0,
+	latency_ms INTEGER NOT NULL DEFAULT 0,
+	ttft_ms INTEGER NOT NULL DEFAULT 0,
+	ttft_count INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (hour, provider, model, api_key_id, auth_index, service_tier)
+);
+`
+	// 1. Create DB with old schema
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := rawDB.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	rawDB.Close()
+
+	// 2. Open with usagestore.Open -> triggers migrateSchema
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open migrate: %v", err)
+	}
+	now := time.Now()
+	tok := Tokens{InputUncached: 10, Total: 10}
+	s.Enqueue(Event{
+		Timestamp:     now.UnixMilli(),
+		Provider:      "openai",
+		Model:         "gpt-5",
+		ResponseModel: "gpt-5-turbo",
+		Substituted:   true,
+		Tokens:        tok,
+	})
+	s.Enqueue(Event{
+		Timestamp:     now.Add(time.Second).UnixMilli(),
+		Provider:      "openai",
+		Model:         "gpt-5",
+		ResponseModel: "gpt-5",
+		Substituted:   false,
+		Tokens:        tok,
+	})
+	s.Close()
+
+	// 3. Re-open and verify queries work
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen migrated: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	st, err := s.Stats(ctx, now.Add(-time.Hour), now.Add(time.Hour), "", 0, StatsFilter{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if st.Totals.Requests != 2 || st.Totals.Substituted != 1 {
+		t.Fatalf("stats: requests=%d, substituted=%d (want 2, 1)", st.Totals.Requests, st.Totals.Substituted)
+	}
+
+	trueVal := true
+	subEvents, err := s.Events(ctx, EventFilter{Substituted: &trueVal})
+	if err != nil {
+		t.Fatalf("events substituted: %v", err)
+	}
+	if len(subEvents) != 1 || !subEvents[0].Substituted || subEvents[0].ResponseModel != "gpt-5-turbo" {
+		t.Fatalf("unexpected substituted events: %+v", subEvents)
+	}
+
+	falseVal := false
+	unsubEvents, err := s.Events(ctx, EventFilter{Substituted: &falseVal})
+	if err != nil {
+		t.Fatalf("events unsubstituted: %v", err)
+	}
+	if len(unsubEvents) != 1 || unsubEvents[0].Substituted || unsubEvents[0].ResponseModel != "gpt-5" {
+		t.Fatalf("unexpected unsubstituted events: %+v", unsubEvents)
 	}
 }

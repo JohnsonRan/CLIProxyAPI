@@ -47,7 +47,7 @@ func TestUsageStoreHandlers(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil || stats.Bucket != "hour" || len(stats.Series) != 24 {
 		t.Fatalf("stats body: %v %s", err, w.Body.String())
 	}
-	for _, bad := range []string{"/stats?from=x", "/stats?from=1700086400&to=1700000000", "/stats?tz_offset=9999", "/events?failed=maybe"} {
+	for _, bad := range []string{"/stats?from=x", "/stats?from=1700086400&to=1700000000", "/stats?tz_offset=9999", "/events?failed=maybe", "/events?substituted=bogus"} {
 		if w = do(bad); w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status %d, want 400", bad, w.Code)
 		}
@@ -70,7 +70,14 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 	cfg.UsageStore = config.UsageStoreConfig{Enable: true, Path: filepath.Join(t.TempDir(), "usage.db"),
 		Pricing: config.UsagePricingConfig{DisableModelsDev: true}}
 	usagestore.Apply(cfg)
-	usagestore.Current().Enqueue(usagestore.Event{Timestamp: time.Now().UnixMilli(), Model: "m", Alias: "=formula", Error: "a,\"b\"\nc"})
+	usagestore.Current().Enqueue(usagestore.Event{
+		Timestamp:     time.Now().UnixMilli(),
+		Model:         "m",
+		Alias:         "=formula",
+		Error:         "a,\"b\"\nc",
+		ResponseModel: "=danger",
+		Substituted:   true,
+	})
 	usagestore.Shutdown()
 	usagestore.Apply(cfg)
 	defer usagestore.Shutdown()
@@ -85,8 +92,10 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 		t.Fatalf("csv export: %d %v", w.Code, w.Header())
 	}
 	records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(w.Body.String(), "\ufeff"))).ReadAll()
-	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" || records[1][6] != "'=formula" {
-		t.Fatalf("csv must quote fields and sanitize formula triggers: %v %q", err, records)
+	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" || records[1][6] != "'=formula" ||
+		records[0][32] != "response_model" || records[0][33] != "substituted" ||
+		records[1][32] != "'=danger" || records[1][33] != "true" {
+		t.Fatalf("csv must quote fields, sanitize formula triggers and include substitution cols: %v %q", err, records)
 	}
 	w = do("/export?format=json&model=m")
 	var events []usagestore.Event
