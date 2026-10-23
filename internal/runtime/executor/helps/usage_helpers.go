@@ -701,8 +701,10 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (image generation tool usage) that
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
+	upstreamModel := ""
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		upstreamModel = r.UpstreamModel()
 	}
 	return usage.Record{
 		RequestID:            r.requestID,
@@ -729,6 +731,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		EffectiveServiceTier: r.effectiveServiceTier,
 		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
 		ResponseModel:        responseModel,
+		UpstreamModel:        upstreamModel,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
 		RequestedAt:          r.requestedAt,

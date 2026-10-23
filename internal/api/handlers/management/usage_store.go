@@ -122,6 +122,14 @@ func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 		}
 		f.Failed = &failed
 	}
+	if v := strings.TrimSpace(c.Query("substituted")); v != "" {
+		substituted, errBool := strconv.ParseBool(v)
+		if errBool != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "substituted must be true or false"})
+			return f, false
+		}
+		f.Substituted = &substituted
+	}
 	f.BeforeID, _ = strconv.ParseInt(strings.TrimSpace(c.Query("before")), 10, 64)
 	f.Limit, _ = strconv.Atoi(strings.TrimSpace(c.Query("limit")))
 	return f, true
@@ -153,7 +161,7 @@ func (h *Handler) GetUsageStoreEvents(c *gin.Context) {
 var usageExportColumns = []string{"id", "time", "request_id", "provider", "executor_type", "model", "alias", "endpoint",
 	"auth_type", "auth_index", "source", "api_key", "access_provider", "reasoning_effort", "service_tier", "stream",
 	"failed", "status_code", "error", "latency_ms", "ttft_ms", "input_uncached", "cache_read", "cache_write", "output",
-	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent"}
+	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent", "response_model", "substituted"}
 
 // sanitizeCSVCell prefixes a single quote to string cell values starting with formula triggers
 // (=, +, -, @, tab, CR) per OWASP CSV injection guidelines.
@@ -225,6 +233,7 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 			strconv.FormatInt(t.CacheWrite, 10), strconv.FormatInt(t.Output, 10), strconv.FormatInt(t.Reasoning, 10),
 			strconv.FormatInt(t.Unclassified, 10), strconv.FormatInt(t.Total, 10),
 			strconv.FormatFloat(e.Cost, 'f', -1, 64), strconv.FormatBool(e.Priced), sanitizeCSVCell(e.ClientIP), sanitizeCSVCell(e.UserAgent),
+			sanitizeCSVCell(e.ResponseModel), strconv.FormatBool(e.Substituted),
 		})
 	})
 	w.Flush()
