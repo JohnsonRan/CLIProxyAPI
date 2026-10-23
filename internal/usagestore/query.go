@@ -2,6 +2,7 @@ package usagestore
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -88,12 +89,12 @@ type Stats struct {
 	Credentials []CredentialStat `json:"credentials"`
 }
 
-// StatsFilter narrows Stats to one model, provider, client key or credential. Zero values do not filter.
+// StatsFilter narrows Stats to models, providers, client keys or credentials. Zero values do not filter.
 type StatsFilter struct {
-	Model     string
-	Provider  string
-	APIKeyID  string
-	AuthIndex string
+	Model     []string
+	Provider  []string
+	APIKeyID  []string
+	AuthIndex []string
 }
 
 // Stats aggregates hourly rollups in [from, to). bucket is "hour" or "day"
@@ -124,12 +125,22 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 	if bucket == "day" {
 		args = []any{off, off, fromSec, toSec}
 	}
-	for _, f := range []struct{ column, value string }{
-		{"model", filter.Model}, {"provider", filter.Provider}, {"api_key_id", filter.APIKeyID}, {"auth_index", filter.AuthIndex},
+	for _, f := range []struct {
+		column string
+		values []string
+	}{
+		{"model", filter.Model},
+		{"provider", filter.Provider},
+		{"api_key_id", filter.APIKeyID},
+		{"auth_index", filter.AuthIndex},
 	} {
-		if f.value != "" {
-			query += " AND " + f.column + " = ?"
-			args = append(args, f.value)
+		if len(f.values) > 0 {
+			placeholders := make([]string, len(f.values))
+			for i, v := range f.values {
+				placeholders[i] = "?"
+				args = append(args, v)
+			}
+			query += " AND " + f.column + " IN (" + strings.Join(placeholders, ",") + ")"
 		}
 	}
 	query += " GROUP BY b, provider, model, api_key_id, auth_index, service_tier"
@@ -240,13 +251,14 @@ func (s *Store) credentialLabels(ctx context.Context, creds map[string]*Credenti
 // EventFilter selects stored events. Zero values do not filter.
 type EventFilter struct {
 	From, To    time.Time
-	Model       string
-	Provider    string
-	APIKeyID    string
-	AuthIndex   string
+	Model       []string
+	Provider    []string
+	APIKeyID    []string
+	AuthIndex   []string
 	Failed      *bool
 	Substituted *bool
 	BeforeID    int64
+	AfterID     int64
 	Limit       int
 }
 
@@ -266,17 +278,23 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	if !f.To.IsZero() {
 		cond("ts < ?", f.To.UnixMilli())
 	}
-	if f.Model != "" {
-		cond("model = ?", f.Model)
-	}
-	if f.Provider != "" {
-		cond("provider = ?", f.Provider)
-	}
-	if f.APIKeyID != "" {
-		cond("api_key_id = ?", f.APIKeyID)
-	}
-	if f.AuthIndex != "" {
-		cond("auth_index = ?", f.AuthIndex)
+	for _, dim := range []struct {
+		column string
+		values []string
+	}{
+		{"model", f.Model},
+		{"provider", f.Provider},
+		{"api_key_id", f.APIKeyID},
+		{"auth_index", f.AuthIndex},
+	} {
+		if len(dim.values) > 0 {
+			placeholders := make([]string, len(dim.values))
+			for i, v := range dim.values {
+				placeholders[i] = "?"
+				args = append(args, v)
+			}
+			where = append(where, fmt.Sprintf("%s IN (%s)", dim.column, strings.Join(placeholders, ",")))
+		}
 	}
 	if f.Failed != nil {
 		cond("failed = ?", *f.Failed)
@@ -287,6 +305,9 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	if f.BeforeID > 0 {
 		cond("id < ?", f.BeforeID)
 	}
+	if f.AfterID > 0 {
+		cond("id > ?", f.AfterID)
+	}
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
@@ -294,7 +315,11 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY id DESC LIMIT ?"
+	order := "DESC"
+	if f.AfterID > 0 {
+		order = "ASC"
+	}
+	query += " ORDER BY id " + order + " LIMIT ?"
 	return query, append(args, limit)
 }
 
@@ -329,12 +354,12 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 	return rows.Err()
 }
 
-// Events returns events newest first, paginated by BeforeID.
+// Events returns events newest first (or oldest first when AfterID > 0), paginated by BeforeID/AfterID.
 func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
-	events := []Event{}
+	events := make([]Event, 0)
 	err := s.eachEvent(ctx, f, f.Limit, func(e *Event) error {
 		events = append(events, *e)
 		return nil

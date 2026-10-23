@@ -3,6 +3,7 @@ package usagestore
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -64,14 +65,36 @@ func percentiles(values []int64) Percentiles {
 }
 
 // Analysis computes latency percentiles from successful events in [from, to) (events are pruned after
-// the retention window) and a weekday x hour heatmap from hourly rollups aligned to tzOffsetMinutes.
-func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinutes int) (*Analysis, error) {
+// the retention window) and a weekday x hour heatmap from hourly rollups aligned to tzOffsetMinutes,
+// matching the supplied dimension filters.
+func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinutes int, filter StatsFilter) (*Analysis, error) {
 	out := &Analysis{From: from.Unix(), To: to.Unix(), HistogramBounds: LatencyBucketBoundsMs,
 		Histogram: make([]int64, len(LatencyBucketBoundsMs)+1), Models: []ModelLatency{}, Heatmap: []HeatCell{}}
 
+	whereEvents := "ts >= ? AND ts < ? AND failed = 0"
+	argsEvents := []any{from.UnixMilli(), to.UnixMilli()}
+	for _, dim := range []struct {
+		column string
+		values []string
+	}{
+		{"model", filter.Model},
+		{"provider", filter.Provider},
+		{"api_key_id", filter.APIKeyID},
+		{"auth_index", filter.AuthIndex},
+	} {
+		if len(dim.values) > 0 {
+			placeholders := make([]string, len(dim.values))
+			for i, v := range dim.values {
+				placeholders[i] = "?"
+				argsEvents = append(argsEvents, v)
+			}
+			whereEvents += " AND " + dim.column + " IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+
 	var total, minID int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), IFNULL(MIN(id),0) FROM events
-		WHERE ts >= ? AND ts < ? AND failed = 0`, from.UnixMilli(), to.UnixMilli()).Scan(&total, &minID); err != nil {
+	countQuery := "SELECT COUNT(*), IFNULL(MIN(id),0) FROM events WHERE " + whereEvents
+	if err := s.db.QueryRowContext(ctx, countQuery, argsEvents...).Scan(&total, &minID); err != nil {
 		return nil, err
 	}
 	step := int64(1)
@@ -79,8 +102,9 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 		step = (total + maxLatencySamples - 1) / maxLatencySamples
 		out.Sampled = true
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT model, latency_ms, ttft_ms FROM events
-		WHERE ts >= ? AND ts < ? AND failed = 0 AND (id - ?) % ? = 0`, from.UnixMilli(), to.UnixMilli(), minID, step)
+	dataQuery := "SELECT model, latency_ms, ttft_ms FROM events WHERE " + whereEvents + " AND (id - ?) % ? = 0"
+	dataArgs := append(append([]any(nil), argsEvents...), minID, step)
+	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +143,30 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 	sort.Slice(out.Models, func(i, j int) bool { return out.Models[i].Latency.Count > out.Models[j].Latency.Count })
 
 	off := int64(tzOffsetMinutes) * 60
-	hrows, err := s.db.QueryContext(ctx, `SELECT hour, model, service_tier, SUM(requests), SUM(failed), SUM(input_uncached),
+	hquery := `SELECT hour, model, service_tier, SUM(requests), SUM(failed), SUM(input_uncached),
 		SUM(cache_read), SUM(cache_write), SUM(output), SUM(reasoning), SUM(unclassified), SUM(total)
-		FROM hourly WHERE hour >= ? AND hour < ? GROUP BY hour, model, service_tier`, from.Unix()/3600*3600, to.Unix())
+		FROM hourly WHERE hour >= ? AND hour < ?`
+	hargs := []any{from.Unix() / 3600 * 3600, to.Unix()}
+	for _, dim := range []struct {
+		column string
+		values []string
+	}{
+		{"model", filter.Model},
+		{"provider", filter.Provider},
+		{"api_key_id", filter.APIKeyID},
+		{"auth_index", filter.AuthIndex},
+	} {
+		if len(dim.values) > 0 {
+			placeholders := make([]string, len(dim.values))
+			for i, v := range dim.values {
+				placeholders[i] = "?"
+				hargs = append(hargs, v)
+			}
+			hquery += " AND " + dim.column + " IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+	hquery += " GROUP BY hour, model, service_tier"
+	hrows, err := s.db.QueryContext(ctx, hquery, hargs...)
 	if err != nil {
 		return nil, err
 	}
