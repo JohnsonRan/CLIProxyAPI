@@ -68,6 +68,46 @@ func parseUsageTZ(c *gin.Context) (int, bool) {
 	return tz, true
 }
 
+const maxFilterValues = 50
+
+func parseFilterList(c *gin.Context, name string) ([]string, error) {
+	var out []string
+	for _, raw := range c.QueryArray(name) {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	if len(out) > maxFilterValues {
+		return nil, fmt.Errorf("filter %q exceeds maximum of %d values", name, maxFilterValues)
+	}
+	return out, nil
+}
+
+func parseUsageDimensionFilter(c *gin.Context) (usagestore.StatsFilter, bool) {
+	var f usagestore.StatsFilter
+	var err error
+	if f.Model, err = parseFilterList(c, "model"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return f, false
+	}
+	if f.Provider, err = parseFilterList(c, "provider"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return f, false
+	}
+	if f.APIKeyID, err = parseFilterList(c, "api_key_id"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return f, false
+	}
+	if f.AuthIndex, err = parseFilterList(c, "auth_index"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return f, false
+	}
+	return f, true
+}
+
 // GetUsageStoreStats returns aggregated usage and estimated cost for a time range.
 // Query: from, to (unix seconds or RFC3339; default last 24h), bucket (hour|day), tz_offset (minutes east of UTC),
 // and optional model, provider, api_key_id, auth_index filters.
@@ -84,11 +124,9 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	if !ok {
 		return
 	}
-	filter := usagestore.StatsFilter{
-		Model:     strings.TrimSpace(c.Query("model")),
-		Provider:  strings.TrimSpace(c.Query("provider")),
-		APIKeyID:  strings.TrimSpace(c.Query("api_key_id")),
-		AuthIndex: strings.TrimSpace(c.Query("auth_index")),
+	filter, ok := parseUsageDimensionFilter(c)
+	if !ok {
+		return
 	}
 	stats, err := s.Stats(c.Request.Context(), from, to, c.Query("bucket"), tz, filter)
 	if err != nil {
@@ -98,13 +136,17 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-// parseUsageEventFilter reads from, to, model, provider, api_key_id, auth_index, failed, before and limit.
+// parseUsageEventFilter reads from, to, model, provider, api_key_id, auth_index, failed, substituted, before, after, limit.
 func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
+	dim, ok := parseUsageDimensionFilter(c)
+	if !ok {
+		return usagestore.EventFilter{}, false
+	}
 	f := usagestore.EventFilter{
-		Model:     strings.TrimSpace(c.Query("model")),
-		Provider:  strings.TrimSpace(c.Query("provider")),
-		APIKeyID:  strings.TrimSpace(c.Query("api_key_id")),
-		AuthIndex: strings.TrimSpace(c.Query("auth_index")),
+		Model:     dim.Model,
+		Provider:  dim.Provider,
+		APIKeyID:  dim.APIKeyID,
+		AuthIndex: dim.AuthIndex,
 	}
 	var err error
 	if f.From, err = parseUsageTime(c.Query("from"), time.Time{}); err == nil {
@@ -130,13 +172,40 @@ func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 		}
 		f.Substituted = &substituted
 	}
-	f.BeforeID, _ = strconv.ParseInt(strings.TrimSpace(c.Query("before")), 10, 64)
-	f.Limit, _ = strconv.Atoi(strings.TrimSpace(c.Query("limit")))
+	if v := strings.TrimSpace(c.Query("before")); v != "" {
+		before, errBefore := strconv.ParseInt(v, 10, 64)
+		if errBefore != nil || before < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid before id"})
+			return f, false
+		}
+		f.BeforeID = before
+	}
+	if v := strings.TrimSpace(c.Query("after")); v != "" {
+		after, errAfter := strconv.ParseInt(v, 10, 64)
+		if errAfter != nil || after < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid after id"})
+			return f, false
+		}
+		f.AfterID = after
+	}
+	if f.BeforeID > 0 && f.AfterID > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot use both before and after"})
+		return f, false
+	}
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		limit, errLimit := strconv.Atoi(v)
+		if errLimit != nil || limit < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid limit"})
+			return f, false
+		}
+		f.Limit = limit
+	}
 	return f, true
 }
 
-// GetUsageStoreEvents returns stored requests newest first.
-// Query: from, to, model, provider, api_key_id, auth_index, failed (true|false), before (event id), limit (<=500).
+// GetUsageStoreEvents returns stored requests newest first (or oldest first when after is specified).
+// Query: from, to, model, provider, api_key_id, auth_index, failed (true|false), substituted (true|false),
+// before (event id), after (event id), limit (<=500).
 func (h *Handler) GetUsageStoreEvents(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -151,11 +220,17 @@ func (h *Handler) GetUsageStoreEvents(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	var next int64
+	var nextBefore int64
+	var lastID int64 = f.AfterID
 	if len(events) > 0 {
-		next = events[len(events)-1].ID
+		nextBefore = events[len(events)-1].ID
+		for _, e := range events {
+			if e.ID > lastID {
+				lastID = e.ID
+			}
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"events": events, "next_before": next})
+	c.JSON(http.StatusOK, gin.H{"events": events, "next_before": nextBefore, "last_id": lastID})
 }
 
 var usageExportColumns = []string{"id", "time", "request_id", "provider", "executor_type", "model", "alias", "endpoint",
@@ -246,7 +321,8 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 }
 
 // GetUsageStoreAnalysis returns latency percentiles, a latency histogram, per-model latency and a
-// weekday x hour heatmap. Query: from, to, tz_offset (as for stats).
+// weekday x hour heatmap. Query: from, to, tz_offset (as for stats), plus optional model, provider,
+// api_key_id, auth_index filters.
 func (h *Handler) GetUsageStoreAnalysis(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -260,12 +336,60 @@ func (h *Handler) GetUsageStoreAnalysis(c *gin.Context) {
 	if !ok {
 		return
 	}
-	analysis, err := s.Analysis(c.Request.Context(), from, to, tz)
+	filter, ok := parseUsageDimensionFilter(c)
+	if !ok {
+		return
+	}
+	analysis, err := s.Analysis(c.Request.Context(), from, to, tz, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, analysis)
+}
+
+// GetUsageStoreOptions returns distinct dimension values (models, providers, API keys, credentials)
+// observed in the time range, sorted by requests descending.
+func (h *Handler) GetUsageStoreOptions(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	from, to, ok := parseUsageRange(c)
+	if !ok {
+		return
+	}
+	opts, err := s.Options(c.Request.Context(), from, to)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, opts)
+}
+
+// GetUsageStoreRealtime returns per-minute buckets for the last N minutes (1..180, default 60)
+// and current rolling metrics (1m and 5m).
+func (h *Handler) GetUsageStoreRealtime(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	filter, ok := parseUsageDimensionFilter(c)
+	if !ok {
+		return
+	}
+	minutesStr := strings.TrimSpace(c.DefaultQuery("minutes", "60"))
+	minutes, errMin := strconv.Atoi(minutesStr)
+	if errMin != nil || minutes < 1 || minutes > 180 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "minutes must be between 1 and 180"})
+		return
+	}
+	rt, err := s.Realtime(c.Request.Context(), minutes, filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, rt)
 }
 
 // GetUsageStorePricing lists the effective price of every stored model.

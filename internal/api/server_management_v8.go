@@ -43,6 +43,8 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/usage/events", s.mgmt.GetUsageStoreEvents)
 	v8.GET("/observability/usage/events/export", s.mgmt.ExportUsageStoreEvents)
 	v8.GET("/observability/usage/analysis", s.mgmt.GetUsageStoreAnalysis)
+	v8.GET("/observability/usage/options", s.mgmt.GetUsageStoreOptions)
+	v8.GET("/observability/usage/realtime", s.mgmt.GetUsageStoreRealtime)
 	v8.GET("/observability/usage/pricing", s.mgmt.GetUsageStorePricing)
 	v8.POST("/observability/usage/pricing/refresh", s.mgmt.RefreshUsageStorePricing)
 
