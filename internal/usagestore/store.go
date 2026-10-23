@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -54,7 +55,9 @@ CREATE TABLE IF NOT EXISTS events (
 	unclassified INTEGER NOT NULL DEFAULT 0,
 	total INTEGER NOT NULL DEFAULT 0,
 	client_ip TEXT NOT NULL DEFAULT '',
-	user_agent TEXT NOT NULL DEFAULT ''
+	user_agent TEXT NOT NULL DEFAULT '',
+	response_model TEXT NOT NULL DEFAULT '',
+	substituted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS hourly (
@@ -67,6 +70,7 @@ CREATE TABLE IF NOT EXISTS hourly (
 	api_key TEXT NOT NULL DEFAULT '',
 	requests INTEGER NOT NULL DEFAULT 0,
 	failed INTEGER NOT NULL DEFAULT 0,
+	substituted INTEGER NOT NULL DEFAULT 0,
 	input_uncached INTEGER NOT NULL DEFAULT 0,
 	cache_read INTEGER NOT NULL DEFAULT 0,
 	cache_write INTEGER NOT NULL DEFAULT 0,
@@ -91,8 +95,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 const insertEventSQL = `INSERT INTO events (ts, request_id, provider, executor_type, model, alias, endpoint, auth_type,
 	auth_index, source, api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed,
 	status_code, error, latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning,
-	unclassified, total, client_ip, user_agent)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	unclassified, total, client_ip, user_agent, response_model, substituted)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 // Credentials keep the latest display fields per auth index so labels survive event pruning.
 const upsertCredentialSQL = `INSERT INTO credentials (auth_index, provider, auth_type, source, last_seen)
@@ -106,13 +110,14 @@ const backfillCredentialsSQL = `INSERT OR IGNORE INTO credentials (auth_index, p
 	JOIN (SELECT MAX(id) AS id FROM events WHERE auth_index != '' GROUP BY auth_index) latest ON e.id = latest.id`
 
 const upsertHourlySQL = `INSERT INTO hourly (hour, provider, model, api_key_id, auth_index, service_tier, api_key,
-	requests, failed, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
+	requests, failed, substituted, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
 	latency_ms, ttft_ms, ttft_count)
-	VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?)
+	VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(hour, provider, model, api_key_id, auth_index, service_tier) DO UPDATE SET
 	api_key = excluded.api_key,
 	requests = requests + 1,
 	failed = failed + excluded.failed,
+	substituted = substituted + excluded.substituted,
 	input_uncached = input_uncached + excluded.input_uncached,
 	cache_read = cache_read + excluded.cache_read,
 	cache_write = cache_write + excluded.cache_write,
@@ -175,6 +180,8 @@ type Event struct {
 	UserAgent       string  `json:"user_agent"`
 	Cost            float64 `json:"cost"`
 	Priced          bool    `json:"priced"`
+	ResponseModel   string  `json:"response_model"`
+	Substituted     bool    `json:"substituted"`
 }
 
 // Store owns the database and its single writer goroutine.
@@ -204,6 +211,10 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage store: schema: %w", errSchema)
 	}
+	if errMigrate := migrateSchema(db); errMigrate != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage store: migrate: %w", errMigrate)
+	}
 	s := &Store{
 		path:   path,
 		db:     db,
@@ -230,6 +241,60 @@ func (s *Store) SetRetentionDays(days int) {
 		days = 30
 	}
 	s.retention.Store(int64(days))
+}
+
+func migrateSchema(db *sql.DB) error {
+	hasColumn := func(table, column string) (bool, error) {
+		rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt any
+			if errScan := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); errScan != nil {
+				return false, errScan
+			}
+			if strings.EqualFold(name, column) {
+				return true, nil
+			}
+		}
+		return false, rows.Err()
+	}
+
+	hasRespModel, err := hasColumn("events", "response_model")
+	if err != nil {
+		return err
+	}
+	if !hasRespModel {
+		if _, errExec := db.Exec("ALTER TABLE events ADD COLUMN response_model TEXT NOT NULL DEFAULT ''"); errExec != nil {
+			return fmt.Errorf("migrate events.response_model: %w", errExec)
+		}
+	}
+
+	hasSubEvents, err := hasColumn("events", "substituted")
+	if err != nil {
+		return err
+	}
+	if !hasSubEvents {
+		if _, errExec := db.Exec("ALTER TABLE events ADD COLUMN substituted INTEGER NOT NULL DEFAULT 0"); errExec != nil {
+			return fmt.Errorf("migrate events.substituted: %w", errExec)
+		}
+	}
+
+	hasSubHourly, err := hasColumn("hourly", "substituted")
+	if err != nil {
+		return err
+	}
+	if !hasSubHourly {
+		if _, errExec := db.Exec("ALTER TABLE hourly ADD COLUMN substituted INTEGER NOT NULL DEFAULT 0"); errExec != nil {
+			return fmt.Errorf("migrate hourly.substituted: %w", errExec)
+		}
+	}
+	return nil
 }
 
 // Enqueue hands an event to the writer without blocking; it drops the event when the buffer is full.
@@ -319,10 +384,15 @@ func (s *Store) write(batch []Event) error {
 	for i := range batch {
 		e := &batch[i]
 		t := e.Tokens
+		subInt := 0
+		if e.Substituted {
+			subInt = 1
+		}
 		if _, errExec := insEvent.Exec(e.Timestamp, e.RequestID, e.Provider, e.ExecutorType, e.Model, e.Alias,
 			e.Endpoint, e.AuthType, e.AuthIndex, e.Source, e.APIKeyID, e.APIKey, e.AccessProvider, e.ReasoningEffort,
 			e.ServiceTier, e.Stream, e.Failed, e.StatusCode, e.Error, e.LatencyMs, e.TTFTMs, t.InputUncached,
-			t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total, e.ClientIP, e.UserAgent); errExec != nil {
+			t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total, e.ClientIP, e.UserAgent,
+			e.ResponseModel, subInt); errExec != nil {
 			return errExec
 		}
 		ttftCount := 0
@@ -331,7 +401,7 @@ func (s *Store) write(batch []Event) error {
 		}
 		hour := e.Timestamp / 1000 / 3600 * 3600
 		if _, errExec := upHourly.Exec(hour, e.Provider, e.Model, e.APIKeyID, e.AuthIndex, e.ServiceTier, e.APIKey,
-			e.Failed, t.InputUncached, t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total,
+			e.Failed, subInt, t.InputUncached, t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total,
 			e.LatencyMs, e.TTFTMs, ttftCount); errExec != nil {
 			return errExec
 		}
