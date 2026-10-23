@@ -153,7 +153,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	s.Enqueue(Event{Timestamp: day.Add(1 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", APIKeyID: "k1", APIKey: "sk-a", AuthIndex: "a1", Tokens: tok, LatencyMs: 100, TTFTMs: 50})
 	s.Enqueue(Event{Timestamp: day.Add(1*time.Hour + time.Minute).UnixMilli(), Provider: "codex", Model: "gpt-x", APIKeyID: "k1", APIKey: "sk-a", AuthIndex: "a1", ServiceTier: "priority", Tokens: tok, LatencyMs: 300, Failed: true, StatusCode: 500})
 	s.Enqueue(Event{Timestamp: day.Add(26 * time.Hour).UnixMilli(), Provider: "x", Model: "mystery", APIKeyID: "k2", AuthIndex: "a2", Tokens: tok})
-	// Older than retention: kept in rollups, purged from events on open.
+	// Older than retention: kept in rollups, purged from events by the startup purge.
 	s.Enqueue(Event{Timestamp: time.Now().Add(-40 * 24 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", Tokens: tok})
 	s.Close()
 
@@ -163,6 +163,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
+	// The startup purge runs in the writer goroutine; run it here too so the assertion is deterministic.
+	s.purge()
 
 	st, err := s.Stats(ctx, day, day.Add(48*time.Hour), "", 0, StatsFilter{})
 	if err != nil {
