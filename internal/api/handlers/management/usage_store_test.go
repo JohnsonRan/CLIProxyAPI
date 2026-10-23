@@ -174,3 +174,26 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 		t.Fatalf("analysis: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestUsageStoreStatsResultFilterValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{}
+	r := gin.New()
+	r.GET("/stats", h.GetUsageStoreStats)
+	cfg := &config.Config{}
+	cfg.UsageStore = config.UsageStoreConfig{Enable: true, Path: filepath.Join(t.TempDir(), "usage.db"),
+		Pricing: config.UsagePricingConfig{DisableModelsDev: true}}
+	usagestore.Apply(cfg)
+	defer usagestore.Shutdown()
+	for url, want := range map[string]int{
+		"/stats?failed=true":       http.StatusOK,
+		"/stats?substituted=false": http.StatusOK,
+		"/stats?failed=bogus":      http.StatusBadRequest,
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+		if w.Code != want {
+			t.Fatalf("%s: %d, want %d (%s)", url, w.Code, want, w.Body.String())
+		}
+	}
+}

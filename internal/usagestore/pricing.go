@@ -31,10 +31,31 @@ type Price struct {
 	Reasoning float64 `json:"reasoning,omitempty"`
 	// Tiers holds service-tier prices keyed by service tier (priority, flex).
 	Tiers map[string]Price `json:"tiers,omitempty"`
+	// ContextTiers hold long-context prices, ascending by Above: a request whose input
+	// (uncached + cache read + cache write) exceeds Above is billed entirely at that price.
+	ContextTiers []ContextTier `json:"context_tiers,omitempty"`
 }
 
-// Cost returns the estimated USD cost of t. Unclassified tokens are billed at the input price.
-// shortcut: long-context tiers (e.g. context_over_200k) are ignored; add per-event pricing if they matter.
+// ContextTier is the price of requests whose input exceeds Above tokens.
+type ContextTier struct {
+	Above int64 `json:"above"`
+	Price
+}
+
+// ForInput returns the price that applies to a request with the given input token count.
+func (p Price) ForInput(input int64) Price {
+	out := p
+	for _, tier := range p.ContextTiers {
+		if input > tier.Above {
+			out = tier.Price
+		}
+	}
+	out.ContextTiers = nil
+	return out
+}
+
+// Cost returns the estimated USD cost of t at this price, ignoring context tiers (see ForInput).
+// Unclassified tokens are billed at the input price.
 func (p Price) Cost(t Tokens) float64 {
 	reasoning := p.Reasoning
 	if reasoning <= 0 {
@@ -201,16 +222,51 @@ type mdCost struct {
 	CacheRead  *float64 `json:"cache_read"`
 	CacheWrite *float64 `json:"cache_write"`
 	Reasoning  float64  `json:"reasoning"`
+	Tiers      []struct {
+		mdCostValues
+		Tier struct {
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"tier"`
+	} `json:"tiers"`
+	// ContextOver200k is the older models.dev spelling of a 200k context tier.
+	ContextOver200k *mdCostValues `json:"context_over_200k"`
+}
+
+type mdCostValues struct {
+	Input      float64  `json:"input"`
+	Output     float64  `json:"output"`
+	CacheRead  *float64 `json:"cache_read"`
+	CacheWrite *float64 `json:"cache_write"`
+	Reasoning  float64  `json:"reasoning"`
+}
+
+func (v mdCostValues) price() Price {
+	p := Price{Input: v.Input, Output: v.Output, CacheRead: v.Input, CacheWrite: v.Input, Reasoning: v.Reasoning}
+	if v.CacheRead != nil {
+		p.CacheRead = *v.CacheRead
+	}
+	if v.CacheWrite != nil {
+		p.CacheWrite = *v.CacheWrite
+	}
+	return p
 }
 
 func (c *mdCost) price() Price {
-	p := Price{Input: c.Input, Output: c.Output, CacheRead: c.Input, CacheWrite: c.Input, Reasoning: c.Reasoning}
-	if c.CacheRead != nil {
-		p.CacheRead = *c.CacheRead
+	p := mdCostValues{Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite,
+		Reasoning: c.Reasoning}.price()
+	seen := map[int64]bool{}
+	for _, tier := range c.Tiers {
+		if tier.Tier.Type != "context" || tier.Tier.Size <= 0 || seen[tier.Tier.Size] {
+			continue
+		}
+		seen[tier.Tier.Size] = true
+		p.ContextTiers = append(p.ContextTiers, ContextTier{Above: tier.Tier.Size, Price: tier.mdCostValues.price()})
 	}
-	if c.CacheWrite != nil {
-		p.CacheWrite = *c.CacheWrite
+	if c.ContextOver200k != nil && !seen[200_000] {
+		p.ContextTiers = append(p.ContextTiers, ContextTier{Above: 200_000, Price: c.ContextOver200k.price()})
 	}
+	sort.Slice(p.ContextTiers, func(i, j int) bool { return p.ContextTiers[i].Above < p.ContextTiers[j].Above })
 	return p
 }
 
@@ -302,4 +358,32 @@ func candidateKeys(model string) []string {
 	add(m)
 	add(dateSuffix.ReplaceAllString(m, ""))
 	return keys
+}
+
+// ContextThresholds returns the distinct context-tier sizes of all known prices, ascending.
+// Aggregations group requests into bands between these sizes so tiers can be applied exactly.
+func (p *Pricer) ContextThresholds() []int64 {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	seen := map[int64]bool{}
+	var out []int64
+	collect := func(prices map[string]Price) {
+		for _, price := range prices {
+			for _, tier := range price.ContextTiers {
+				if !seen[tier.Above] {
+					seen[tier.Above] = true
+					out = append(out, tier.Above)
+				}
+			}
+		}
+	}
+	collect(p.overrides)
+	if !p.disabled {
+		collect(p.modelsDev)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

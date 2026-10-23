@@ -66,7 +66,8 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 	threshold1m := nowMs - 60*1000
 	threshold5m := nowMs - 5*60*1000
 
-	query := `SELECT (ts / 60000) AS minute_idx, model, service_tier,
+	prices := s.priceCache()
+	query := `SELECT (ts / 60000) AS minute_idx, model, service_tier, ` + contextBandSQL(prices.thresholds) + ` AS band,
 		COUNT(*) AS reqs,
 		SUM(failed) AS failed_cnt,
 		SUM(substituted) AS sub_cnt,
@@ -106,7 +107,7 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 			query += fmt.Sprintf(" AND %s IN (%s)", dim.column, strings.Join(placeholders, ","))
 		}
 	}
-	query += " GROUP BY minute_idx, model, service_tier"
+	query += " GROUP BY minute_idx, model, service_tier, band"
 
 	series := make([]RealtimePoint, minutes)
 	latSums := make([]int64, minutes)
@@ -115,7 +116,6 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 	}
 
 	var totReq1m, totTok1m, totReq5m, totTok5m, totFail5m, totLat5m int64
-	prices := s.priceCache()
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -125,11 +125,12 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 
 	for rows.Next() {
 		var minuteIdx int64
+		var band int
 		var model, tier string
 		var reqs, failedCnt, subCnt, totalTok, latSum int64
 		var inUncached, cRead, cWrite, outTok, reasonTok, unclassTok int64
 		var r1m, t1m, r5m, t5m, f5m, l5m int64
-		if errScan := rows.Scan(&minuteIdx, &model, &tier, &reqs, &failedCnt, &subCnt, &totalTok, &latSum,
+		if errScan := rows.Scan(&minuteIdx, &model, &tier, &band, &reqs, &failedCnt, &subCnt, &totalTok, &latSum,
 			&inUncached, &cRead, &cWrite, &outTok, &reasonTok, &unclassTok,
 			&r1m, &t1m, &r5m, &t5m, &f5m, &l5m); errScan != nil {
 			return nil, errScan
@@ -153,7 +154,8 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 		}
 		var a Aggregate
 		a.Tokens = tok
-		prices.apply(&a, model, tier)
+		a.Requests = reqs
+		prices.apply(&a, model, tier, prices.bandInput(band))
 		cost := a.Cost
 
 		if minuteIdx >= startMinuteIdx && minuteIdx <= currentMinuteIdx {
