@@ -10,6 +10,10 @@ import (
 
 const maxHourBuckets = 31 * 24
 
+// maxEventStatsRange bounds how far back stats are computed from events instead of rollups:
+// a 7-day scan of ~70k events takes about 130 ms, a 30-day scan of 300k about 550 ms.
+const maxEventStatsRange = 7 * 24 * time.Hour
+
 // Aggregate sums usage over a set of requests.
 type Aggregate struct {
 	Requests         int64   `json:"requests"`
@@ -79,9 +83,14 @@ type CredentialStat struct {
 
 // Stats is the dashboard payload for a time range.
 type Stats struct {
-	From        int64            `json:"from"`
-	To          int64            `json:"to"`
-	Bucket      string           `json:"bucket"`
+	From   int64  `json:"from"`
+	To     int64  `json:"to"`
+	Bucket string `json:"bucket"`
+	// Exact is true when the stats come from per-request events (millisecond range, result
+	// filters and long-context prices); false when they come from hourly rollups.
+	Exact bool `json:"exact"`
+	// Partial is true when events were required but part of the range is past the retention window.
+	Partial     bool             `json:"partial"`
 	Totals      Aggregate        `json:"totals"`
 	Series      []SeriesPoint    `json:"series"`
 	Models      []ModelStat      `json:"models"`
@@ -95,13 +104,35 @@ type StatsFilter struct {
 	Provider  []string
 	APIKeyID  []string
 	AuthIndex []string
+	// Failed and Substituted narrow by request result; they require per-request events.
+	Failed      *bool
+	Substituted *bool
 }
 
-// Stats aggregates hourly rollups in [from, to). bucket is "hour" or "day"
-// (empty picks hour up to 48h); tzOffsetMinutes aligns day buckets to local midnight.
-// shortcut: rollups are hourly, so half-hour time zones get day buckets shifted by 30 minutes.
+// coversRange reports whether per-request events still exist from `from` onwards.
+// Events are used for at most maxEventStatsRange (or the retention window if shorter).
+func (s *Store) coversRange(from time.Time) bool {
+	days := s.retention.Load()
+	window := time.Duration(days) * 24 * time.Hour
+	if days < 0 || window > maxEventStatsRange {
+		window = maxEventStatsRange
+	}
+	return !from.Before(time.Now().Add(-window))
+}
+
+// Stats aggregates usage in [from, to). bucket is "hour" or "day" (empty picks hour up to 48h);
+// tzOffsetMinutes aligns day buckets to local midnight.
+//
+// Ranges starting within the last maxEventStatsRange (and the retention window) are computed from
+// per-request events, so they are exact to the millisecond and price long-context requests; result
+// filters always use events. Other ranges use hourly rollups: whole hours and base prices.
+// shortcut: rollups are hourly, so half-hour time zones get day buckets shifted by 30 minutes there.
 func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tzOffsetMinutes int, filter StatsFilter) (*Stats, error) {
+	useEvents := s.coversRange(from) || filter.Failed != nil || filter.Substituted != nil
 	fromSec := from.Unix() / 3600 * 3600
+	if useEvents {
+		fromSec = from.Unix()
+	}
 	toSec := to.Unix()
 	if bucket != "hour" && bucket != "day" {
 		bucket = "day"
@@ -113,17 +144,41 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		bucket = "day"
 	}
 	off := int64(tzOffsetMinutes) * 60
-	bucketExpr := "hour"
-	if bucket == "day" {
-		bucketExpr = "((hour + ?) / 86400) * 86400 - ?"
-	}
-	query := `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
+	prices := s.priceCache()
+
+	var query string
+	var args []any
+	if useEvents {
+		bucketExpr := "(ts / 3600000) * 3600"
+		if bucket == "day" {
+			bucketExpr = "((ts / 1000 + ?) / 86400) * 86400 - ?"
+			args = append(args, off, off)
+		}
+		query = `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
+		` + contextBandSQL(prices.thresholds) + ` AS band,
+		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
+		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0)
+		FROM events WHERE ts >= ? AND ts < ?`
+		args = append(args, from.UnixMilli(), to.UnixMilli())
+		if filter.Failed != nil {
+			query += " AND failed = ?"
+			args = append(args, *filter.Failed)
+		}
+		if filter.Substituted != nil {
+			query += " AND substituted = ?"
+			args = append(args, *filter.Substituted)
+		}
+	} else {
+		bucketExpr := "hour"
+		if bucket == "day" {
+			bucketExpr = "((hour + ?) / 86400) * 86400 - ?"
+			args = append(args, off, off)
+		}
+		query = `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier, 0 AS band,
 		SUM(requests), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
 		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_count)
 		FROM hourly WHERE hour >= ? AND hour < ?`
-	args := []any{fromSec, toSec}
-	if bucket == "day" {
-		args = []any{off, off, fromSec, toSec}
+		args = append(args, fromSec, toSec)
 	}
 	for _, f := range []struct {
 		column string
@@ -143,31 +198,32 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 			query += " AND " + f.column + " IN (" + strings.Join(placeholders, ",") + ")"
 		}
 	}
-	query += " GROUP BY b, provider, model, api_key_id, auth_index, service_tier"
+	query += " GROUP BY b, provider, model, api_key_id, auth_index, service_tier, band"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := &Stats{From: fromSec, To: toSec, Bucket: bucket, Series: []SeriesPoint{},
+	out := &Stats{From: fromSec, To: toSec, Bucket: bucket, Exact: useEvents,
+		Partial: useEvents && !s.coversRange(from), Series: []SeriesPoint{},
 		Models: []ModelStat{}, APIKeys: []APIKeyStat{}, Credentials: []CredentialStat{}}
 	series := map[int64]*Aggregate{}
 	models := map[[2]string]*ModelStat{}
 	keys := map[string]*APIKeyStat{}
 	creds := map[string]*CredentialStat{}
-	prices := s.priceCache()
 	for rows.Next() {
 		var b int64
+		var band int
 		var provider, model, keyID, key, authIndex, tier string
 		var a Aggregate
 		t := &a.Tokens
-		if errScan := rows.Scan(&b, &provider, &model, &keyID, &key, &authIndex, &tier, &a.Requests, &a.Failed,
+		if errScan := rows.Scan(&b, &provider, &model, &keyID, &key, &authIndex, &tier, &band, &a.Requests, &a.Failed,
 			&a.Substituted, &t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
 			&a.latencySum, &a.ttftSum, &a.ttftCount); errScan != nil {
 			return nil, errScan
 		}
-		source := prices.apply(&a, model, tier)
+		source := prices.apply(&a, model, tier, prices.bandInput(band))
 
 		out.Totals.add(&a)
 		if series[b] == nil {
@@ -194,7 +250,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 
 	out.Totals.finish()
 	step := int64(3600)
-	start := fromSec
+	start := fromSec / 3600 * 3600
 	if bucket == "day" {
 		step = 86400
 		start = ((fromSec+off)/86400)*86400 - off
@@ -344,7 +400,8 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 		}
 		var a Aggregate
 		a.Requests, a.Tokens = 1, e.Tokens
-		if prices.apply(&a, e.Model, e.ServiceTier) != "" {
+		input := e.Tokens.InputUncached + e.Tokens.CacheRead + e.Tokens.CacheWrite + e.Tokens.Unclassified
+		if prices.apply(&a, e.Model, e.ServiceTier, input) != "" {
 			e.Cost, e.Priced = a.Cost, true
 		}
 		if errFn := fn(&e); errFn != nil {
@@ -412,14 +469,17 @@ type priceEntry struct {
 type queryPrices struct {
 	pricer *Pricer
 	cache  map[priceKey]priceEntry
+	// thresholds are the context-tier sizes that contextBandSQL bands requests by.
+	thresholds []int64
 }
 
 func (s *Store) priceCache() *queryPrices {
-	return &queryPrices{pricer: s.pricer, cache: map[priceKey]priceEntry{}}
+	return &queryPrices{pricer: s.pricer, cache: map[priceKey]priceEntry{}, thresholds: s.pricer.ContextThresholds()}
 }
 
-// apply adds the cost of a to it and returns the price source.
-func (q *queryPrices) apply(a *Aggregate, model, tier string) string {
+// apply adds the cost of a to it and returns the price source. contextInput is the input
+// size of the requests in a (any value inside their context band); 0 uses the base price.
+func (q *queryPrices) apply(a *Aggregate, model, tier string, contextInput int64) string {
 	k := priceKey{model, tier}
 	e, seen := q.cache[k]
 	if !seen {
@@ -427,9 +487,32 @@ func (q *queryPrices) apply(a *Aggregate, model, tier string) string {
 		q.cache[k] = e
 	}
 	if e.ok {
-		a.Cost = e.price.Cost(a.Tokens)
+		a.Cost = e.price.ForInput(contextInput).Cost(a.Tokens)
 	} else {
 		a.UnpricedRequests = a.Requests
 	}
 	return e.source
+}
+
+// bandInput maps a context band from contextBandSQL back to an input size inside that band.
+func (q *queryPrices) bandInput(band int) int64 {
+	if band <= 0 || band > len(q.thresholds) {
+		return 0
+	}
+	return q.thresholds[band-1] + 1
+}
+
+// contextBandSQL returns a SQL expression numbering the band of each events row: 0 when its
+// input is at most thresholds[0], i when it exceeds thresholds[i-1] but not thresholds[i].
+func contextBandSQL(thresholds []int64) string {
+	if len(thresholds) == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	b.WriteString("(CASE")
+	for i := len(thresholds) - 1; i >= 0; i-- {
+		fmt.Fprintf(&b, " WHEN input_uncached + cache_read + cache_write + unclassified > %d THEN %d", thresholds[i], i+1)
+	}
+	b.WriteString(" ELSE 0 END)")
+	return b.String()
 }
