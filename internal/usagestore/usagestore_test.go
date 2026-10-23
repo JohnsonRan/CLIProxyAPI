@@ -114,6 +114,30 @@ func TestEventFromRecord(t *testing.T) {
 	if e.Tokens.Output < e.Tokens.Reasoning {
 		t.Fatalf("output must include reasoning: %+v", e.Tokens)
 	}
+
+	// Client API key used as fallback Source (e.g. plugin executors or headless OAuth) must be masked.
+	fallbackRec := coreusage.Record{
+		Model:    "gpt-x",
+		APIKey:   "sk-client-secret-1234",
+		AuthType: "",
+		Source:   "sk-client-secret-1234",
+	}
+	eFallback := eventFromRecord(context.Background(), fallbackRec)
+	if eFallback.Source != "sk-c...1234" {
+		t.Fatalf("client key fallback source must be masked: %q", eFallback.Source)
+	}
+
+	// OAuth email/project source must remain unmasked.
+	oauthRec := coreusage.Record{
+		Model:    "gpt-x",
+		APIKey:   "sk-client-secret-1234",
+		AuthType: "oauth",
+		Source:   "user@example.com",
+	}
+	eOAuth := eventFromRecord(context.Background(), oauthRec)
+	if eOAuth.Source != "user@example.com" {
+		t.Fatalf("oauth email source must remain unmasked: %q", eOAuth.Source)
+	}
 }
 
 func TestStoreRoundTrip(t *testing.T) {

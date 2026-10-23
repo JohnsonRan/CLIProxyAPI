@@ -155,6 +155,18 @@ var usageExportColumns = []string{"id", "time", "request_id", "provider", "execu
 	"failed", "status_code", "error", "latency_ms", "ttft_ms", "input_uncached", "cache_read", "cache_write", "output",
 	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent"}
 
+// sanitizeCSVCell prefixes a single quote to string cell values starting with formula triggers
+// (=, +, -, @, tab, CR) per OWASP CSV injection guidelines.
+func sanitizeCSVCell(v string) string {
+	if len(v) > 0 {
+		switch v[0] {
+		case '=', '+', '-', '@', '\t', '\r':
+			return "'" + v
+		}
+	}
+	return v
+}
+
 // ExportUsageStoreEvents downloads matching events (up to usagestore.MaxExportEvents) as CSV or JSON.
 // Query: the events filters plus format (csv|json, default csv).
 func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
@@ -204,14 +216,15 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 	errExport := s.ExportEvents(ctx, f, func(e *usagestore.Event) error {
 		t := e.Tokens
 		return w.Write([]string{
-			strconv.FormatInt(e.ID, 10), time.UnixMilli(e.Timestamp).UTC().Format(time.RFC3339Nano), e.RequestID,
-			e.Provider, e.ExecutorType, e.Model, e.Alias, e.Endpoint, e.AuthType, e.AuthIndex, e.Source, e.APIKey,
-			e.AccessProvider, e.ReasoningEffort, e.ServiceTier, strconv.FormatBool(e.Stream),
-			strconv.FormatBool(e.Failed), strconv.Itoa(e.StatusCode), e.Error, strconv.FormatInt(e.LatencyMs, 10),
+			strconv.FormatInt(e.ID, 10), time.UnixMilli(e.Timestamp).UTC().Format(time.RFC3339Nano), sanitizeCSVCell(e.RequestID),
+			sanitizeCSVCell(e.Provider), sanitizeCSVCell(e.ExecutorType), sanitizeCSVCell(e.Model), sanitizeCSVCell(e.Alias), sanitizeCSVCell(e.Endpoint),
+			sanitizeCSVCell(e.AuthType), sanitizeCSVCell(e.AuthIndex), sanitizeCSVCell(e.Source), sanitizeCSVCell(e.APIKey),
+			sanitizeCSVCell(e.AccessProvider), sanitizeCSVCell(e.ReasoningEffort), sanitizeCSVCell(e.ServiceTier), strconv.FormatBool(e.Stream),
+			strconv.FormatBool(e.Failed), strconv.Itoa(e.StatusCode), sanitizeCSVCell(e.Error), strconv.FormatInt(e.LatencyMs, 10),
 			strconv.FormatInt(e.TTFTMs, 10), strconv.FormatInt(t.InputUncached, 10), strconv.FormatInt(t.CacheRead, 10),
 			strconv.FormatInt(t.CacheWrite, 10), strconv.FormatInt(t.Output, 10), strconv.FormatInt(t.Reasoning, 10),
 			strconv.FormatInt(t.Unclassified, 10), strconv.FormatInt(t.Total, 10),
-			strconv.FormatFloat(e.Cost, 'f', -1, 64), strconv.FormatBool(e.Priced), e.ClientIP, e.UserAgent,
+			strconv.FormatFloat(e.Cost, 'f', -1, 64), strconv.FormatBool(e.Priced), sanitizeCSVCell(e.ClientIP), sanitizeCSVCell(e.UserAgent),
 		})
 	})
 	w.Flush()

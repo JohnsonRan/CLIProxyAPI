@@ -171,8 +171,10 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 		record.RequestServiceTier, coreusage.ServiceTierFromContext(ctx))
 	meta := internallogging.GetClientRequestMetadata(ctx)
 	source := strings.TrimSpace(record.Source)
-	if strings.EqualFold(strings.TrimSpace(record.AuthType), "apikey") || strings.EqualFold(strings.TrimSpace(record.AuthType), "api_key") {
-		// API-key credentials report the upstream key itself as their source.
+	if strings.EqualFold(strings.TrimSpace(record.AuthType), "apikey") ||
+		strings.EqualFold(strings.TrimSpace(record.AuthType), "api_key") ||
+		(apiKey != "" && source == apiKey) {
+		// API-key credentials and client-key fallbacks report keys as their source.
 		source = util.HideAPIKey(source)
 	}
 
