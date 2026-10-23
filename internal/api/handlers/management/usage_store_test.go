@@ -70,7 +70,7 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 	cfg.UsageStore = config.UsageStoreConfig{Enable: true, Path: filepath.Join(t.TempDir(), "usage.db"),
 		Pricing: config.UsagePricingConfig{DisableModelsDev: true}}
 	usagestore.Apply(cfg)
-	usagestore.Current().Enqueue(usagestore.Event{Timestamp: time.Now().UnixMilli(), Model: "m", Error: "a,\"b\"\nc"})
+	usagestore.Current().Enqueue(usagestore.Event{Timestamp: time.Now().UnixMilli(), Model: "m", Alias: "=formula", Error: "a,\"b\"\nc"})
 	usagestore.Shutdown()
 	usagestore.Apply(cfg)
 	defer usagestore.Shutdown()
@@ -85,12 +85,12 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 		t.Fatalf("csv export: %d %v", w.Code, w.Header())
 	}
 	records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(w.Body.String(), "\ufeff"))).ReadAll()
-	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" {
-		t.Fatalf("csv must quote fields: %v %q", err, records)
+	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" || records[1][6] != "'=formula" {
+		t.Fatalf("csv must quote fields and sanitize formula triggers: %v %q", err, records)
 	}
 	w = do("/export?format=json&model=m")
 	var events []usagestore.Event
-	if err = json.Unmarshal(w.Body.Bytes(), &events); err != nil || len(events) != 1 {
+	if err = json.Unmarshal(w.Body.Bytes(), &events); err != nil || len(events) != 1 || events[0].Alias != "=formula" {
 		t.Fatalf("json export: %v %s", err, w.Body.String())
 	}
 	if w = do("/export?format=xml"); w.Code != http.StatusBadRequest {
