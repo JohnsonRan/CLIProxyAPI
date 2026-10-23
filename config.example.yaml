@@ -1177,6 +1177,24 @@ observability:
     request-log: false
 
   usage:
+    # Built-in usage store: persists every request to a local SQLite database and serves
+    # statistics and cost estimates to the management panel. Independent of the usage queue below.
+    store:
+      enable: false
+      # SQLite file. Empty uses usage.db in the logs directory (persisted by the Docker logs volume).
+      path: ""
+      # Days to keep per-request events. Hourly aggregates are kept forever. Negative keeps events forever.
+      retention-days: 30
+      pricing:
+        # Prices come from https://models.dev/api.json (refreshed daily). Set true to disable fetching.
+        disable-models-dev: false
+        # USD per million tokens; overrides win over models.dev. cache-read/cache-write default to input.
+        # overrides:
+        #   - model: "gpt-5"
+        #     input: 1.25
+        #     output: 10
+        #     cache-read: 0.125
+
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false
 
