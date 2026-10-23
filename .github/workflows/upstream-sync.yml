@@ -56,6 +56,7 @@ env:
     patch/responses-ws-previous-response-400
     patch/auth-file-allowed-models
     patch/codex-client-gin-ctx-race
+    patch/usage-store
 
 jobs:
   sync-main-with-squash-branches:
@@ -133,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           go build -o test-output ./cmd/server && rm -f test-output
-          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/translator/claude/openai/responses/... ./internal/translator/common/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./internal/auth/commandcode/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./sdk/cliproxy/usage/... ./internal/util/... ./internal/signature/... ./internal/pluginhost/...
+          go test ./sdk/api/handlers/... ./internal/api/middleware/... ./internal/api/handlers/management/... ./internal/translator/claude/openai/responses/... ./internal/translator/common/... ./internal/config/... ./internal/watcher/diff/... ./internal/runtime/executor/helps/... ./internal/managementasset/... ./internal/thinking/... ./internal/registry/... ./internal/auth/codex/... ./internal/auth/commandcode/... ./sdk/proxyutil/... ./internal/client/codex/models/... ./sdk/cliproxy/auth/... ./internal/client/codex/live/... ./internal/redisqueue/... ./internal/usagestore/... ./sdk/cliproxy/usage/... ./internal/util/... ./internal/signature/... ./internal/pluginhost/...
           go test -run "TestServiceRun_RegistersLoadedAuthModelsBeforeListening|TestModelCapabilities|TestBuildOpenAICompatibilityConfigModels|TestFetchOpenAICompatibilityModelIDs|TestMergeDiscoveredCompatModels|TestCompatModelsWithDiscovery|TestDiscoverCompatModelIDs|TestCompatDiscoveryCacheKey|CommandCode|TestRegisterModelsForAuth_CredentialAllowedModels|TestApplyAllowedModels" ./sdk/cliproxy
           go test -run "CommandCode|TestSynthesizeAuthFileAllowedModels" ./internal/watcher/synthesizer
           go test -run "TestCodexExecutorUpstreamRequestCompression|TestCodexAutoExecutorAllowsHTTPDownstreamToUseWebsocketUpstream|TestCollectCodexOutputItemDone|TestCodexOutputItemPatchBuffer|TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak|TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402|TestCodexTemporaryIPRestrictionClassifiedAs503|TestGeminiExecutor_Embeddings|TestOpenAICompatExecutor_Embeddings|TestOpenAICompatExecutor_Rerank|TestOpenAICompatExecutorSystemOne|TestOpenAICompatExecutorDecisions|TestCodexExecutorDecisions|TestOpenAIDecisionsErrorScope|TestClaudeRequestReadOnlyScansDoNotCopyTheBody|TestUpgradeClaudeCacheControlTTL|TestCompactMidConversationInsert|TestInsertClaudeMidConversationSystemBlocksCopiesOnce|TestNormalizeClaudeSampling|TestMergedClaudeSystemInstructions|TestAntigravityReplayFingerprintSkipsSignatureDeletesSafely|TestOpenAICompatStreamFrame" ./internal/runtime/executor
