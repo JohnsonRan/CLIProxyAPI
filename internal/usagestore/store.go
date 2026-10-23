@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS hourly (
 	ttft_count INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (hour, provider, model, api_key_id, auth_index, service_tier)
 );
+CREATE TABLE IF NOT EXISTS credentials (
+	auth_index TEXT PRIMARY KEY,
+	provider TEXT NOT NULL DEFAULT '',
+	auth_type TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT '',
+	last_seen INTEGER NOT NULL DEFAULT 0
+);
 `
 
 const insertEventSQL = `INSERT INTO events (ts, request_id, provider, executor_type, model, alias, endpoint, auth_type,
@@ -86,6 +93,17 @@ const insertEventSQL = `INSERT INTO events (ts, request_id, provider, executor_t
 	status_code, error, latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning,
 	unclassified, total, client_ip, user_agent)
 	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+// Credentials keep the latest display fields per auth index so labels survive event pruning.
+const upsertCredentialSQL = `INSERT INTO credentials (auth_index, provider, auth_type, source, last_seen)
+	VALUES (?,?,?,?,?)
+	ON CONFLICT(auth_index) DO UPDATE SET provider = excluded.provider, auth_type = excluded.auth_type,
+	source = excluded.source, last_seen = excluded.last_seen WHERE excluded.last_seen >= credentials.last_seen`
+
+// backfillCredentialsSQL seeds the credentials table for databases created before it existed.
+const backfillCredentialsSQL = `INSERT OR IGNORE INTO credentials (auth_index, provider, auth_type, source, last_seen)
+	SELECT e.auth_index, e.provider, e.auth_type, e.source, e.ts FROM events e
+	JOIN (SELECT MAX(id) AS id FROM events WHERE auth_index != '' GROUP BY auth_index) latest ON e.id = latest.id`
 
 const upsertHourlySQL = `INSERT INTO hourly (hour, provider, model, api_key_id, auth_index, service_tier, api_key,
 	requests, failed, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
@@ -194,6 +212,12 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		done:   make(chan struct{}),
 		pricer: pricer,
 	}
+	var credentialCount int
+	if errCount := db.QueryRow(`SELECT COUNT(*) FROM credentials`).Scan(&credentialCount); errCount == nil && credentialCount == 0 {
+		if _, errBackfill := db.Exec(backfillCredentialsSQL); errBackfill != nil {
+			log.Warnf("usage store: backfill credentials: %v", errBackfill)
+		}
+	}
 	s.SetRetentionDays(retentionDays)
 	s.purge()
 	go s.run()
@@ -291,6 +315,7 @@ func (s *Store) write(batch []Event) error {
 		return err
 	}
 	defer func() { _ = upHourly.Close() }()
+	latest := map[string]*Event{}
 	for i := range batch {
 		e := &batch[i]
 		t := e.Tokens
@@ -308,6 +333,16 @@ func (s *Store) write(batch []Event) error {
 		if _, errExec := upHourly.Exec(hour, e.Provider, e.Model, e.APIKeyID, e.AuthIndex, e.ServiceTier, e.APIKey,
 			e.Failed, t.InputUncached, t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total,
 			e.LatencyMs, e.TTFTMs, ttftCount); errExec != nil {
+			return errExec
+		}
+		if e.AuthIndex != "" {
+			if prev := latest[e.AuthIndex]; prev == nil || e.Timestamp >= prev.Timestamp {
+				latest[e.AuthIndex] = e
+			}
+		}
+	}
+	for authIndex, e := range latest {
+		if _, errExec := tx.Exec(upsertCredentialSQL, authIndex, e.Provider, e.AuthType, e.Source, e.Timestamp); errExec != nil {
 			return errExec
 		}
 	}

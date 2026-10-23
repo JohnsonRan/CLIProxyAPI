@@ -139,7 +139,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	st, err := s.Stats(ctx, day, day.Add(48*time.Hour), "", 0)
+	st, err := s.Stats(ctx, day, day.Add(48*time.Hour), "", 0, StatsFilter{})
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 
 	// UTC+8 day buckets: 01:00Z is 09:00 local on day one, 02:00Z next day is 10:00 local on day two.
-	st, err = s.Stats(ctx, day.Add(-8*time.Hour), day.Add(40*time.Hour), "day", 8*60)
+	st, err = s.Stats(ctx, day.Add(-8*time.Hour), day.Add(40*time.Hour), "day", 8*60, StatsFilter{})
 	if err != nil {
 		t.Fatalf("stats day: %v", err)
 	}
@@ -283,5 +283,62 @@ func TestAnalysis(t *testing.T) {
 		return nil
 	}); err != nil || exported != 101 {
 		t.Fatalf("export: %v %d", err, exported)
+	}
+}
+
+func TestStatsFilterAndCredentialLabels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now()
+	tok := Tokens{InputUncached: 10, Total: 10}
+	s.Enqueue(Event{Timestamp: now.Add(-time.Hour).UnixMilli(), Provider: "openai-compatible-acme", Model: "gpt-x", AuthIndex: "a1", AuthType: "apikey", Source: "sk-o...old", APIKeyID: "k1", Tokens: tok})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "openai-compatible-acme", Model: "gpt-x", AuthIndex: "a1", AuthType: "apikey", Source: "sk-n...new", APIKeyID: "k2", Tokens: tok})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "codex", Model: "gpt-y", AuthIndex: "a2", AuthType: "oauth", Source: "user@example.com", APIKeyID: "k1", Tokens: tok})
+	s.Close()
+	// Drop the label table to prove reopening backfills it from events.
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, err = s.db.Exec(`DELETE FROM credentials`); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	st, err := s.Stats(ctx, now.Add(-2*time.Hour), now.Add(time.Minute), "", 0, StatsFilter{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	labels := map[string]CredentialStat{}
+	for _, c := range st.Credentials {
+		labels[c.AuthIndex] = c
+	}
+	if labels["a1"].Source != "sk-n...new" || labels["a1"].AuthType != "apikey" || labels["a2"].Source != "user@example.com" {
+		t.Fatalf("credential labels must come from the latest event: %+v", st.Credentials)
+	}
+
+	for _, tc := range []struct {
+		filter StatsFilter
+		want   int64
+	}{
+		{StatsFilter{Model: "gpt-x"}, 2},
+		{StatsFilter{Provider: "codex"}, 1},
+		{StatsFilter{APIKeyID: "k1"}, 2},
+		{StatsFilter{AuthIndex: "a1", APIKeyID: "k2"}, 1},
+		{StatsFilter{Model: "nope"}, 0},
+	} {
+		got, errStats := s.Stats(ctx, now.Add(-2*time.Hour), now.Add(time.Minute), "", 0, tc.filter)
+		if errStats != nil || got.Totals.Requests != tc.want {
+			t.Fatalf("filter %+v: %v requests=%d want %d", tc.filter, errStats, got.Totals.Requests, tc.want)
+		}
 	}
 }
