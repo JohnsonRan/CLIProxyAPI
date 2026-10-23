@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS events (
 	client_ip TEXT NOT NULL DEFAULT '',
 	user_agent TEXT NOT NULL DEFAULT '',
 	response_model TEXT NOT NULL DEFAULT '',
-	substituted INTEGER NOT NULL DEFAULT 0
+	substituted INTEGER NOT NULL DEFAULT 0,
+	transport TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS hourly (
@@ -95,8 +96,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 const insertEventSQL = `INSERT INTO events (ts, request_id, provider, executor_type, model, alias, endpoint, auth_type,
 	auth_index, source, api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed,
 	status_code, error, latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning,
-	unclassified, total, client_ip, user_agent, response_model, substituted)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	unclassified, total, client_ip, user_agent, response_model, substituted, transport)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 // Credentials keep the latest display fields per auth index so labels survive event pruning.
 const upsertCredentialSQL = `INSERT INTO credentials (auth_index, provider, auth_type, source, last_seen)
@@ -182,6 +183,8 @@ type Event struct {
 	Priced          bool    `json:"priced"`
 	ResponseModel   string  `json:"response_model"`
 	Substituted     bool    `json:"substituted"`
+	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
+	Transport string `json:"transport"`
 }
 
 // Store owns the database and its single writer goroutine.
@@ -230,7 +233,6 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		}
 	}
 	s.SetRetentionDays(retentionDays)
-	s.purge()
 	go s.run()
 	return s, nil
 }
@@ -265,33 +267,22 @@ func migrateSchema(db *sql.DB) error {
 		return false, rows.Err()
 	}
 
-	hasRespModel, err := hasColumn("events", "response_model")
-	if err != nil {
-		return err
-	}
-	if !hasRespModel {
-		if _, errExec := db.Exec("ALTER TABLE events ADD COLUMN response_model TEXT NOT NULL DEFAULT ''"); errExec != nil {
-			return fmt.Errorf("migrate events.response_model: %w", errExec)
+	// Columns added after the first release; ALTER TABLE keeps existing rows with the default.
+	for _, col := range []struct{ table, name, ddl string }{
+		{"events", "response_model", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "substituted", "INTEGER NOT NULL DEFAULT 0"},
+		{"events", "transport", "TEXT NOT NULL DEFAULT ''"},
+		{"hourly", "substituted", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		exists, err := hasColumn(col.table, col.name)
+		if err != nil {
+			return err
 		}
-	}
-
-	hasSubEvents, err := hasColumn("events", "substituted")
-	if err != nil {
-		return err
-	}
-	if !hasSubEvents {
-		if _, errExec := db.Exec("ALTER TABLE events ADD COLUMN substituted INTEGER NOT NULL DEFAULT 0"); errExec != nil {
-			return fmt.Errorf("migrate events.substituted: %w", errExec)
+		if exists {
+			continue
 		}
-	}
-
-	hasSubHourly, err := hasColumn("hourly", "substituted")
-	if err != nil {
-		return err
-	}
-	if !hasSubHourly {
-		if _, errExec := db.Exec("ALTER TABLE hourly ADD COLUMN substituted INTEGER NOT NULL DEFAULT 0"); errExec != nil {
-			return fmt.Errorf("migrate hourly.substituted: %w", errExec)
+		if _, errExec := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", col.table, col.name, col.ddl)); errExec != nil {
+			return fmt.Errorf("migrate %s.%s: %w", col.table, col.name, errExec)
 		}
 	}
 	return nil
@@ -323,6 +314,8 @@ func (s *Store) run() {
 	}()
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
+	// The first purge runs here, not in Open, so a long backlog after downtime does not delay startup.
+	s.purge()
 	lastPurge := time.Now()
 	batch := make([]Event, 0, writeBatch)
 	flush := func() {
@@ -392,7 +385,7 @@ func (s *Store) write(batch []Event) error {
 			e.Endpoint, e.AuthType, e.AuthIndex, e.Source, e.APIKeyID, e.APIKey, e.AccessProvider, e.ReasoningEffort,
 			e.ServiceTier, e.Stream, e.Failed, e.StatusCode, e.Error, e.LatencyMs, e.TTFTMs, t.InputUncached,
 			t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total, e.ClientIP, e.UserAgent,
-			e.ResponseModel, subInt); errExec != nil {
+			e.ResponseModel, subInt, e.Transport); errExec != nil {
 			return errExec
 		}
 		ttftCount := 0
