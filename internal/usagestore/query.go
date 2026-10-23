@@ -68,6 +68,9 @@ type APIKeyStat struct {
 type CredentialStat struct {
 	AuthIndex string `json:"auth_index"`
 	Provider  string `json:"provider"`
+	// AuthType and Source (masked for API keys) come from the latest request on this credential.
+	AuthType string `json:"auth_type"`
+	Source   string `json:"source"`
 	Aggregate
 }
 
@@ -83,10 +86,18 @@ type Stats struct {
 	Credentials []CredentialStat `json:"credentials"`
 }
 
+// StatsFilter narrows Stats to one model, provider, client key or credential. Zero values do not filter.
+type StatsFilter struct {
+	Model     string
+	Provider  string
+	APIKeyID  string
+	AuthIndex string
+}
+
 // Stats aggregates hourly rollups in [from, to). bucket is "hour" or "day"
 // (empty picks hour up to 48h); tzOffsetMinutes aligns day buckets to local midnight.
 // shortcut: rollups are hourly, so half-hour time zones get day buckets shifted by 30 minutes.
-func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tzOffsetMinutes int) (*Stats, error) {
+func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tzOffsetMinutes int, filter StatsFilter) (*Stats, error) {
 	fromSec := from.Unix() / 3600 * 3600
 	toSec := to.Unix()
 	if bucket != "hour" && bucket != "day" {
@@ -106,12 +117,20 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 	query := `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
 		SUM(requests), SUM(failed), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
 		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_count)
-		FROM hourly WHERE hour >= ? AND hour < ?
-		GROUP BY b, provider, model, api_key_id, auth_index, service_tier`
+		FROM hourly WHERE hour >= ? AND hour < ?`
 	args := []any{fromSec, toSec}
 	if bucket == "day" {
 		args = []any{off, off, fromSec, toSec}
 	}
+	for _, f := range []struct{ column, value string }{
+		{"model", filter.Model}, {"provider", filter.Provider}, {"api_key_id", filter.APIKeyID}, {"auth_index", filter.AuthIndex},
+	} {
+		if f.value != "" {
+			query += " AND " + f.column + " = ?"
+			args = append(args, f.value)
+		}
+	}
+	query += " GROUP BY b, provider, model, api_key_id, auth_index, service_tier"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -183,6 +202,11 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		k.finish()
 		out.APIKeys = append(out.APIKeys, *k)
 	}
+	if len(creds) > 0 {
+		if errLabels := s.credentialLabels(ctx, creds); errLabels != nil {
+			return nil, errLabels
+		}
+	}
 	for _, c := range creds {
 		c.finish()
 		out.Credentials = append(out.Credentials, *c)
@@ -191,6 +215,24 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 	sort.Slice(out.APIKeys, func(i, j int) bool { return out.APIKeys[i].Requests > out.APIKeys[j].Requests })
 	sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Requests > out.Credentials[j].Requests })
 	return out, nil
+}
+
+func (s *Store) credentialLabels(ctx context.Context, creds map[string]*CredentialStat) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT auth_index, auth_type, source FROM credentials`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var authIndex, authType, source string
+		if errScan := rows.Scan(&authIndex, &authType, &source); errScan != nil {
+			return errScan
+		}
+		if c := creds[authIndex]; c != nil {
+			c.AuthType, c.Source = authType, source
+		}
+	}
+	return rows.Err()
 }
 
 // EventFilter selects stored events. Zero values do not filter.
