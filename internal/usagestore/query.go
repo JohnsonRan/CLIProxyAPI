@@ -205,8 +205,10 @@ type EventFilter struct {
 	Limit     int
 }
 
-// Events returns events newest first, paginated by BeforeID.
-func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
+// MaxExportEvents caps one export so a wide range cannot hold the database for long.
+const MaxExportEvents = 100_000
+
+func eventQuery(f EventFilter, limit int) (string, []any) {
 	var where []string
 	var args []any
 	cond := func(clause string, v any) {
@@ -237,9 +239,6 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	if f.BeforeID > 0 {
 		cond("id < ?", f.BeforeID)
 	}
-	if f.Limit <= 0 || f.Limit > 500 {
-		f.Limit = 100
-	}
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
@@ -248,13 +247,18 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " ORDER BY id DESC LIMIT ?"
-	args = append(args, f.Limit)
+	return query, append(args, limit)
+}
+
+// eachEvent runs the filtered query and calls fn for every priced event.
+func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func(*Event) error) error {
+	query, args := eventQuery(f, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = rows.Close() }()
-	events := []Event{}
+	prices := s.priceCache()
 	for rows.Next() {
 		var e Event
 		t := &e.Tokens
@@ -263,14 +267,36 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 			&e.ReasoningEffort, &e.ServiceTier, &e.Stream, &e.Failed, &e.StatusCode, &e.Error, &e.LatencyMs, &e.TTFTMs,
 			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
 			&e.ClientIP, &e.UserAgent); errScan != nil {
-			return nil, errScan
+			return errScan
 		}
-		if price, _, ok := s.pricer.Lookup(e.Model, e.ServiceTier); ok {
-			e.Cost, e.Priced = price.Cost(e.Tokens), true
+		var a Aggregate
+		a.Requests, a.Tokens = 1, e.Tokens
+		if prices.apply(&a, e.Model, e.ServiceTier) != "" {
+			e.Cost, e.Priced = a.Cost, true
 		}
-		events = append(events, e)
+		if errFn := fn(&e); errFn != nil {
+			return errFn
+		}
 	}
-	return events, rows.Err()
+	return rows.Err()
+}
+
+// Events returns events newest first, paginated by BeforeID.
+func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 100
+	}
+	events := []Event{}
+	err := s.eachEvent(ctx, f, f.Limit, func(e *Event) error {
+		events = append(events, *e)
+		return nil
+	})
+	return events, err
+}
+
+// ExportEvents streams up to MaxExportEvents matching events newest first.
+func (s *Store) ExportEvents(ctx context.Context, f EventFilter, fn func(*Event) error) error {
+	return s.eachEvent(ctx, f, MaxExportEvents, fn)
 }
 
 // ModelPrice is the effective price of a model seen in the store.

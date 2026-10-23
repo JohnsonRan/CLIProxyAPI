@@ -225,3 +225,63 @@ func TestApplyLifecycle(t *testing.T) {
 		t.Fatalf("event written before close must persist: %v %+v", err, events)
 	}
 }
+
+func TestAnalysis(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "usage.db"), 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// A recent Sunday 23:30 UTC is Monday 07:30 in UTC+8.
+	base := time.Now().UTC().Truncate(24 * time.Hour)
+	for base.Weekday() != time.Sunday {
+		base = base.Add(-24 * time.Hour)
+	}
+	ts := base.Add(23*time.Hour + 30*time.Minute)
+	for i := 1; i <= 100; i++ {
+		s.Enqueue(Event{Timestamp: ts.UnixMilli(), Provider: "codex", Model: "gpt-x", LatencyMs: int64(i * 100),
+			TTFTMs: int64(i), Tokens: Tokens{InputUncached: 10, Total: 10}})
+	}
+	s.Enqueue(Event{Timestamp: ts.UnixMilli(), Provider: "codex", Model: "gpt-x", Failed: true, LatencyMs: 999_999})
+	s.Close()
+	s, err = Open(filepath.Join(filepath.Dir(s.path), "usage.db"), 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	a, err := s.Analysis(context.Background(), base, base.Add(48*time.Hour), 8*60)
+	if err != nil {
+		t.Fatalf("analysis: %v", err)
+	}
+	if a.Sampled || a.Latency.Count != 100 || a.Latency.P50 != 5100 || a.Latency.P95 != 9500 || a.Latency.Max != 10_000 {
+		t.Fatalf("failed requests must be excluded and percentiles exact: %+v", a.Latency)
+	}
+	if a.TTFT.P99 != 99 {
+		t.Fatalf("ttft: %+v", a.TTFT)
+	}
+	// Buckets: <=500 (5), <=1000 (5), <=2000 (10), <=5000 (30), <=10000 (50).
+	want := []int64{5, 5, 10, 30, 50, 0, 0, 0}
+	for i, n := range want {
+		if a.Histogram[i] != n {
+			t.Fatalf("histogram = %v, want %v", a.Histogram, want)
+		}
+	}
+	if len(a.Models) != 1 || a.Models[0].Latency.Count != 100 {
+		t.Fatalf("models: %+v", a.Models)
+	}
+	if len(a.Heatmap) != 1 || a.Heatmap[0].Weekday != 1 || a.Heatmap[0].Hour != 7 || a.Heatmap[0].Requests != 101 || a.Heatmap[0].Failed != 1 {
+		t.Fatalf("heatmap must use the local weekday and hour: %+v", a.Heatmap)
+	}
+	approx(t, "heat cost", a.Heatmap[0].Cost, 100*10*1.0/1e6)
+
+	var exported int
+	if err = s.ExportEvents(context.Background(), EventFilter{Model: "gpt-x"}, func(e *Event) error {
+		exported++
+		if !e.Priced {
+			t.Fatalf("exported events must be priced: %+v", e)
+		}
+		return nil
+	}); err != nil || exported != 101 {
+		t.Fatalf("export: %v %d", err, exported)
+	}
+}
