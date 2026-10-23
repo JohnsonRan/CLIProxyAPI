@@ -55,6 +55,7 @@ env:
     patch/pluginhost-hooks-noalloc
     patch/responses-ws-previous-response-400
     patch/auth-file-allowed-models
+    patch/codex-client-gin-ctx-race
 
 jobs:
   sync-main-with-squash-branches:
