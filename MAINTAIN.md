@@ -287,7 +287,7 @@ The integration order lives in `PATCH_BRANCHES` in `.github/workflows/upstream-s
 40. **`patch/codex-client-gin-ctx-race`**
     - **Goal**: Remove a data race introduced by upstream `d946c4fb` (Codex client requests ignore `use_siwc`, Issue [#6833](https://github.com/router-for-me/CLIProxyAPI/issues/6833)).
     - **Scope**: `IsCodexClientRequest` read the pooled `gin.Context` from the `wrapStreamResult` goroutine after the handler returned, racing with gin context reuse (`go test -race ./sdk/api/handlers/openai`, `TestIssue6332ReasoningReplayTwoTurns/client_cancel`). `wrapStreamResult` now resolves it once on the request goroutine and carries the result in ctx (`withCodexClientRequestSnapshot`); `sdk/cliproxy/auth/types.go`, `conductor_stream.go`.
-    - **Related Upstream Work**: None found (searched 2026-10-23); submit as an upstream PR.
+    - **Related Upstream Work**: PR [#6901](https://github.com/router-for-me/CLIProxyAPI/pull/6901). No earlier issue or PR (searched `data race gin context`, `IsCodexClientRequest`, `use_siwc race`, `data race`, `TestIssue6332ReasoningReplayTwoTurns` on 2026-10-23). Executor stream goroutines (`codex_executor_stream.go`, `codex_openai_images.go` via `helps` logging/usage helpers) also read the gin Context after the handler returns; that predates `d946c4fb` and is out of scope.
     - **Retire when**: Upstream stops reading the gin Context outside the request goroutine.
 
 ## Measured and Rejected
