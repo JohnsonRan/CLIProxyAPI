@@ -222,6 +222,7 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 		ClientIP:      firstNonEmpty(meta.ResolvedClientIP, meta.ClientIP),
 		UserAgent:     truncate(meta.UserAgent, 256),
 		ResponseModel: served,
+		Transport:     transportOf(meta.WebSocket, record.Stream || coreusage.StreamFromContext(ctx)),
 		Substituted:   substituted,
 	}
 }
@@ -251,4 +252,16 @@ func truncate(s string, n int) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// transportOf names the downstream transport recorded with an event.
+func transportOf(webSocket, stream bool) string {
+	switch {
+	case webSocket:
+		return "ws"
+	case stream:
+		return "sse"
+	default:
+		return "http"
+	}
 }

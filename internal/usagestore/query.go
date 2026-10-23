@@ -311,7 +311,7 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
-		client_ip, user_agent, response_model, substituted FROM events`
+		client_ip, user_agent, response_model, substituted, transport FROM events`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -339,7 +339,7 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 			&e.Endpoint, &e.AuthType, &e.AuthIndex, &e.Source, &e.APIKeyID, &e.APIKey, &e.AccessProvider,
 			&e.ReasoningEffort, &e.ServiceTier, &e.Stream, &e.Failed, &e.StatusCode, &e.Error, &e.LatencyMs, &e.TTFTMs,
 			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
-			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted); errScan != nil {
+			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport); errScan != nil {
 			return errScan
 		}
 		var a Aggregate

@@ -30,10 +30,13 @@ type RealtimeCurrent struct {
 
 // Realtime is the response payload for GET /v8/management/observability/usage/realtime.
 type Realtime struct {
-	Now     int64           `json:"now"`
-	LastID  int64           `json:"last_id"`
-	Current RealtimeCurrent `json:"current"`
-	Series  []RealtimePoint `json:"series"`
+	Now    int64 `json:"now"`
+	LastID int64 `json:"last_id"`
+	// InFlight counts requests and WebSocket sessions still running when the response was built;
+	// it is process-wide and ignores the dimension filters.
+	InFlight int64           `json:"in_flight"`
+	Current  RealtimeCurrent `json:"current"`
+	Series   []RealtimePoint `json:"series"`
 }
 
 // Realtime calculates zero-filled per-minute buckets for the last N minutes (1..180)
@@ -187,9 +190,10 @@ func (s *Store) Realtime(ctx context.Context, minutes int, filter StatsFilter) (
 	_ = s.db.QueryRowContext(ctx, "SELECT IFNULL(MAX(id), 0) FROM events").Scan(&lastID)
 
 	return &Realtime{
-		Now:     nowSec,
-		LastID:  lastID,
-		Current: current,
-		Series:  series,
+		Now:      nowSec,
+		LastID:   lastID,
+		InFlight: InFlight(),
+		Current:  current,
+		Series:   series,
 	}, nil
 }
