@@ -13,6 +13,7 @@ const maxHourBuckets = 31 * 24
 type Aggregate struct {
 	Requests         int64   `json:"requests"`
 	Failed           int64   `json:"failed"`
+	Substituted      int64   `json:"substituted"`
 	Tokens           Tokens  `json:"tokens"`
 	Cost             float64 `json:"cost"`
 	UnpricedRequests int64   `json:"unpriced_requests"`
@@ -26,6 +27,7 @@ type Aggregate struct {
 func (a *Aggregate) add(o *Aggregate) {
 	a.Requests += o.Requests
 	a.Failed += o.Failed
+	a.Substituted += o.Substituted
 	a.Tokens.add(o.Tokens)
 	a.Cost += o.Cost
 	a.UnpricedRequests += o.UnpricedRequests
@@ -115,7 +117,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		bucketExpr = "((hour + ?) / 86400) * 86400 - ?"
 	}
 	query := `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
-		SUM(requests), SUM(failed), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
+		SUM(requests), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
 		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_count)
 		FROM hourly WHERE hour >= ? AND hour < ?`
 	args := []any{fromSec, toSec}
@@ -150,7 +152,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		var a Aggregate
 		t := &a.Tokens
 		if errScan := rows.Scan(&b, &provider, &model, &keyID, &key, &authIndex, &tier, &a.Requests, &a.Failed,
-			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
+			&a.Substituted, &t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
 			&a.latencySum, &a.ttftSum, &a.ttftCount); errScan != nil {
 			return nil, errScan
 		}
@@ -237,14 +239,15 @@ func (s *Store) credentialLabels(ctx context.Context, creds map[string]*Credenti
 
 // EventFilter selects stored events. Zero values do not filter.
 type EventFilter struct {
-	From, To  time.Time
-	Model     string
-	Provider  string
-	APIKeyID  string
-	AuthIndex string
-	Failed    *bool
-	BeforeID  int64
-	Limit     int
+	From, To    time.Time
+	Model       string
+	Provider    string
+	APIKeyID    string
+	AuthIndex   string
+	Failed      *bool
+	Substituted *bool
+	BeforeID    int64
+	Limit       int
 }
 
 // MaxExportEvents caps one export so a wide range cannot hold the database for long.
@@ -278,13 +281,16 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	if f.Failed != nil {
 		cond("failed = ?", *f.Failed)
 	}
+	if f.Substituted != nil {
+		cond("substituted = ?", *f.Substituted)
+	}
 	if f.BeforeID > 0 {
 		cond("id < ?", f.BeforeID)
 	}
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
-		client_ip, user_agent FROM events`
+		client_ip, user_agent, response_model, substituted FROM events`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -308,7 +314,7 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 			&e.Endpoint, &e.AuthType, &e.AuthIndex, &e.Source, &e.APIKeyID, &e.APIKey, &e.AccessProvider,
 			&e.ReasoningEffort, &e.ServiceTier, &e.Stream, &e.Failed, &e.StatusCode, &e.Error, &e.LatencyMs, &e.TTFTMs,
 			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
-			&e.ClientIP, &e.UserAgent); errScan != nil {
+			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted); errScan != nil {
 			return errScan
 		}
 		var a Aggregate

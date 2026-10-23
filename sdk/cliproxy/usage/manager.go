@@ -64,6 +64,8 @@ type Record struct {
 	ResponseServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string
+	// UpstreamModel stores the canonical upstream model expected to be served, when an executor maps the requested model.
+	UpstreamModel string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
