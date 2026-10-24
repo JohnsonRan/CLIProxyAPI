@@ -183,6 +183,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					outputItemsByIndex = make(map[int64][]byte)
 					outputItemsFallback = nil
 					pendingToolCallIDs = make(map[string]struct{})
+					// A new response on the same stream can be interrupted locally again.
+					if opts.localInterrupt != nil {
+						opts.localInterrupt.begin()
+					}
 				}
 				collectResponsesWebsocketOutputItem(payloads[i], outputItemsByIndex, &outputItemsFallback)
 				if isResponsesWebsocketCompletionEvent(eventType) && (opts.preserveCompletionOutput == nil || !opts.preserveCompletionOutput()) {
@@ -220,6 +224,16 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					}
 				}
 				markAPIResponseTimestamp(c)
+				// Close the local interrupt window before the client can see the
+				// terminal event. The upstream channel may stay open a little
+				// longer; an interrupt arriving then belongs to no running turn
+				// and must be rejected, not answered with a synthetic
+				// response.incomplete for its response_id. response.failed is
+				// terminal as well, though it carries no completed output.
+				terminal := isResponsesWebsocketCompletionEvent(eventType) || eventType == "response.incomplete" || eventType == "response.failed"
+				if opts.localInterrupt != nil && terminal {
+					opts.localInterrupt.end()
+				}
 				if payloadErrMsg != nil {
 					if matched, errClose := writer.closeForUpstreamError(payloadErrMsg.Error); matched {
 						cancel(payloadErrMsg.Error)
