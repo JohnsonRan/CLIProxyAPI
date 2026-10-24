@@ -32,6 +32,12 @@ EXPOSE 8317
 
 ENV TZ=Asia/Shanghai
 
+# Request translation allocates several times the payload size per request
+# while the live heap stays small, so the default GOGC=100 spends most CPU in
+# garbage collection under load. Trading heap headroom for throughput is the
+# right default for a proxy; set GOMEMLIMIT when container memory is capped.
+ENV GOGC=200
+
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
 
 CMD ["./CLIProxyAPI"]
