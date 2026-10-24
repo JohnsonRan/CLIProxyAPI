@@ -143,6 +143,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
 	}
+	if oldCfg.Codex.UpstreamRequestCompression != newCfg.Codex.UpstreamRequestCompression {
+		changes = append(changes, fmt.Sprintf("codex.upstream-request-compression: %q -> %q", oldCfg.Codex.UpstreamRequestCompression, newCfg.Codex.UpstreamRequestCompression))
+	}
 	if oldCfg.Codex.StreamBootstrapBuffering != newCfg.Codex.StreamBootstrapBuffering {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-buffering: %t -> %t", oldCfg.Codex.StreamBootstrapBuffering, newCfg.Codex.StreamBootstrapBuffering))
 	}

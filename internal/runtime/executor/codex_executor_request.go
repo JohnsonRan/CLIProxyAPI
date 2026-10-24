@@ -277,6 +277,7 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 			attrs = auth.Attributes
 		}
 		util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
+		helps.EnsureDefaultAcceptEncoding(r)
 		return
 	}
 
@@ -320,6 +321,7 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
+	helps.EnsureDefaultAcceptEncoding(r)
 	applyCodexCloakingHeaders(r.Header, cfg, auth)
 }
 

@@ -115,6 +115,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
+	if encoding := helps.CodexUpstreamRequestEncoding(e.cfg, httpReq); encoding != "" {
+		if _, errCompress := helps.ApplyCodexUpstreamRequestCompression(httpReq, upstreamBody, encoding); errCompress != nil {
+			helps.LogWithRequestID(ctx).Warnf("codex executor: upstream request %s compression failed, sending identity body: %v", encoding, errCompress)
+		}
+	}
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
@@ -128,6 +133,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return resp, errDecode
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, b); errClearReplay != nil {
@@ -299,6 +308,11 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
+	if encoding := helps.CodexUpstreamRequestEncoding(e.cfg, httpReq); encoding != "" {
+		if _, errCompress := helps.ApplyCodexUpstreamRequestCompression(httpReq, upstreamBody, encoding); errCompress != nil {
+			helps.LogWithRequestID(ctx).Warnf("codex executor: upstream request %s compression failed, sending identity body: %v", encoding, errCompress)
+		}
+	}
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
@@ -312,6 +326,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return resp, errDecode
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
