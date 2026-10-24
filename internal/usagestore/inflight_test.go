@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore/inflight"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -48,6 +50,40 @@ func TestInFlightMiddlewareCountsModelCalls(t *testing.T) {
 	}
 	if InFlight() != 0 {
 		t.Fatalf("counter must return to zero, got %d", InFlight())
+	}
+}
+
+func TestInFlightRequestsListAttachedUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(InFlightMiddleware())
+	var unfiltered, byModel, byOther []InFlightRequest
+	r.POST("/v1/responses", func(c *gin.Context) {
+		ctx := context.WithValue(context.Background(), "gin", c)
+		now := time.Now()
+		if got := inFlightRequests(now, StatsFilter{Model: []string{"gpt-x"}}); len(got) != 0 {
+			t.Errorf("call without an upstream attempt must not match a model filter: %+v", got)
+		}
+		inflight.Attach(ctx, inflight.Upstream{Provider: "codex", Model: "gpt-x", AuthIndex: "a1", APIKey: "sk-client-key-123456", Stream: true})
+		unfiltered = inFlightRequests(now, StatsFilter{})
+		byModel = inFlightRequests(now, StatsFilter{Model: []string{"gpt-x"}, Provider: []string{"codex"}})
+		byOther = inFlightRequests(now, StatsFilter{AuthIndex: []string{"a2"}})
+		c.Status(http.StatusOK)
+	})
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+
+	if len(unfiltered) != 1 || len(byModel) != 1 || len(byOther) != 0 {
+		t.Fatalf("listed %d unfiltered, %d by model, %d by other credential", len(unfiltered), len(byModel), len(byOther))
+	}
+	got := unfiltered[0]
+	if got.Endpoint != "POST /v1/responses" || got.Transport != "sse" || got.Model != "gpt-x" || got.Provider != "codex" || got.AuthIndex != "a1" {
+		t.Fatalf("unexpected in-flight request: %+v", got)
+	}
+	if got.APIKeyID == "" || got.APIKey == "sk-client-key-123456" {
+		t.Fatalf("client key must be hashed and masked: %+v", got)
+	}
+	if rest := inFlightRequests(time.Now(), StatsFilter{}); len(rest) != 0 {
+		t.Fatalf("finished call still listed: %+v", rest)
 	}
 }
 
