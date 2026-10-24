@@ -132,12 +132,13 @@ await ev(`[...document.querySelectorAll('tbody tr button')].find(b => /gpt-5-min
 check('click-to-filter', await waitFor(async () => (await rowCount()) === 3, 10000));
 await ev(`document.querySelector('tbody tr[tabindex]')?.click(); 1`);
 await sleep(800);
-check('detail dialog opens', await ev(`!!document.querySelector('[role=dialog]')`));
-await ev(`(() => { const o = document.querySelector('.modal-overlay');
+// Keep a handle on this dialog: other dialogs (notices on a fresh profile) may be open too.
+check('detail dialog opens', await ev(`!!(window.__detail = [...document.querySelectorAll('[role=dialog]')].pop())`));
+await ev(`(() => { const o = window.__detail.closest('.modal-overlay');
   o.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
   o.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 1; })()`);
 // The dialog unmounts after its close animation.
-check('backdrop closes dialog', await waitFor(async () => !(await ev(`!!document.querySelector('[role=dialog]')`)), 5000));
+check('backdrop closes dialog', await waitFor(async () => !(await ev(`window.__detail.isConnected`)), 5000));
 await ev(`document.querySelectorAll('[class*=chipRemove]').forEach((b) => b.click()); 1`);
 await sleep(1500);
 

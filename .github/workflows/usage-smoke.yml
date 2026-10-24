@@ -57,12 +57,13 @@ jobs:
           MANAGEMENT_STATIC_PATH="$PWD/management.html" ./cli-proxy-api --config config.yaml --no-browser > core.log 2>&1 &
           ready=false
           for _ in $(seq 1 30); do
-            if curl -fsS -o /dev/null http://127.0.0.1:18317/management.html; then ready=true; break; fi
+            if curl -fsS -o /dev/null http://127.0.0.1:18317/management.html \
+              && curl -fsS -o /dev/null http://127.0.0.1:18999/v1/models; then ready=true; break; fi
             sleep 1
           done
           if [[ "${ready}" != true ]]; then
-            echo "::error::core did not start"
-            cat core.log
+            echo "::error::core or fake upstream did not start"
+            cat core.log fake.log
             exit 1
           fi
           mkdir -p shots
