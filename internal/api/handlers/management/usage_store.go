@@ -246,7 +246,8 @@ func (h *Handler) GetUsageStoreEvents(c *gin.Context) {
 var usageExportColumns = []string{"id", "time", "request_id", "provider", "executor_type", "model", "alias", "endpoint",
 	"auth_type", "auth_index", "source", "api_key", "access_provider", "reasoning_effort", "service_tier", "stream",
 	"failed", "status_code", "error", "latency_ms", "ttft_ms", "input_uncached", "cache_read", "cache_write", "output",
-	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent", "response_model", "substituted", "transport"}
+	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent", "response_model", "substituted", "transport",
+	"output_tps"}
 
 // sanitizeCSVCell prefixes a single quote to string cell values starting with formula triggers
 // (=, +, -, @, tab, CR) per OWASP CSV injection guidelines.
@@ -319,6 +320,7 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 			strconv.FormatInt(t.Unclassified, 10), strconv.FormatInt(t.Total, 10),
 			strconv.FormatFloat(e.Cost, 'f', -1, 64), strconv.FormatBool(e.Priced), sanitizeCSVCell(e.ClientIP), sanitizeCSVCell(e.UserAgent),
 			sanitizeCSVCell(e.ResponseModel), strconv.FormatBool(e.Substituted), e.Transport,
+			strconv.FormatFloat(e.OutputTPS, 'f', 1, 64),
 		})
 	})
 	w.Flush()

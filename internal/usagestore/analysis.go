@@ -13,7 +13,7 @@ const maxLatencySamples = 200_000
 // LatencyBucketBoundsMs are the upper bounds of the latency histogram buckets; the last bucket is open.
 var LatencyBucketBoundsMs = []int64{500, 1000, 2000, 5000, 10_000, 30_000, 60_000}
 
-// Percentiles holds latency percentiles in milliseconds.
+// Percentiles holds latency percentiles in milliseconds (or output speed in tokens per second).
 type Percentiles struct {
 	Count int64 `json:"count"`
 	P50   int64 `json:"p50"`
@@ -28,6 +28,7 @@ type ModelLatency struct {
 	Model   string      `json:"model"`
 	Latency Percentiles `json:"latency"`
 	TTFT    Percentiles `json:"ttft"`
+	TPS     Percentiles `json:"tps"`
 }
 
 // HeatCell is the activity of one weekday (0 = Sunday) and local hour.
@@ -48,6 +49,8 @@ type Analysis struct {
 	Sampled bool        `json:"sampled"`
 	Latency Percentiles `json:"latency"`
 	TTFT    Percentiles `json:"ttft"`
+	// TPS is per-request output speed in tokens per second (see Event.OutputTPS), rounded down.
+	TPS Percentiles `json:"tps"`
 	// Histogram counts successful requests per LatencyBucketBoundsMs bucket plus one open bucket.
 	Histogram       []int64        `json:"histogram"`
 	HistogramBounds []int64        `json:"histogram_bounds_ms"`
@@ -102,24 +105,24 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 		step = (total + maxLatencySamples - 1) / maxLatencySamples
 		out.Sampled = true
 	}
-	dataQuery := "SELECT model, latency_ms, ttft_ms FROM events WHERE " + whereEvents + " AND (id - ?) % ? = 0"
+	dataQuery := "SELECT model, latency_ms, ttft_ms, " + genOutputSQL + ", " + genMsSQL + " FROM events WHERE " + whereEvents + " AND (id - ?) % ? = 0"
 	dataArgs := append(append([]any(nil), argsEvents...), minID, step)
 	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
 		return nil, err
 	}
-	var latency, ttft []int64
-	perModel := map[string]*[2][]int64{}
+	var latency, ttft, tps []int64
+	perModel := map[string]*[3][]int64{}
 	for rows.Next() {
 		var model string
-		var l, f int64
-		if errScan := rows.Scan(&model, &l, &f); errScan != nil {
+		var l, f, genOutput, genMs int64
+		if errScan := rows.Scan(&model, &l, &f, &genOutput, &genMs); errScan != nil {
 			_ = rows.Close()
 			return nil, errScan
 		}
 		m := perModel[model]
 		if m == nil {
-			m = &[2][]int64{}
+			m = &[3][]int64{}
 			perModel[model] = m
 		}
 		if l > 0 {
@@ -131,14 +134,20 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 			ttft = append(ttft, f)
 			m[1] = append(m[1], f)
 		}
+		if genMs > 0 {
+			v := int64(tokensPerSecond(genOutput, genMs))
+			tps = append(tps, v)
+			m[2] = append(m[2], v)
+		}
 	}
 	_ = rows.Close()
 	if errRows := rows.Err(); errRows != nil {
 		return nil, errRows
 	}
-	out.Latency, out.TTFT = percentiles(latency), percentiles(ttft)
+	out.Latency, out.TTFT, out.TPS = percentiles(latency), percentiles(ttft), percentiles(tps)
 	for model, m := range perModel {
-		out.Models = append(out.Models, ModelLatency{Model: model, Latency: percentiles(m[0]), TTFT: percentiles(m[1])})
+		out.Models = append(out.Models, ModelLatency{Model: model, Latency: percentiles(m[0]), TTFT: percentiles(m[1]),
+			TPS: percentiles(m[2])})
 	}
 	sort.Slice(out.Models, func(i, j int) bool { return out.Models[i].Latency.Count > out.Models[j].Latency.Count })
 
