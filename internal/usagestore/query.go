@@ -128,7 +128,8 @@ func (s *Store) coversRange(from time.Time) bool {
 // filters always use events. Other ranges use hourly rollups: whole hours and base prices.
 // shortcut: rollups are hourly, so half-hour time zones get day buckets shifted by 30 minutes there.
 func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tzOffsetMinutes int, filter StatsFilter) (*Stats, error) {
-	useEvents := s.coversRange(from) || filter.Failed != nil || filter.Substituted != nil
+	covered := s.coversRange(from)
+	useEvents := covered || filter.Failed != nil || filter.Substituted != nil
 	fromSec := from.Unix() / 3600 * 3600
 	if useEvents {
 		fromSec = from.Unix()
@@ -206,7 +207,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 	defer func() { _ = rows.Close() }()
 
 	out := &Stats{From: fromSec, To: toSec, Bucket: bucket, Exact: useEvents,
-		Partial: useEvents && !s.coversRange(from), Series: []SeriesPoint{},
+		Partial: useEvents && !covered, Series: []SeriesPoint{},
 		Models: []ModelStat{}, APIKeys: []APIKeyStat{}, Credentials: []CredentialStat{}}
 	series := map[int64]*Aggregate{}
 	models := map[[2]string]*ModelStat{}
