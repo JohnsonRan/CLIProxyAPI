@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
@@ -19,7 +20,9 @@ const maxInFlightListed = 100
 // InFlightRequest is a downstream call still being served. The upstream fields stay empty
 // until an executor starts an attempt (and for calls that never reach one, e.g. count_tokens).
 type InFlightRequest struct {
-	ID        uint64 `json:"id"`
+	ID uint64 `json:"id"`
+	// RequestID matches the request_id of the events the call records.
+	RequestID string `json:"request_id"`
 	StartedAt int64  `json:"started_at"` // unix ms
 	ElapsedMs int64  `json:"elapsed_ms"`
 	Endpoint  string `json:"endpoint"`
@@ -48,7 +51,7 @@ func InFlightMiddleware() gin.HandlerFunc {
 		if path == "" {
 			path = c.Request.URL.Path
 		}
-		end := inflight.Begin(c, c.Request.Method+" "+path, webSocket)
+		end := inflight.Begin(c, internallogging.GetGinRequestID(c), c.Request.Method+" "+path, webSocket)
 		defer end()
 		c.Next()
 	}
@@ -94,6 +97,7 @@ func inFlightRequests(now time.Time, filter StatsFilter) []InFlightRequest {
 		}
 		out = append(out, InFlightRequest{
 			ID:        r.ID,
+			RequestID: r.RequestID,
 			StartedAt: r.StartedAt.UnixMilli(),
 			ElapsedMs: max(now.Sub(r.StartedAt).Milliseconds(), 0),
 			Endpoint:  r.Endpoint,
