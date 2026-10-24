@@ -10,11 +10,12 @@ import (
 
 var inFlight atomic.Int64
 
-// InFlight returns the number of model requests and WebSocket sessions currently being served.
+// InFlight returns the number of downstream API calls and WebSocket sessions currently being served.
 func InFlight() int64 { return inFlight.Load() }
 
-// InFlightMiddleware counts model calls while their handler runs: POST requests and WebSocket
-// upgrades outside the management API. Counting is cheap and independent of the store switch.
+// InFlightMiddleware counts downstream API calls while their handler runs: POST requests and
+// WebSocket upgrades outside the management API. That is mostly model calls, but auxiliary POSTs
+// (count_tokens, search, plugin routes) count too. Cheap and independent of the store switch.
 func InFlightMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !countsAsModelCall(c.Request) {
