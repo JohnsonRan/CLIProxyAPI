@@ -3931,8 +3931,8 @@ func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSocket(t *testing.
 	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeError {
 		t.Fatalf("response type = %q, want %q: %s", got, wsEventTypeError, payload)
 	}
-	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusConflict {
-		t.Fatalf("response status = %d, want %d: %s", got, http.StatusConflict, payload)
+	if got := int(gjson.GetBytes(payload, "status").Int()); got != http.StatusBadRequest {
+		t.Fatalf("response status = %d, want %d: %s", got, http.StatusBadRequest, payload)
 	}
 	if got := gjson.GetBytes(payload, "error.code").String(); got != "previous_response_not_found" {
 		t.Fatalf("response error code = %q, want previous_response_not_found: %s", got, payload)
