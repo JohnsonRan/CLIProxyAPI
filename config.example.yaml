@@ -902,6 +902,13 @@ upstream:
 #       prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #       base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #       support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
+#       auto-discover-models: false # optional: fetch the model list from this provider's /models endpoint.
+#         # Discovered models are added underneath any explicit "models" entries below, which keep priority,
+#         # so new upstream models appear without editing the config. Use "excluded-models" to hide the rest.
+#         # The first list is fetched when the provider is registered; afterwards a list older than 30 minutes is
+#         # refreshed in the background and used from the next model registration. A failed refresh keeps the last list.
+#       excluded-models: # optional: hide models by exact name or wildcard (e.g. "glm-4.*", "*-preview")
+#         - "*-preview"
 #       disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
 #       request-retry: 3 # optional per-provider override; 0 disables additional rounds; omit or set < 0 to inherit global
 #       request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns
