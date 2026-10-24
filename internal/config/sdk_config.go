@@ -93,6 +93,15 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
+	// ClientModels defines default visible and usable models for all client API keys.
+	ClientModels []string `yaml:"client-models,omitempty" json:"client-models,omitempty"`
+
+	// ClientExcludedModels defines default excluded models for all client API keys.
+	ClientExcludedModels []string `yaml:"client-excluded-models,omitempty" json:"client-excluded-models,omitempty"`
+
+	// ClientKeys defines per-client API key permissions and model access rules.
+	ClientKeys []ClientKeyConfig `yaml:"client-keys,omitempty" json:"client-keys,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
