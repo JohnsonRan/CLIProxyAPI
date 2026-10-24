@@ -12,6 +12,14 @@ type UsageStoreConfig struct {
 	RetentionDays int `yaml:"retention-days,omitempty" json:"retention-days,omitempty"`
 	// Pricing configures cost estimation.
 	Pricing UsagePricingConfig `yaml:"pricing,omitempty" json:"pricing,omitempty"`
+	// GeoIP configures offline IP geolocation and ISP lookup.
+	GeoIP UsageGeoIPConfig `yaml:"geoip,omitempty" json:"geoip,omitempty"`
+}
+
+// UsageGeoIPConfig controls offline IP geolocation and ISP lookup for usage events.
+type UsageGeoIPConfig struct {
+	// Disable stops sending new public client IPs to the online lookup API. Default false (enabled).
+	Disable bool `yaml:"disable,omitempty" json:"disable,omitempty"`
 }
 
 // UsagePricingConfig configures cost estimation for stored usage.
