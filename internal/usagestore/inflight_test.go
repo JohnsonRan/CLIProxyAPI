@@ -87,6 +87,58 @@ func TestInFlightRequestsListAttachedUpstream(t *testing.T) {
 	}
 }
 
+func TestInFlightRequestsOrderRetryAndWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		internallogging.SetGinRequestID(c, c.GetHeader("X-Test-ID"))
+		c.Next()
+	})
+	r.Use(InFlightMiddleware())
+	outerRunning := make(chan struct{})
+	releaseOuter := make(chan struct{})
+	r.GET("/v1/responses", func(c *gin.Context) {
+		ctx := context.WithValue(context.Background(), "gin", c)
+		inflight.Attach(ctx, inflight.Upstream{Model: "first", AuthIndex: "a1"})
+		// A retry on another credential replaces the earlier attempt.
+		inflight.Attach(ctx, inflight.Upstream{Model: "first", AuthIndex: "a2"})
+		close(outerRunning)
+		<-releaseOuter
+	})
+	var listed []InFlightRequest
+	r.POST("/v1/chat/completions", func(c *gin.Context) {
+		listed = inFlightRequests(time.Now(), StatsFilter{})
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("X-Test-ID", "ws-1")
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-outerRunning
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("X-Test-ID", "http-2")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	close(releaseOuter)
+	<-done
+
+	if len(listed) != 2 {
+		t.Fatalf("listed %d calls, want 2: %+v", len(listed), listed)
+	}
+	if listed[0].RequestID != "http-2" || listed[1].RequestID != "ws-1" {
+		t.Fatalf("want newest first with request ids, got %+v", listed)
+	}
+	if ws := listed[1]; ws.Transport != "ws" || ws.Endpoint != "GET /v1/responses" || ws.AuthIndex != "a2" {
+		t.Fatalf("unexpected WebSocket call: %+v", ws)
+	}
+	if listed[0].Transport != "http" || listed[0].Model != "" {
+		t.Fatalf("call without an attempt: %+v", listed[0])
+	}
+}
+
 func TestEventTransport(t *testing.T) {
 	ws := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{WebSocket: true})
 	if got := eventFromRecord(ws, coreusage.Record{Model: "m", Stream: true}).Transport; got != "ws" {
