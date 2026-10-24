@@ -1,0 +1,81 @@
+name: Usage Smoke
+
+# End-to-end check of patch/usage-store (core) with the latest downstream panel release:
+# real requests through a fake upstream, the usage API, and the /usage page in headless Chrome.
+on:
+  workflow_run:
+    workflows:
+      - 'Upstream Sync'
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Checkout smoke scripts from ci
+        uses: actions/checkout@v4
+        with:
+          ref: ci
+          path: ci-branch
+          sparse-checkout: .github/scripts/usage-smoke
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build core and fetch the panel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          go build -o smoke/cli-proxy-api ./cmd/server
+          gh release download --repo JohnsonRan/Cli-Proxy-API-Management-Center -p management.html -D smoke
+          cp ci-branch/.github/scripts/usage-smoke/config.yaml smoke/config.yaml
+
+      - name: Run smoke test
+        working-directory: smoke
+        run: |
+          set -euo pipefail
+          node ../ci-branch/.github/scripts/usage-smoke/fake-upstream.js > fake.log 2>&1 &
+          MANAGEMENT_STATIC_PATH="$PWD/management.html" ./cli-proxy-api --config config.yaml --no-browser > core.log 2>&1 &
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:18317/management.html \
+              && curl -fsS -o /dev/null http://127.0.0.1:18999/v1/models; then ready=true; break; fi
+            sleep 1
+          done
+          if [[ "${ready}" != true ]]; then
+            echo "::error::core or fake upstream did not start"
+            cat core.log fake.log
+            exit 1
+          fi
+          mkdir -p shots
+          CHROME="$(command -v google-chrome || command -v chromium)" SHOTS="$PWD/shots" \
+            bun ../ci-branch/.github/scripts/usage-smoke/smoke.ts
+
+      - name: Upload logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usage-smoke
+          path: |
+            smoke/*.log
+            smoke/shots/
+          if-no-files-found: ignore
