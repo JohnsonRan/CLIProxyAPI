@@ -26,6 +26,7 @@ type Upstream struct {
 // Request is a copy of one call being served.
 type Request struct {
 	ID        uint64
+	RequestID string
 	StartedAt time.Time
 	Endpoint  string
 	WebSocket bool
@@ -45,8 +46,8 @@ var (
 
 // Begin registers a call and binds it to c so executors can attach upstream details.
 // The returned function removes it and must be called when the handler returns.
-func Begin(c *gin.Context, endpoint string, webSocket bool) (end func()) {
-	e := &entry{Request: Request{StartedAt: time.Now(), Endpoint: endpoint, WebSocket: webSocket}}
+func Begin(c *gin.Context, requestID, endpoint string, webSocket bool) (end func()) {
+	e := &entry{Request: Request{RequestID: requestID, StartedAt: time.Now(), Endpoint: endpoint, WebSocket: webSocket}}
 	mu.Lock()
 	nextID++
 	e.ID = nextID
