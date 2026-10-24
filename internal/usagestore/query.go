@@ -24,9 +24,14 @@ type Aggregate struct {
 	UnpricedRequests int64   `json:"unpriced_requests"`
 	AvgLatencyMs     float64 `json:"avg_latency_ms"`
 	AvgTTFTMs        float64 `json:"avg_ttft_ms"`
-	latencySum       int64
-	ttftSum          int64
-	ttftCount        int64
+	// OutputTPS is output tokens per second of decode time over the streamed successful requests
+	// with a measurable decode phase (token-weighted, so long answers count more); 0 when none.
+	OutputTPS  float64 `json:"output_tps"`
+	latencySum int64
+	ttftSum    int64
+	ttftCount  int64
+	genOutput  int64
+	genMs      int64
 }
 
 func (a *Aggregate) add(o *Aggregate) {
@@ -39,6 +44,8 @@ func (a *Aggregate) add(o *Aggregate) {
 	a.latencySum += o.latencySum
 	a.ttftSum += o.ttftSum
 	a.ttftCount += o.ttftCount
+	a.genOutput += o.genOutput
+	a.genMs += o.genMs
 }
 
 func (a *Aggregate) finish() {
@@ -48,6 +55,7 @@ func (a *Aggregate) finish() {
 	if a.ttftCount > 0 {
 		a.AvgTTFTMs = float64(a.ttftSum) / float64(a.ttftCount)
 	}
+	a.OutputTPS = tokensPerSecond(a.genOutput, a.genMs)
 }
 
 // SeriesPoint is one time bucket; Time is the bucket start in unix seconds.
@@ -158,7 +166,8 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		query = `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
 		` + contextBandSQL(prices.thresholds) + ` AS band,
 		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
-		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0)
+		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0),
+		SUM(` + genOutputSQL + `), SUM(` + genMsSQL + `)
 		FROM events WHERE ts >= ? AND ts < ?`
 		args = append(args, from.UnixMilli(), to.UnixMilli())
 		if filter.Failed != nil {
@@ -177,7 +186,8 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		}
 		query = `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier, 0 AS band,
 		SUM(requests), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
-		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_count)
+		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_count),
+		SUM(gen_output), SUM(gen_ms)
 		FROM hourly WHERE hour >= ? AND hour < ?`
 		args = append(args, fromSec, toSec)
 	}
@@ -221,7 +231,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		t := &a.Tokens
 		if errScan := rows.Scan(&b, &provider, &model, &keyID, &key, &authIndex, &tier, &band, &a.Requests, &a.Failed,
 			&a.Substituted, &t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
-			&a.latencySum, &a.ttftSum, &a.ttftCount); errScan != nil {
+			&a.latencySum, &a.ttftSum, &a.ttftCount, &a.genOutput, &a.genMs); errScan != nil {
 			return nil, errScan
 		}
 		source := prices.apply(&a, model, tier, prices.bandInput(band))
@@ -399,6 +409,7 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport); errScan != nil {
 			return errScan
 		}
+		e.OutputTPS = tokensPerSecond(e.generation())
 		var a Aggregate
 		a.Requests, a.Tokens = 1, e.Tokens
 		input := e.Tokens.InputUncached + e.Tokens.CacheRead + e.Tokens.CacheWrite + e.Tokens.Unclassified
