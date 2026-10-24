@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 )
 
@@ -50,11 +51,12 @@ func requestModelName(rawJSON []byte) string {
 		return ""
 	}
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	for _, path := range []string{"model", "request.model"} {
 		model := root.Get(path)
 		if model.Type == gjson.String && strings.TrimSpace(model.String()) != "" {
-			return model.String()
+			// root references rawJSON; do not let the name keep it alive.
+			return strings.Clone(model.String())
 		}
 	}
 	return ""

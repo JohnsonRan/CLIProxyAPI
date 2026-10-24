@@ -33,8 +33,12 @@ func ClaudeAgentSessionUUIDForRequest(headers http.Header, originalPayload, tran
 				delete(headers, key)
 			}
 		}
-		originalPayload = withoutClaudeMetadataUserID(originalPayload)
-		translatedPayload = withoutClaudeMetadataUserID(translatedPayload)
+		// The translated payload is only read when the original carries no
+		// session signal, and translators write metadata.user_id, so strip it
+		// only then: each strip copies the whole body.
+		return claudeAgentSessionUUIDLazy(headers, withoutClaudeMetadataUserID(originalPayload), func() []byte {
+			return withoutClaudeMetadataUserID(translatedPayload)
+		}, metadataSets...)
 	}
 	return claudeAgentSessionUUID(headers, originalPayload, translatedPayload, metadataSets...)
 }
@@ -66,10 +70,18 @@ func ClaudeRequestHasExecutionMetadata(metadataSets ...map[string]any) bool {
 }
 
 func claudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayload []byte, metadataSets ...map[string]any) string {
+	return claudeAgentSessionUUIDLazy(headers, originalPayload, func() []byte { return translatedPayload }, metadataSets...)
+}
+
+// claudeAgentSessionUUIDLazy resolves the translated payload only when the
+// original payload yields no session identity.
+func claudeAgentSessionUUIDLazy(headers http.Header, originalPayload []byte, translatedPayload func() []byte, metadataSets ...map[string]any) string {
 	metadata := mergeClaudeSessionMetadata(metadataSets...)
 	identity := cliproxyauth.ExtractSessionID(headers, originalPayload, metadata)
-	if identity == "" && len(translatedPayload) > 0 {
-		identity = cliproxyauth.ExtractSessionID(headers, translatedPayload, metadata)
+	if identity == "" {
+		if translated := translatedPayload(); len(translated) > 0 {
+			identity = cliproxyauth.ExtractSessionID(headers, translated, metadata)
+		}
 	}
 	if identity == "" {
 		return uuid.NewString()

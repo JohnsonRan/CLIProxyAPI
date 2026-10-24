@@ -3,6 +3,7 @@ package thinking
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -16,7 +17,7 @@ func extractConfigurationUpdateConfig(body []byte) ThinkingConfig {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
-	input := gjson.GetBytes(body, "input")
+	input := util.GetGJSONBytesNoCopy(body, "input")
 	if !input.IsArray() {
 		return ThinkingConfig{}
 	}
@@ -41,7 +42,8 @@ func extractConfigurationUpdateConfig(body []byte) ThinkingConfig {
 	case "auto":
 		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
 	default:
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(effort)}
+		// effort may reference body; the config outlives it.
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(strings.Clone(effort))}
 	}
 }
 
