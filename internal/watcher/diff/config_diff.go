@@ -167,6 +167,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
+	if oldCfg.Codex.EnableWebsocketUpstream != newCfg.Codex.EnableWebsocketUpstream {
+		changes = append(changes, fmt.Sprintf("codex.enable-websocket-upstream: %t -> %t", oldCfg.Codex.EnableWebsocketUpstream, newCfg.Codex.EnableWebsocketUpstream))
+	}
 	if oldCfg.Claude.ToolSearch != newCfg.Claude.ToolSearch {
 		changes = append(changes, fmt.Sprintf("claude.tool-search: %t -> %t", oldCfg.Claude.ToolSearch, newCfg.Claude.ToolSearch))
 	}

@@ -295,6 +295,14 @@ func TestBuildConfigChangeDetails_CodexOrphanDelegationCompatibility(t *testing.
 	expectContains(t, changes, "codex.orphan-delegation-compatibility: false -> true")
 }
 
+func TestBuildConfigChangeDetails_CodexEnableWebsocketUpstream(t *testing.T) {
+	oldCfg := &config.Config{Codex: config.CodexConfig{EnableWebsocketUpstream: false}}
+	newCfg := &config.Config{Codex: config.CodexConfig{EnableWebsocketUpstream: true}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex.enable-websocket-upstream: false -> true")
+}
+
 func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
 	oldRetry := 1
 	newRetry := 0
