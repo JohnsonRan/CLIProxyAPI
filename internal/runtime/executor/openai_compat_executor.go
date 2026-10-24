@@ -100,6 +100,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
+	if isOpenAICompatEmbedding(opts) {
+		return e.executeEmbeddings(ctx, auth, req, opts)
+	}
+	if isOpenAICompatRerank(opts) {
+		return e.executeRerank(ctx, auth, req, opts)
+	}
 	baseURL, apiKey := e.resolveCredentials(auth)
 	compat := e.resolveCompatConfig(auth, req)
 	return e.executeWithCredentials(ctx, auth, req, opts, baseURL, apiKey, compat)
@@ -874,6 +880,214 @@ func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {
 		return openAICompatImagesGenerationsPath
 	}
 	return openAICompatDefaultImageEndpoint
+}
+
+func isOpenAICompatEmbedding(opts cliproxyexecutor.Options) bool {
+	if opts.SourceFormat.String() == "openai-embedding" {
+		return true
+	}
+	path := helps.PayloadRequestPath(opts)
+	return strings.HasSuffix(path, "/embeddings") || strings.HasSuffix(path, "/embedding")
+}
+
+func isOpenAICompatRerank(opts cliproxyexecutor.Options) bool {
+	if opts.SourceFormat.String() == "rerank" {
+		return true
+	}
+	path := helps.PayloadRequestPath(opts)
+	return strings.HasSuffix(path, "/rerank")
+}
+
+func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	baseURL, apiKey := e.resolveCredentials(auth)
+	if baseURL == "" {
+		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
+		return resp, err
+	}
+
+	payload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		payload = opts.OriginalRequest
+	}
+	originalPayload := payload
+
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	if baseModel != "" {
+		payload = helps.SetStringIfDifferent(payload, "model", baseModel)
+	}
+
+	from := opts.SourceFormat.String()
+	to := "openai"
+	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to, from, "", payload, originalPayload, requestedModel, requestPath, opts.Headers)
+
+	endpoint := "/embeddings"
+	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return resp, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      payload,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close embeddings response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		helps.LogWithRequestID(ctx).Debugf("embeddings request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
+		return resp, err
+	}
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	reporter.ObserveResponseModel(body)
+	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
+
+	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+	return resp, nil
+}
+
+func (e *OpenAICompatExecutor) executeRerank(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	baseURL, apiKey := e.resolveCredentials(auth)
+	if baseURL == "" {
+		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
+		return resp, err
+	}
+
+	payload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		payload = opts.OriginalRequest
+	}
+	originalPayload := payload
+
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	if baseModel != "" {
+		payload = helps.SetStringIfDifferent(payload, "model", baseModel)
+	}
+
+	from := opts.SourceFormat.String()
+	to := "rerank"
+	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to, from, "", payload, originalPayload, requestedModel, requestPath, opts.Headers)
+
+	endpoint := "/rerank"
+	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return resp, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      payload,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close rerank response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		helps.LogWithRequestID(ctx).Debugf("rerank request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
+		return resp, err
+	}
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	reporter.ObserveResponseModel(body)
+	reporter.Publish(ctx, helps.ParseRerankUsage(body))
+
+	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+	return resp, nil
 }
 
 func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {
