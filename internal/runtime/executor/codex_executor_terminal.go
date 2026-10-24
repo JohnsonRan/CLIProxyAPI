@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 const codexIncompleteStreamMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
+
+const codexOutputItemsRetainLimit = 16 << 20
 
 type codexIncompleteStreamError struct {
 	statusErr
@@ -49,17 +52,104 @@ func (codexEmptyIncompleteStreamError) IsRequestScoped() bool {
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
-func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
+func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) int {
 	itemResult := gjson.GetBytes(eventData, "item")
 	if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-		return
+		return 0
 	}
 	outputIndexResult := gjson.GetBytes(eventData, "output_index")
 	if outputIndexResult.Exists() {
 		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-		return
+		return len(itemResult.Raw)
 	}
 	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
+	return len(itemResult.Raw)
+}
+
+type codexOutputItemPatchBuffer struct {
+	byIndex  map[int64][]byte
+	fallback [][]byte
+	retained int
+	// seen counts every output item observed, including ones not retained, so
+	// callers can still tell that output was produced.
+	seen int
+	// skipImages stops retaining image_generation_call items after they were
+	// evicted to stay under the limit.
+	skipImages bool
+	dropped    bool
+}
+
+func newCodexOutputItemPatchBuffer() *codexOutputItemPatchBuffer {
+	return &codexOutputItemPatchBuffer{byIndex: make(map[int64][]byte)}
+}
+
+func (b *codexOutputItemPatchBuffer) collect(eventData []byte) {
+	item := gjson.GetBytes(eventData, "item")
+	if !item.Exists() || item.Type != gjson.JSON {
+		return
+	}
+	b.seen++
+	if b.dropped || (b.skipImages && isCodexImageOutputItem([]byte(item.Raw))) {
+		return
+	}
+	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
+		// A repeated index replaces the earlier item, so stop counting its bytes.
+		b.retained -= len(b.byIndex[outputIndex.Int()])
+	}
+	b.retained += collectCodexOutputItemDone(eventData, b.byIndex, &b.fallback)
+	if b.retained <= codexOutputItemsRetainLimit {
+		return
+	}
+	// Generated images are the large items and were already streamed to the
+	// client; evict them first so reasoning, messages and tool calls can still
+	// be reconstructed into response.completed.
+	if !b.skipImages {
+		b.skipImages = true
+		b.evictImages()
+		if b.retained <= codexOutputItemsRetainLimit {
+			log.Warnf("codex executor: retained output items exceeded %d bytes, response.completed output omits image_generation_call items", codexOutputItemsRetainLimit)
+			return
+		}
+	}
+	b.byIndex = make(map[int64][]byte)
+	b.fallback = nil
+	b.retained = 0
+	b.dropped = true
+	log.Warnf("codex executor: retained output items exceeded %d bytes, skipping response.completed output patch", codexOutputItemsRetainLimit)
+}
+
+func (b *codexOutputItemPatchBuffer) evictImages() {
+	for index, item := range b.byIndex {
+		if isCodexImageOutputItem(item) {
+			b.retained -= len(item)
+			delete(b.byIndex, index)
+		}
+	}
+	kept := b.fallback[:0]
+	for _, item := range b.fallback {
+		if isCodexImageOutputItem(item) {
+			b.retained -= len(item)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	b.fallback = kept
+}
+
+func isCodexImageOutputItem(item []byte) bool {
+	return gjson.GetBytes(item, "type").String() == "image_generation_call"
+}
+
+// count reports how many output items were observed, retained or not.
+func (b *codexOutputItemPatchBuffer) count() int {
+	return b.seen
+}
+
+func (b *codexOutputItemPatchBuffer) patch(completedData []byte) []byte {
+	if b.dropped {
+		return completedData
+	}
+	return patchCodexCompletedOutput(completedData, b.byIndex, b.fallback)
 }
 
 func hydrateCodexCompletedOutputItemIDs(eventData []byte, outputItems []gjson.Result, outputItemsByIndex map[int64][]byte) []byte {
