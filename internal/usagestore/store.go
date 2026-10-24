@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS hourly (
 	latency_ms INTEGER NOT NULL DEFAULT 0,
 	ttft_ms INTEGER NOT NULL DEFAULT 0,
 	ttft_count INTEGER NOT NULL DEFAULT 0,
+	gen_output INTEGER NOT NULL DEFAULT 0,
+	gen_ms INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (hour, provider, model, api_key_id, auth_index, service_tier)
 );
 CREATE TABLE IF NOT EXISTS credentials (
@@ -112,8 +114,8 @@ const backfillCredentialsSQL = `INSERT OR IGNORE INTO credentials (auth_index, p
 
 const upsertHourlySQL = `INSERT INTO hourly (hour, provider, model, api_key_id, auth_index, service_tier, api_key,
 	requests, failed, substituted, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
-	latency_ms, ttft_ms, ttft_count)
-	VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)
+	latency_ms, ttft_ms, ttft_count, gen_output, gen_ms)
+	VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(hour, provider, model, api_key_id, auth_index, service_tier) DO UPDATE SET
 	api_key = excluded.api_key,
 	requests = requests + 1,
@@ -128,7 +130,42 @@ const upsertHourlySQL = `INSERT INTO hourly (hour, provider, model, api_key_id, 
 	total = total + excluded.total,
 	latency_ms = latency_ms + excluded.latency_ms,
 	ttft_ms = ttft_ms + excluded.ttft_ms,
-	ttft_count = ttft_count + excluded.ttft_count`
+	ttft_count = ttft_count + excluded.ttft_count,
+	gen_output = gen_output + excluded.gen_output,
+	gen_ms = gen_ms + excluded.gen_ms`
+
+// minGenerationMs drops decode windows too short to time: upstreams that buffer the answer
+// deliver it in one burst right after the first token, which would read as thousands of t/s.
+const minGenerationMs = 100
+
+// generationCond selects events with a measurable decode phase; it mirrors Event.generation.
+var generationCond = fmt.Sprintf("stream = 1 AND failed = 0 AND ttft_ms > 0 AND output > 0 AND latency_ms - ttft_ms >= %d", minGenerationMs)
+
+// genOutputSQL and genMsSQL are the output tokens and decode milliseconds of an events row (0 when
+// it has no measurable decode phase).
+var (
+	genOutputSQL = "(CASE WHEN " + generationCond + " THEN output ELSE 0 END)"
+	genMsSQL     = "(CASE WHEN " + generationCond + " THEN latency_ms - ttft_ms ELSE 0 END)"
+)
+
+// generation returns the output tokens and decode time (latency after the first token) of a
+// successful streamed request, or zeros when it has none: non-streamed responses arrive whole,
+// so their first byte does not mark the start of generation.
+func (e *Event) generation() (output, ms int64) {
+	ms = e.LatencyMs - e.TTFTMs
+	if !e.Stream || e.Failed || e.TTFTMs <= 0 || e.Tokens.Output <= 0 || ms < minGenerationMs {
+		return 0, 0
+	}
+	return e.Tokens.Output, ms
+}
+
+// tokensPerSecond returns output tokens per second of decode time, 0 when ms is 0.
+func tokensPerSecond(output, ms int64) float64 {
+	if ms <= 0 {
+		return 0
+	}
+	return float64(output) * 1000 / float64(ms)
+}
 
 // Tokens holds mutually exclusive token buckets (canonical v2 accounting).
 type Tokens struct {
@@ -183,6 +220,8 @@ type Event struct {
 	Priced          bool    `json:"priced"`
 	ResponseModel   string  `json:"response_model"`
 	Substituted     bool    `json:"substituted"`
+	// OutputTPS is output tokens per second after the first token; 0 when not measurable.
+	OutputTPS float64 `json:"output_tps"`
 	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
 	Transport string `json:"transport"`
 }
@@ -273,6 +312,8 @@ func migrateSchema(db *sql.DB) error {
 		{"events", "substituted", "INTEGER NOT NULL DEFAULT 0"},
 		{"events", "transport", "TEXT NOT NULL DEFAULT ''"},
 		{"hourly", "substituted", "INTEGER NOT NULL DEFAULT 0"},
+		{"hourly", "gen_output", "INTEGER NOT NULL DEFAULT 0"},
+		{"hourly", "gen_ms", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		exists, err := hasColumn(col.table, col.name)
 		if err != nil {
@@ -393,9 +434,10 @@ func (s *Store) write(batch []Event) error {
 			ttftCount = 1
 		}
 		hour := e.Timestamp / 1000 / 3600 * 3600
+		genOutput, genMs := e.generation()
 		if _, errExec := upHourly.Exec(hour, e.Provider, e.Model, e.APIKeyID, e.AuthIndex, e.ServiceTier, e.APIKey,
 			e.Failed, subInt, t.InputUncached, t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total,
-			e.LatencyMs, e.TTFTMs, ttftCount); errExec != nil {
+			e.LatencyMs, e.TTFTMs, ttftCount, genOutput, genMs); errExec != nil {
 			return errExec
 		}
 		if e.AuthIndex != "" {
