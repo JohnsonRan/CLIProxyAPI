@@ -26,6 +26,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if isCodexOpenAIImageRequest(opts) {
 		return e.executeOpenAIImage(ctx, auth, req, opts)
 	}
+	if helps.IsOpenAIDecisionsRequest(opts) {
+		return e.executeOpenAIDecisions(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
