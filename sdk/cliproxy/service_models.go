@@ -862,6 +862,9 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		modelType := "openai-compatibility"
 		if model.Image {
 			modelType = registry.OpenAIImageModelType
+			if len(model.OutputModalities) == 0 {
+				model.OutputModalities = []string{registry.OutputModalityImage}
+			}
 		}
 		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
 		if info == nil {
@@ -877,6 +880,8 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		}
 		if model.Thinking != nil {
 			info.ExplicitThinking = true
+		} else if thinkingSupport != nil {
+			info.DefaultThinking = true
 		}
 		if len(model.InputModalities) > 0 {
 			info.ExplicitInputModalities = true
