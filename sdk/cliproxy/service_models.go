@@ -323,6 +323,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if ctx.Err() != nil {
 		return true
 	}
+	// Like exclusions, the credential's allow-list matches upstream model IDs before aliases.
+	allowed := authAllowedModels(a)
+	models = applyAllowedModels(models, allowed)
 	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return true
@@ -331,7 +334,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
-	models = s.appendPluginModels(key, models, excluded)
+	models = s.appendFilteredPluginModels(key, models, excluded, allowed)
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(cfg, provider, authKind, models)
 		published = s.registerResolvedModelsForAuthFenced(a, fence, key, applyModelPrefixes(models, a.Prefix, cfg != nil && cfg.ForceModelPrefix))
@@ -658,12 +661,36 @@ func oauthExcludedModelsForConfig(cfg *config.Config, provider, authKind string)
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
-	if len(models) == 0 || len(excluded) == 0 {
+	return filterModelsByRules(models, excluded, false)
+}
+
+// applyAllowedModels keeps only the models matching at least one allowed rule.
+// An empty rule list leaves the models unrestricted.
+func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
+	return filterModelsByRules(models, allowed, true)
+}
+
+// authAllowedModels returns the credential's own allowed-model rules, or nil
+// when the credential is unrestricted.
+func authAllowedModels(a *coreauth.Auth) []string {
+	if a == nil || a.Attributes == nil {
+		return nil
+	}
+	if val := strings.TrimSpace(a.Attributes["allowed_models"]); val != "" {
+		return strings.Split(val, ",")
+	}
+	return nil
+}
+
+// filterModelsByRules drops models matching a rule, or with keepMatches keeps
+// only those. Rules are case-insensitive wildcard patterns.
+func filterModelsByRules(models []*ModelInfo, rules []string, keepMatches bool) []*ModelInfo {
+	if len(models) == 0 || len(rules) == 0 {
 		return models
 	}
 
-	patterns := make([]string, 0, len(excluded))
-	for _, item := range excluded {
+	patterns := make([]string, 0, len(rules))
+	for _, item := range rules {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			patterns = append(patterns, strings.ToLower(trimmed))
 		}
@@ -678,14 +705,14 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 			continue
 		}
 		modelID := strings.ToLower(strings.TrimSpace(model.ID))
-		blocked := false
+		matched := false
 		for _, pattern := range patterns {
 			if matchWildcard(pattern, modelID) {
-				blocked = true
+				matched = true
 				break
 			}
 		}
-		if !blocked {
+		if matched == keepMatches {
 			filtered = append(filtered, model)
 		}
 	}
