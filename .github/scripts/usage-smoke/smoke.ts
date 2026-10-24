@@ -136,8 +136,8 @@ check('detail dialog opens', await ev(`!!document.querySelector('[role=dialog]')
 await ev(`(() => { const o = document.querySelector('.modal-overlay');
   o.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
   o.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 1; })()`);
-await sleep(1200);
-check('backdrop closes dialog', !(await ev(`!!document.querySelector('[role=dialog]')`)));
+// The dialog unmounts after its close animation.
+check('backdrop closes dialog', await waitFor(async () => !(await ev(`!!document.querySelector('[role=dialog]')`)), 5000));
 await ev(`document.querySelectorAll('[class*=chipRemove]').forEach((b) => b.click()); 1`);
 await sleep(1500);
 
