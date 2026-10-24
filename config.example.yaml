@@ -1218,6 +1218,12 @@ observability:
         #     input: 1.25
         #     output: 10
         #     cache-read: 0.125
+      geoip:
+        # Location and network owner of client IPs, shown with usage events. New public client IPs
+        # are sent to https://api.ip.sb/geoip once each, paced below its free limit, and the answers
+        # are cached in the usage database. Private and loopback addresses are never sent.
+        # Set true to stop all lookups. Default false (enabled).
+        disable: false
 
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false

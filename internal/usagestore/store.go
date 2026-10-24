@@ -3,6 +3,7 @@
 package usagestore
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -224,6 +225,8 @@ type Event struct {
 	OutputTPS float64 `json:"output_tps"`
 	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
 	Transport string `json:"transport"`
+	// ClientGeo holds IP geolocation and ISP information. Omitted when client_ip is empty or unresolvable.
+	ClientGeo *ClientGeo `json:"client_geo,omitempty"`
 }
 
 // Store owns the database and its single writer goroutine.
@@ -236,6 +239,7 @@ type Store struct {
 	retention atomic.Int64 // days; <0 keeps forever
 	dropped   atomic.Int64
 	pricer    *Pricer
+	geo       *GeoIP
 }
 
 // Open creates or opens the database at path and starts the writer.
@@ -257,6 +261,10 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage store: migrate: %w", errMigrate)
 	}
+	if _, errGeo := db.Exec(ipGeoSchema); errGeo != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage store: ip_geo schema: %w", errGeo)
+	}
 	s := &Store{
 		path:   path,
 		db:     db,
@@ -264,6 +272,7 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 		pricer: pricer,
+		geo:    NewGeoIP(db),
 	}
 	var credentialCount int
 	if errCount := db.QueryRow(`SELECT COUNT(*) FROM credentials`).Scan(&credentialCount); errCount == nil && credentialCount == 0 {
@@ -344,6 +353,14 @@ func (s *Store) Enqueue(e Event) {
 func (s *Store) Close() {
 	close(s.stop)
 	<-s.done
+}
+
+// GeoIPStatus reports client IP lookup progress.
+func (s *Store) GeoIPStatus(ctx context.Context) GeoIPStatus {
+	if s == nil || s.geo == nil {
+		return GeoIPStatus{}
+	}
+	return s.geo.Status(ctx)
 }
 
 func (s *Store) run() {
@@ -467,6 +484,9 @@ func (s *Store) purge() {
 			return
 		}
 		if n, _ := res.RowsAffected(); n < purgeChunk {
+			if s.geo != nil {
+				s.geo.prune(context.Background())
+			}
 			return
 		}
 	}

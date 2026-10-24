@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -247,7 +248,7 @@ var usageExportColumns = []string{"id", "time", "request_id", "provider", "execu
 	"auth_type", "auth_index", "source", "api_key", "access_provider", "reasoning_effort", "service_tier", "stream",
 	"failed", "status_code", "error", "latency_ms", "ttft_ms", "input_uncached", "cache_read", "cache_write", "output",
 	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent", "response_model", "substituted", "transport",
-	"output_tps"}
+	"output_tps", "client_country", "client_region", "client_city", "client_isp", "client_org"}
 
 // sanitizeCSVCell prefixes a single quote to string cell values starting with formula triggers
 // (=, +, -, @, tab, CR) per OWASP CSV injection guidelines.
@@ -309,6 +310,14 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 	_ = w.Write(usageExportColumns)
 	errExport := s.ExportEvents(ctx, f, func(e *usagestore.Event) error {
 		t := e.Tokens
+		country, region, city, isp, org := "", "", "", "", ""
+		if e.ClientGeo != nil {
+			country = e.ClientGeo.Country
+			region = e.ClientGeo.Region
+			city = e.ClientGeo.City
+			isp = e.ClientGeo.ISP
+			org = e.ClientGeo.Org
+		}
 		return w.Write([]string{
 			strconv.FormatInt(e.ID, 10), time.UnixMilli(e.Timestamp).UTC().Format(time.RFC3339Nano), sanitizeCSVCell(e.RequestID),
 			sanitizeCSVCell(e.Provider), sanitizeCSVCell(e.ExecutorType), sanitizeCSVCell(e.Model), sanitizeCSVCell(e.Alias), sanitizeCSVCell(e.Endpoint),
@@ -321,6 +330,7 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 			strconv.FormatFloat(e.Cost, 'f', -1, 64), strconv.FormatBool(e.Priced), sanitizeCSVCell(e.ClientIP), sanitizeCSVCell(e.UserAgent),
 			sanitizeCSVCell(e.ResponseModel), strconv.FormatBool(e.Substituted), e.Transport,
 			strconv.FormatFloat(e.OutputTPS, 'f', 1, 64),
+			sanitizeCSVCell(country), sanitizeCSVCell(region), sanitizeCSVCell(city), sanitizeCSVCell(isp), sanitizeCSVCell(org),
 		})
 	})
 	w.Flush()
@@ -440,4 +450,32 @@ func writeUsagePricing(c *gin.Context, s *usagestore.Store) {
 		modelsDev["updated_at"] = updatedAt.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, gin.H{"models_dev": modelsDev, "models": models})
+}
+
+// GetUsageStoreGeoIP reports client IP lookup progress.
+func (h *Handler) GetUsageStoreGeoIP(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	c.JSON(http.StatusOK, s.GeoIPStatus(c.Request.Context()))
+}
+
+// RefreshUsageStoreGeoIP looks up one round of new client IPs now.
+func (h *Handler) RefreshUsageStoreGeoIP(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+	if _, err := s.ResolveClientIPs(ctx); err != nil {
+		if errors.Is(err, usagestore.ErrGeoIPDisabled) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "geoip is disabled"})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, s.GeoIPStatus(c.Request.Context()))
 }

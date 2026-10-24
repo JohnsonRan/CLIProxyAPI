@@ -2,6 +2,7 @@ package usagestore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -378,7 +379,9 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
-		client_ip, user_agent, response_model, substituted, transport FROM events`
+		client_ip, user_agent, response_model, substituted, transport,
+		g.country_code, g.country, g.region, g.city, g.asn, g.isp, g.org, g.ok
+		FROM events LEFT JOIN ip_geo g ON g.ip = events.client_ip`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -401,14 +404,23 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 	prices := s.priceCache()
 	for rows.Next() {
 		var e Event
+		var geoCC, geoCountry, geoRegion, geoCity, geoISP, geoOrg sql.NullString
+		var geoASN, geoOK sql.NullInt64
 		t := &e.Tokens
 		if errScan := rows.Scan(&e.ID, &e.Timestamp, &e.RequestID, &e.Provider, &e.ExecutorType, &e.Model, &e.Alias,
 			&e.Endpoint, &e.AuthType, &e.AuthIndex, &e.Source, &e.APIKeyID, &e.APIKey, &e.AccessProvider,
 			&e.ReasoningEffort, &e.ServiceTier, &e.Stream, &e.Failed, &e.StatusCode, &e.Error, &e.LatencyMs, &e.TTFTMs,
 			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
-			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport); errScan != nil {
+			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport,
+			&geoCC, &geoCountry, &geoRegion, &geoCity, &geoASN, &geoISP, &geoOrg, &geoOK); errScan != nil {
 			return errScan
 		}
+		var row *ipGeoRow
+		if geoOK.Valid {
+			row = &ipGeoRow{CountryCode: geoCC.String, Country: geoCountry.String, Region: geoRegion.String,
+				City: geoCity.String, ASN: geoASN.Int64, ISP: geoISP.String, Org: geoOrg.String, OK: geoOK.Int64 == 1}
+		}
+		e.ClientGeo = clientGeo(e.ClientIP, row)
 		e.OutputTPS = tokensPerSecond(e.generation())
 		var a Aggregate
 		a.Requests, a.Tokens = 1, e.Tokens
