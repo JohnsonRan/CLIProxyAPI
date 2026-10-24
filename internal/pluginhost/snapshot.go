@@ -54,6 +54,18 @@ func (h *Host) activeRecords() []capabilityRecord {
 	return h.activeRecordsFromSnapshot(h.Snapshot())
 }
 
+// eachActiveRecord yields the current records of the runtime snapshot in
+// priority order without copying them. Translation hooks run once per streamed
+// chunk, where copying every record through activeRecords was 4% of all
+// allocations in a production heap profile even with no hook registered.
+func (h *Host) eachActiveRecord(yield func(capabilityRecord) bool) {
+	for _, record := range h.Snapshot().records {
+		if h.recordCurrent(record) && !yield(record) {
+			return
+		}
+	}
+}
+
 func (h *Host) activeRecordsFromSnapshot(snap *Snapshot) []capabilityRecord {
 	if snap == nil || len(snap.records) == 0 {
 		return nil

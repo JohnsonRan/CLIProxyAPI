@@ -257,7 +257,7 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 
 func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) []byte {
 	current := bytes.Clone(body)
-	for _, record := range h.activeRecords() {
+	for record := range h.eachActiveRecord {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.RequestNormalizer == nil {
 			continue
 		}
@@ -269,7 +269,7 @@ func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Form
 }
 
 func (h *Host) TranslateRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) ([]byte, bool) {
-	for _, record := range h.activeRecords() {
+	for record := range h.eachActiveRecord {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.RequestTranslator == nil {
 			continue
 		}
@@ -282,7 +282,7 @@ func (h *Host) TranslateRequest(ctx context.Context, from, to sdktranslator.Form
 
 func (h *Host) NormalizeResponseBefore(ctx context.Context, from, to sdktranslator.Format, model string, originalRequestRawJSON, requestRawJSON, body []byte, stream bool) []byte {
 	current := bytes.Clone(body)
-	for _, record := range h.activeRecords() {
+	for record := range h.eachActiveRecord {
 		normalizer := record.plugin.Capabilities.ResponseBeforeTranslator
 		if h.isPluginFused(record.id) || normalizer == nil {
 			continue
@@ -295,7 +295,7 @@ func (h *Host) NormalizeResponseBefore(ctx context.Context, from, to sdktranslat
 }
 
 func (h *Host) TranslateResponse(ctx context.Context, from, to sdktranslator.Format, model string, originalRequestRawJSON, requestRawJSON, body []byte, stream bool) ([]byte, bool) {
-	for _, record := range h.activeRecords() {
+	for record := range h.eachActiveRecord {
 		translator := record.plugin.Capabilities.ResponseTranslator
 		if h.isPluginFused(record.id) || translator == nil {
 			continue
@@ -309,7 +309,7 @@ func (h *Host) TranslateResponse(ctx context.Context, from, to sdktranslator.For
 
 func (h *Host) NormalizeResponseAfter(ctx context.Context, from, to sdktranslator.Format, model string, originalRequestRawJSON, requestRawJSON, body []byte, stream bool) []byte {
 	current := bytes.Clone(body)
-	for _, record := range h.activeRecords() {
+	for record := range h.eachActiveRecord {
 		normalizer := record.plugin.Capabilities.ResponseAfterTranslator
 		if h.isPluginFused(record.id) || normalizer == nil {
 			continue
