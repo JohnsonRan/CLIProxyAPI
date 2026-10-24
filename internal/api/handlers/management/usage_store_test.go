@@ -159,6 +159,8 @@ func TestUsageStoreExportAndAnalysis(t *testing.T) {
 	records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(w.Body.String(), "\ufeff"))).ReadAll()
 	if err != nil || len(records) != 2 || records[1][18] != "a,\"b\"\nc" || records[1][6] != "'=formula" ||
 		records[0][32] != "response_model" || records[0][33] != "substituted" ||
+		records[0][36] != "client_country" || records[0][37] != "client_region" ||
+		records[0][38] != "client_city" || records[0][39] != "client_isp" || records[0][40] != "client_org" ||
 		records[1][32] != "'=danger" || records[1][33] != "true" {
 		t.Fatalf("csv must quote fields, sanitize formula triggers and include substitution cols: %v %q", err, records)
 	}
@@ -195,5 +197,64 @@ func TestUsageStoreStatsResultFilterValidation(t *testing.T) {
 		if w.Code != want {
 			t.Fatalf("%s: %d, want %d (%s)", url, w.Code, want, w.Body.String())
 		}
+	}
+}
+
+func TestUsageStoreGeoIPHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{}
+	r := gin.New()
+	r.GET("/geoip", h.GetUsageStoreGeoIP)
+	r.POST("/geoip/refresh", h.RefreshUsageStoreGeoIP)
+
+	do := func(method, url string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(method, url, nil))
+		return w
+	}
+
+	// 1. When store is disabled -> 409 usage_store_disabled
+	usagestore.Shutdown()
+	if w := do(http.MethodGet, "/geoip"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "usage_store_disabled") {
+		t.Fatalf("GET /geoip when disabled: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodPost, "/geoip/refresh"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "usage_store_disabled") {
+		t.Fatalf("POST /geoip/refresh when disabled: %d %s", w.Code, w.Body.String())
+	}
+
+	// 2. When store is enabled, but geoip is disabled -> status returns enabled=false, refresh returns 400
+	cfg := &config.Config{}
+	cfg.UsageStore = config.UsageStoreConfig{
+		Enable:  true,
+		Path:    filepath.Join(t.TempDir(), "usage.db"),
+		Pricing: config.UsagePricingConfig{DisableModelsDev: true},
+		GeoIP:   config.UsageGeoIPConfig{Disable: true},
+	}
+	usagestore.Apply(cfg)
+	defer usagestore.Shutdown()
+
+	w := do(http.MethodGet, "/geoip")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /geoip when geoip.disable=true: %d %s", w.Code, w.Body.String())
+	}
+	var st usagestore.GeoIPStatus
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Enabled {
+		t.Fatalf("expected enabled=false, got %+v (err: %v)", st, err)
+	}
+
+	if w = do(http.MethodPost, "/geoip/refresh"); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "geoip is disabled") {
+		t.Fatalf("POST /geoip/refresh when geoip.disable=true: %d %s", w.Code, w.Body.String())
+	}
+
+	// 3. Re-enable geoip
+	cfg.UsageStore.GeoIP.Disable = false
+	usagestore.Apply(cfg)
+
+	w = do(http.MethodGet, "/geoip")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /geoip when enabled: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || !st.Enabled {
+		t.Fatalf("expected enabled=true, got %+v (err: %v)", st, err)
 	}
 }

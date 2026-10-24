@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,9 @@ func Apply(cfg *config.Config) {
 	if s != nil {
 		s.SetRetentionDays(sc.RetentionDays)
 		s.pricer.Configure(sc.Pricing)
+		if s.geo != nil {
+			s.geo.Configure(sc.GeoIP)
+		}
 		return
 	}
 	pricer := NewPricer(filepath.Join(filepath.Dir(path), "models-dev-prices.json"))
@@ -64,8 +68,12 @@ func Apply(cfg *config.Config) {
 		log.Errorf("usage store disabled: %v", err)
 		return
 	}
+	if opened.geo != nil {
+		opened.geo.Configure(sc.GeoIP)
+	}
 	current.Store(opened)
 	go opened.refreshPrices()
+	go opened.resolveClientIPs()
 	log.Infof("usage store enabled: %s", path)
 }
 
@@ -98,6 +106,17 @@ func (s *Store) RefreshPrices(ctx context.Context) error {
 	return s.pricer.Refresh(ctx, client)
 }
 
+// ResolveClientIPs looks up one round of new public client IPs now.
+func (s *Store) ResolveClientIPs(ctx context.Context) (int, error) {
+	if s == nil || s.geo == nil {
+		return 0, ErrGeoIPDisabled
+	}
+	client := &http.Client{}
+	proxy, _ := proxyURL.Load().(string)
+	util.SetProxy(&sdkconfig.SDKConfig{ProxyURL: proxy}, client)
+	return s.geo.Resolve(ctx, client)
+}
+
 // Pricer returns the store's price resolver.
 func (s *Store) Pricer() *Pricer { return s.pricer }
 
@@ -114,6 +133,27 @@ func (s *Store) refreshPrices() {
 		}
 		select {
 		case <-ticker.C:
+		case <-s.stop:
+			return
+		}
+	}
+}
+
+// resolveClientIPs looks up new public client IPs once a minute, or sooner when kicked.
+func (s *Store) resolveClientIPs() {
+	ticker := time.NewTicker(geoIPRoundEvery)
+	defer ticker.Stop()
+	for {
+		if s.geo != nil && !s.geo.isDisabled() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if _, err := s.ResolveClientIPs(ctx); err != nil && !errors.Is(err, ErrGeoIPDisabled) {
+				log.Warnf("usage store: look up client ips: %v", err)
+			}
+			cancel()
+		}
+		select {
+		case <-ticker.C:
+		case <-s.geo.kick:
 		case <-s.stop:
 			return
 		}

@@ -16,13 +16,15 @@ func TestUsageStoreUsesV8Layout(t *testing.T) {
             input: 1.5
             output: 6
             cache-read: 0
+      geoip:
+        disable: true
 `)
 	cfg, err := ParseConfigBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	s := cfg.UsageStore
-	if !s.Enable || s.Path != "/data/usage.db" || s.RetentionDays != 7 || !s.Pricing.DisableModelsDev {
+	if !s.Enable || s.Path != "/data/usage.db" || s.RetentionDays != 7 || !s.Pricing.DisableModelsDev || !s.GeoIP.Disable {
 		t.Fatalf("unexpected store config: %+v", s)
 	}
 	if len(s.Pricing.Overrides) != 1 || s.Pricing.Overrides[0].Model != "my-model" || s.Pricing.Overrides[0].Output != 6 {
