@@ -27,6 +27,8 @@ var (
 	applyMu  sync.Mutex
 	current  atomic.Pointer[Store]
 	proxyURL atomic.Value // string
+	// excludeEmbeddings mirrors observability.usage.exclude-embeddings, which the usage queue also honours.
+	excludeEmbeddings atomic.Bool
 )
 
 func init() {
@@ -40,6 +42,8 @@ func Current() *Store { return current.Load() }
 func Apply(cfg *config.Config) {
 	applyMu.Lock()
 	defer applyMu.Unlock()
+	// Home mode keeps every record, as it does for the usage queue.
+	excludeEmbeddings.Store(cfg != nil && cfg.UsageExcludeEmbeddings && !cfg.Home.Enabled)
 	if cfg == nil || !cfg.UsageStore.Enable {
 		closeLocked()
 		return
@@ -125,6 +129,9 @@ type plugin struct{}
 func (plugin) HandleUsage(ctx context.Context, record coreusage.Record) {
 	s := current.Load()
 	if s == nil {
+		return
+	}
+	if excludeEmbeddings.Load() && coreusage.RequestKindFromContext(ctx) == coreusage.RequestKindEmbeddings {
 		return
 	}
 	s.Enqueue(eventFromRecord(ctx, record))
