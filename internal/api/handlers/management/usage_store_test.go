@@ -25,6 +25,7 @@ func TestUsageStoreHandlers(t *testing.T) {
 	r.GET("/pricing", h.GetUsageStorePricing)
 	r.GET("/options", h.GetUsageStoreOptions)
 	r.GET("/realtime", h.GetUsageStoreRealtime)
+	r.GET("/quota-value", h.GetUsageStoreQuotaValue)
 	do := func(url string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
@@ -90,6 +91,14 @@ func TestUsageStoreHandlers(t *testing.T) {
 	var opts usagestore.Options
 	if err := json.Unmarshal(w.Body.Bytes(), &opts); err != nil {
 		t.Fatalf("parse options: %v", err)
+	}
+
+	// Test /quota-value: an empty store lists no windows or models, never null.
+	if w = do("/quota-value?auth_index=a1,a2"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"windows":[]`) || !strings.Contains(w.Body.String(), `"models":[]`) {
+		t.Fatalf("quota-value: %d %s", w.Code, w.Body.String())
+	}
+	if w = do("/quota-value?from=x"); w.Code != http.StatusBadRequest {
+		t.Fatalf("quota-value bad range: %d", w.Code)
 	}
 
 	// Test /realtime
