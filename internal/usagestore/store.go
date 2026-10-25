@@ -275,6 +275,10 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage store: ip_geo index: %w", errIndex)
 	}
+	if _, errQuota := db.Exec(quotaSchema); errQuota != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage store: quota schema: %w", errQuota)
+	}
 	if errBackfill := backfillIPGeo(db); errBackfill != nil {
 		log.Warnf("usage store: register client ips: %v", errBackfill)
 	}
@@ -513,6 +517,10 @@ func (s *Store) purge() {
 			return
 		}
 		if n, _ := res.RowsAffected(); n < purgeChunk {
+			// Quota samples are only useful next to the events they are divided by.
+			if _, errQuota := s.db.Exec(`DELETE FROM quota_samples WHERE observed_at < ?`, cutoff); errQuota != nil {
+				log.Errorf("usage store: purge quota samples: %v", errQuota)
+			}
 			if s.geo != nil {
 				s.geo.prune(context.Background())
 			}

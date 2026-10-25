@@ -518,6 +518,20 @@ func (q *queryPrices) apply(a *Aggregate, model, tier string, contextInput int64
 	return e.source
 }
 
+// lookup returns the effective price for model and tier at contextInput, or false when unpriced.
+func (q *queryPrices) lookup(model, tier string, contextInput int64) (Price, bool) {
+	k := priceKey{model, tier}
+	e, seen := q.cache[k]
+	if !seen {
+		e.price, e.source, e.ok = q.pricer.Lookup(model, tier)
+		q.cache[k] = e
+	}
+	if !e.ok {
+		return Price{}, false
+	}
+	return e.price.ForInput(contextInput), true
+}
+
 // bandInput maps a context band from contextBandSQL back to an input size inside that band.
 func (q *queryPrices) bandInput(band int) int64 {
 	if band <= 0 || band > len(q.thresholds) {
