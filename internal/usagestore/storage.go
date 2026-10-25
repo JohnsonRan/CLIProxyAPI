@@ -68,8 +68,11 @@ func (s *Store) Storage(ctx context.Context) (StorageStatus, error) {
 	st.Optimize = s.optState
 	s.optMu.Unlock()
 
-	var pageSize, freePages int64
+	var pageSize, pageCount, freePages int64
 	if err := s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return st, err
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pageCount); err != nil {
 		return st, err
 	}
 	if err := s.db.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freePages); err != nil {
@@ -94,7 +97,7 @@ func (s *Store) Storage(ctx context.Context) (StorageStatus, error) {
 		return st, err
 	}
 	st.EventsPerDay = float64(recent) * float64(24*time.Hour.Milliseconds()) / float64(span)
-	used := max(st.FileBytes-st.FreeBytes, 0)
+	used := max((pageCount-freePages)*pageSize, 0)
 	st.GrowthBytesPerDay = int64(float64(used) / float64(st.Events) * st.EventsPerDay)
 	return st, nil
 }
@@ -126,14 +129,16 @@ func (s *Store) optimize(keepDays int) {
 	s.optMu.Unlock()
 
 	err := func() error {
-		if keepDays > 0 {
-			n, err := s.purgeBefore(time.Now().Add(-time.Duration(keepDays) * 24 * time.Hour).UnixMilli())
+		days := int64(keepDays)
+		if days == 0 {
+			days = s.retention.Load()
+		}
+		if days >= 0 {
+			n, err := s.purgeBefore(time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli())
 			res.DeletedEvents = n
 			if err != nil {
 				return err
 			}
-		} else {
-			s.purge()
 		}
 		for _, stmt := range []string{`PRAGMA wal_checkpoint(TRUNCATE)`, `VACUUM`, `PRAGMA optimize`, `PRAGMA wal_checkpoint(TRUNCATE)`} {
 			if _, err := s.db.Exec(stmt); err != nil {
