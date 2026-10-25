@@ -195,3 +195,29 @@ func TestGeminiStreamRecordsSafetyStop(t *testing.T) {
 	}
 	capture.await(t, "output_blocked_safety", "HARM_CATEGORY_DANGEROUS_CONTENT (HIGH)")
 }
+
+func TestClaudeStreamRecordsFallback(t *testing.T) {
+	const stream = "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+	capture := captureRiskRecords(t, "claude")
+	server := claudeRiskServer("text/event-stream", stream)
+	defer server.Close()
+	result, err := NewClaudeExecutor(&config.Config{}).ExecuteStream(context.Background(), claudeRiskAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "claude-fable-5",
+		Payload: []byte(`{"model":"claude-fable-5","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: sdktranslator.FormatClaude, Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	for range result.Chunks {
+	}
+	capture.await(t, "refusal_fallback", "claude-fable-5 -> claude-opus-4-8")
+}
