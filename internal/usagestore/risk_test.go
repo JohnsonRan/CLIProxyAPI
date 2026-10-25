@@ -116,8 +116,14 @@ func TestTurnPromptClipsMiddle(t *testing.T) {
 }
 
 func TestRiskEventKeepsPrompt(t *testing.T) {
+	// Both switches are package globals that other tests (e.g. Shutdown) leave changed.
+	prevCapture, prevOff := coreusage.RequestPayloadCapture(), riskPromptsOff.Load()
+	t.Cleanup(func() {
+		coreusage.SetRequestPayloadCapture(prevCapture)
+		riskPromptsOff.Store(prevOff)
+	})
 	coreusage.SetRequestPayloadCapture(true)
-	defer coreusage.SetRequestPayloadCapture(false)
+	riskPromptsOff.Store(false)
 
 	s, err := Open(filepath.Join(t.TempDir(), "usage.db"), 30, testPricer(t))
 	if err != nil {
@@ -133,7 +139,6 @@ func TestRiskEventKeepsPrompt(t *testing.T) {
 	plugin{}.HandleUsage(ctx, rejected)
 	plugin{}.HandleUsage(ctx, coreusage.Record{Provider: "codex", Model: "gpt-x"})
 	riskPromptsOff.Store(true)
-	defer riskPromptsOff.Store(false)
 	plugin{}.HandleUsage(ctx, rejected)
 	s.Close()
 
