@@ -772,8 +772,10 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if record.ResponseHeaders == nil {
 		record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	}
-	if !canBeRiskRecord(record) {
-		ctx = DropRequestPayload(ctx)
+	if requestPayloadCapture.Load() && canBeRiskRecord(record) {
+		if raw := RequestPayloadFromContext(ctx); len(raw) > 0 {
+			ctx = context.WithValue(ctx, requestPayloadSnapshotKey{}, raw)
+		}
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
