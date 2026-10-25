@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	codexTrustedAccessMetadataEvent = `{"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber"],"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`
-	claudeRefusalMessageDelta       = `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"blocked"}},"usage":{"output_tokens":1}}`
+	codexTrustedAccessMetadataEvent   = `{"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber"],"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`
+	codexSafetyBufferingMetadataEvent = `{"type":"response.metadata","metadata":{"type":"safety_buffering","use_cases":["cyber"],"reasons":["policy-check"]}}`
+	claudeRefusalMessageDelta         = `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"blocked"}},"usage":{"output_tokens":1}}`
 )
 
 // riskUsageCapture keeps the first record of a provider that reports an upstream risk.
@@ -78,6 +79,22 @@ func TestCodexStreamRecordsTrustedAccessForCyber(t *testing.T) {
 		server.Close()
 		capture.await(t, "trusted_access_for_cyber", "")
 	}
+}
+
+func TestCodexStreamRecordsSafetyBuffering(t *testing.T) {
+	capture := captureRiskRecords(t, "codex")
+	events := []string{codexCreatedEvent, codexInProgressEvent, codexSafetyBufferingMetadataEvent, codexOutputDeltaEvent, codexCompletedEventBody}
+	server := codexSSEServer(events...)
+	defer server.Close()
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(false)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	if _, errDrain := drainChunks(result); errDrain != nil {
+		t.Fatalf("stream: %v", errDrain)
+	}
+	capture.await(t, "safety_buffering", "use_cases: cyber; reasons: policy-check")
 }
 
 func TestCodexWebsocketRecordsTrustedAccessForCyber(t *testing.T) {

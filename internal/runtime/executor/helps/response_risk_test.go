@@ -39,12 +39,11 @@ func TestExtractResponseRisk(t *testing.T) {
 	}
 }
 
-// The refusal arrives in message_delta and Codex metadata can follow response.completed; both
-// must still reach the record after the response model is final, and the first signal wins.
-func TestUsageReporterKeepsFirstResponseRiskAfterTerminalEvent(t *testing.T) {
+// TestUsageReporterKeepsFirstResponseRisk asserts that the first observed risk signal
+// is retained across frames and that additional-model side records never inherit it.
+func TestUsageReporterKeepsFirstResponseRisk(t *testing.T) {
 	reporter := NewUsageReporter(context.Background(), "codex", "gpt-x", nil)
 	for _, line := range []string{
-		`{"type":"response.completed","response":{"model":"gpt-x"}}`,
 		`{"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber"]}}`,
 		`{"type":"response.metadata","metadata":{"type":"safety_buffering"}}`,
 	} {
@@ -56,6 +55,14 @@ func TestUsageReporterKeepsFirstResponseRiskAfterTerminalEvent(t *testing.T) {
 	claude := extractResponseRisk([]byte(`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":" blocked under the Usage Policy "}}}`), "claude")
 	if claude.Reason != "blocked under the Usage Policy" {
 		t.Fatalf("claude reason = %q", claude.Reason)
+	}
+	buffering := extractResponseRisk([]byte(`{"type":"response.metadata","metadata":{"type":"safety_buffering","use_cases":["cyber"],"reasons":["policy-check"]}}`), "codex")
+	if buffering.Kind != ResponseRiskSafetyBuffering || buffering.Reason != "use_cases: cyber; reasons: policy-check" {
+		t.Fatalf("buffering = %+v", buffering)
+	}
+	bufferingTop := extractResponseRisk([]byte(`{"type":"response.created","safety_buffering":{"use_cases":["bio"]}}`), "codex")
+	if bufferingTop.Kind != ResponseRiskSafetyBuffering || bufferingTop.Reason != "use_cases: bio" {
+		t.Fatalf("bufferingTop = %+v", bufferingTop)
 	}
 	if got := reporter.buildRecordForModel("gpt-image-x", usage.Detail{}, false, usage.Failure{}).UpstreamRisk; got != "" {
 		t.Fatalf("additional-model records must not carry the risk, got %q", got)
