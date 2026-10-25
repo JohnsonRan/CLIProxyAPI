@@ -369,6 +369,31 @@ func (h *Handler) GetUsageStoreAnalysis(c *gin.Context) {
 	c.JSON(http.StatusOK, analysis)
 }
 
+// GetUsageStoreQuotaValue returns the quota window instances sampled in a time range with the
+// API-equivalent usage each took and its extrapolation to 100%. Query: from, to (as for stats),
+// optional auth_index filter.
+func (h *Handler) GetUsageStoreQuotaValue(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	from, to, ok := parseUsageRange(c)
+	if !ok {
+		return
+	}
+	authIndex, err := parseFilterList(c, "auth_index")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	value, err := s.QuotaValue(c.Request.Context(), from, to, authIndex)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, value)
+}
+
 // GetUsageStoreOptions returns distinct dimension values (models, providers, API keys, credentials)
 // observed in the time range, sorted by requests descending.
 func (h *Handler) GetUsageStoreOptions(c *gin.Context) {
