@@ -50,7 +50,6 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/usage/pricing", s.mgmt.GetUsageStorePricing)
 	v8.POST("/observability/usage/pricing/refresh", s.mgmt.RefreshUsageStorePricing)
 	v8.GET("/observability/usage/geoip", s.mgmt.GetUsageStoreGeoIP)
-	v8.POST("/observability/usage/geoip/refresh", s.mgmt.RefreshUsageStoreGeoIP)
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.POST("/credentials", s.mgmt.UploadAuthFileV8)
