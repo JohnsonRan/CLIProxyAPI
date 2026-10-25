@@ -36,11 +36,13 @@ const (
 	maxRiskReasonBytes = 2 << 10
 )
 
-// classifyRisk names the upstream safety action behind a Codex or Claude record and the reason
-// the upstream gave, or returns "" for other providers and unflagged requests.
+// classifyRisk names the upstream safety action behind a Codex, Claude or Gemini-family record and
+// the reason the upstream gave, or returns "" for other providers and unflagged requests.
 func classifyRisk(record coreusage.Record, substituted bool) (risk, reason string) {
 	provider := strings.ToLower(strings.TrimSpace(record.Provider))
-	if provider != "codex" && provider != "claude" {
+	switch provider {
+	case "codex", "claude", "gemini", "gemini-interactions", "vertex", "aistudio", "antigravity":
+	default:
 		return "", ""
 	}
 	if record.Failed || record.Fail.StatusCode >= 400 {
@@ -51,7 +53,8 @@ func classifyRisk(record coreusage.Record, substituted bool) (risk, reason strin
 		}
 	}
 	// Signals the response announced: Claude refusals (refusal_<category>), Codex
-	// trusted_access_for_cyber and in-stream safety_buffering.
+	// trusted_access_for_cyber and in-stream safety_buffering, Gemini prompt_blocked_<reason>
+	// and output_blocked_<reason>.
 	if upstream := strings.TrimSpace(record.UpstreamRisk); upstream != "" {
 		return upstream, truncate(strings.TrimSpace(record.UpstreamRiskReason), maxRiskReasonBytes)
 	}

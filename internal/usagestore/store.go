@@ -230,7 +230,8 @@ type Event struct {
 	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
 	Transport string `json:"transport"`
 	// Risk names the upstream safety action on this request ("" when none): cyber_policy, bio_policy,
-	// invalid_prompt, refusal_<category>, trusted_access_for_cyber, model_reroute or safety_buffering.
+	// invalid_prompt, refusal_<category>, trusted_access_for_cyber, model_reroute, safety_buffering,
+	// prompt_blocked_<reason> or output_blocked_<reason>.
 	Risk string `json:"risk"`
 	// RiskPrompt is the flagged turn as plain text, kept only for risk events.
 	RiskPrompt string `json:"risk_prompt,omitempty"`
