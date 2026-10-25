@@ -207,7 +207,8 @@ func (s *Store) sampleQuota(last map[string]quotaLast) {
 	var rows []row
 	stagedLast := make(map[string]quotaLast)
 	for _, auth := range (*list)() {
-		if auth == nil || auth.Disabled || auth.Quota.ObservedAt.IsZero() {
+		// API keys have no subscription quota; windows relayed by an upstream belong to its pool, not the key.
+		if auth == nil || auth.Disabled || auth.Quota.ObservedAt.IsZero() || auth.AuthKind() == coreauth.AuthKindAPIKey {
 			continue
 		}
 		authIndex := auth.EnsureIndex()
@@ -403,7 +404,8 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 	}
 	lookbackFrom := sampleFrom.Add(-8 * 24 * time.Hour)
 	query := `SELECT auth_index, provider, window, period_s, reset_at, used, observed_at FROM quota_samples
-		WHERE observed_at >= ? AND observed_at < ?`
+		WHERE observed_at >= ? AND observed_at < ?
+		AND auth_index NOT IN (SELECT auth_index FROM credentials WHERE auth_type IN ('apikey', 'api_key'))`
 	args := []any{lookbackFrom.UnixMilli(), to.UnixMilli()}
 	if len(authIndex) > 0 {
 		query += " AND auth_index IN (" + strings.TrimSuffix(strings.Repeat("?,", len(authIndex)), ",") + ")"
