@@ -61,7 +61,7 @@ func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 		if !bytes.Contains(payload, riskNeedleTrustedAccess) && !bytes.Contains(payload, riskNeedleBuffering) {
 			return ResponseRisk{}
 		}
-		return ResponseRisk{Kind: extractCodexMetadataRisk(jsonPayload(payload))}
+		return extractCodexMetadataRisk(jsonPayload(payload))
 	case "gemini", "gemini-interactions", "vertex", "aistudio", "antigravity":
 		// finishReason only appears on the last chunk, so ordinary deltas skip the JSON lookups.
 		if !bytes.Contains(payload, riskNeedleBlockReason) && !bytes.Contains(payload, riskNeedleFinishReason) {
@@ -73,56 +73,87 @@ func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 	}
 }
 
-// extractClaudeRefusal reads stop_reason refusal (or sensitive) from a non-streamed message or
-// from the streamed message_delta, names it by stop_details.category and keeps
-// stop_details.explanation as the reason.
+// extractClaudeRisk reads stop_reason refusal/sensitive or a server-side fallback block.
 func extractClaudeRefusal(data []byte) ResponseRisk {
 	if len(data) == 0 {
 		return ResponseRisk{}
 	}
 	root := gjson.ParseBytes(data)
+	msgType := root.Get("type").String()
+
 	stop := root.Get("stop_reason")
 	details := root.Get("stop_details")
-	if root.Get("type").String() == "message_delta" {
+	if msgType == "message_delta" {
 		stop = root.Get("delta.stop_reason")
 		details = root.Get("delta.stop_details")
 	}
 	reason := stop.String()
-	if reason != "refusal" && reason != "sensitive" {
-		return ResponseRisk{}
+	if reason == "refusal" || reason == "sensitive" {
+		category := sanitizeRiskToken(details.Get("category").String())
+		if category == "" {
+			category = reason
+		}
+		return ResponseRisk{
+			Kind:   responseRiskRefusalPrefix + "_" + category,
+			Reason: strings.TrimSpace(details.Get("explanation").String()),
+		}
 	}
-	category := sanitizeRiskToken(details.Get("category").String())
-	if category == "" {
-		category = reason
-	}
-	return ResponseRisk{
-		Kind:   responseRiskRefusalPrefix + "_" + category,
-		Reason: strings.TrimSpace(details.Get("explanation").String()),
-	}
+
+	return ResponseRisk{}
 }
 
 // extractCodexMetadataRisk reads the safety fields of a Codex response.metadata frame.
-func extractCodexMetadataRisk(data []byte) string {
+func extractCodexMetadataRisk(data []byte) ResponseRisk {
 	if len(data) == 0 {
-		return ""
+		return ResponseRisk{}
 	}
 	switch gjson.GetBytes(data, "type").String() {
 	case "response.metadata", "codex.response.metadata":
 		metadata := gjson.GetBytes(data, "metadata")
 		for _, v := range metadata.Get("openai_verification_recommendation").Array() {
 			if v.String() == ResponseRiskTrustedAccessForCyber {
-				return ResponseRiskTrustedAccessForCyber
+				return ResponseRisk{Kind: ResponseRiskTrustedAccessForCyber}
 			}
 		}
 		if metadata.Get("type").String() == "safety_buffering" {
-			return ResponseRiskSafetyBuffering
+			return ResponseRisk{
+				Kind:   ResponseRiskSafetyBuffering,
+				Reason: codexSafetyBufferingReason(metadata),
+			}
 		}
 	}
 	// The Codex CLI also accepts a top-level safety_buffering object on any event.
-	if gjson.GetBytes(data, "safety_buffering").IsObject() {
-		return ResponseRiskSafetyBuffering
+	if sb := gjson.GetBytes(data, "safety_buffering"); sb.IsObject() {
+		return ResponseRisk{
+			Kind:   ResponseRiskSafetyBuffering,
+			Reason: codexSafetyBufferingReason(sb),
+		}
 	}
-	return ""
+	return ResponseRisk{}
+}
+
+func codexSafetyBufferingReason(v gjson.Result) string {
+	var parts []string
+	if uc := joinStringArray(v.Get("use_cases")); uc != "" {
+		parts = append(parts, "use_cases: "+uc)
+	}
+	if r := joinStringArray(v.Get("reasons")); r != "" {
+		parts = append(parts, "reasons: "+r)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func joinStringArray(v gjson.Result) string {
+	if v.Type == gjson.String {
+		return strings.TrimSpace(v.String())
+	}
+	var items []string
+	for _, item := range v.Array() {
+		if s := strings.TrimSpace(item.String()); s != "" {
+			items = append(items, s)
+		}
+	}
+	return strings.Join(items, ", ")
 }
 
 // extractGeminiSafetyBlock reads a blocked prompt (promptFeedback.blockReason) or a candidate the
