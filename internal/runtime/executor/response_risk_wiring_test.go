@@ -43,12 +43,12 @@ func captureRiskRecords(t *testing.T, provider string) *riskUsageCapture {
 	return c
 }
 
-func (c *riskUsageCapture) await(t *testing.T, want string) {
+func (c *riskUsageCapture) await(t *testing.T, want, wantReason string) {
 	t.Helper()
 	select {
 	case record := <-c.records:
-		if record.UpstreamRisk != want {
-			t.Fatalf("UpstreamRisk = %q, want %q", record.UpstreamRisk, want)
+		if record.UpstreamRisk != want || record.UpstreamRiskReason != wantReason {
+			t.Fatalf("UpstreamRisk = %q (%q), want %q (%q)", record.UpstreamRisk, record.UpstreamRiskReason, want, wantReason)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("no usage record with UpstreamRisk %q", want)
@@ -76,7 +76,7 @@ func TestCodexStreamRecordsTrustedAccessForCyber(t *testing.T) {
 			t.Fatalf("buffering=%v: stream: %v", buffering, errDrain)
 		}
 		server.Close()
-		capture.await(t, "trusted_access_for_cyber")
+		capture.await(t, "trusted_access_for_cyber", "")
 	}
 }
 
@@ -92,7 +92,7 @@ func TestCodexWebsocketRecordsTrustedAccessForCyber(t *testing.T) {
 	if _, errDrain := drainChunks(result); errDrain != nil {
 		t.Fatalf("stream: %v", errDrain)
 	}
-	capture.await(t, "trusted_access_for_cyber")
+	capture.await(t, "trusted_access_for_cyber", "")
 }
 
 func claudeRiskServer(contentType, body string) *httptest.Server {
@@ -128,7 +128,7 @@ func TestClaudeStreamRecordsRefusalCategory(t *testing.T) {
 			_ = chunk
 		}
 		server.Close()
-		capture.await(t, "refusal_cyber")
+		capture.await(t, "refusal_cyber", "blocked")
 	}
 }
 
@@ -143,5 +143,5 @@ func TestClaudeExecuteRecordsRefusalCategory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	capture.await(t, "refusal_bio")
+	capture.await(t, "refusal_bio", "blocked")
 }
