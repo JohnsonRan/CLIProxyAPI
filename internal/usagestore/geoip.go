@@ -105,7 +105,6 @@ type GeoIP struct {
 
 	mu          sync.Mutex
 	disabled    bool
-	lastAt      *time.Time
 	lastError   string
 	pausedUntil time.Time
 
@@ -212,8 +211,17 @@ func (g *GeoIP) Status(ctx context.Context) GeoIPStatus {
 	st := GeoIPStatus{Provider: "ip.sb"}
 	g.mu.Lock()
 	st.Enabled = !g.disabled
-	st.LastLookupAt, st.LastError = g.lastAt, g.lastError
+	st.LastError = g.lastError
 	g.mu.Unlock()
+	// Read from the stored answers so the time survives restarts.
+	var last sql.NullInt64
+	if err := g.db.QueryRowContext(ctx, `SELECT MAX(looked_up_at) FROM ip_geo WHERE ok IN (?, ?) AND looked_up_at > 0`,
+		ipGeoFound, ipGeoNotFound).Scan(&last); err != nil {
+		log.Debugf("usage store: last geoip lookup: %v", err)
+	} else if last.Valid {
+		at := time.UnixMilli(last.Int64).UTC()
+		st.LastLookupAt = &at
+	}
 	if err := g.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ip_geo WHERE ok = ?`, ipGeoFound).Scan(&st.Resolved); err != nil {
 		log.Debugf("usage store: count resolved ips: %v", err)
 	}
@@ -540,11 +548,7 @@ func (g *GeoIP) Resolve(ctx context.Context, client *http.Client) (int, error) {
 		wg.Wait()
 	}
 	wg.Wait()
-	now := g.nowFunc().UTC()
 	g.mu.Lock()
-	if done > 0 {
-		g.lastAt = &now
-	}
 	if ctx.Err() == nil {
 		g.lastError = ""
 		if firstErr != nil {
