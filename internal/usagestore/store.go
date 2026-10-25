@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS events (
 	user_agent TEXT NOT NULL DEFAULT '',
 	response_model TEXT NOT NULL DEFAULT '',
 	substituted INTEGER NOT NULL DEFAULT 0,
-	transport TEXT NOT NULL DEFAULT ''
+	transport TEXT NOT NULL DEFAULT '',
+	risk TEXT NOT NULL DEFAULT '',
+	risk_prompt TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS hourly (
@@ -100,8 +102,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 const insertEventSQL = `INSERT INTO events (ts, request_id, provider, executor_type, model, alias, endpoint, auth_type,
 	auth_index, source, api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed,
 	status_code, error, latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning,
-	unclassified, total, client_ip, user_agent, response_model, substituted, transport)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	unclassified, total, client_ip, user_agent, response_model, substituted, transport, risk, risk_prompt)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 // Credentials keep the latest display fields per auth index so labels survive event pruning.
 const upsertCredentialSQL = `INSERT INTO credentials (auth_index, provider, auth_type, source, last_seen)
@@ -226,6 +228,11 @@ type Event struct {
 	OutputTPS float64 `json:"output_tps"`
 	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
 	Transport string `json:"transport"`
+	// Risk names the upstream safety action on this request ("" when none): cyber_policy, bio_policy,
+	// invalid_prompt, model_reroute or safety_buffering.
+	Risk string `json:"risk"`
+	// RiskPrompt is the flagged turn as plain text, kept only for risk events.
+	RiskPrompt string `json:"risk_prompt,omitempty"`
 	// ClientGeo holds IP geolocation and ISP information. Omitted when client_ip is empty or unresolvable.
 	ClientGeo *ClientGeo `json:"client_geo,omitempty"`
 }
@@ -340,6 +347,8 @@ func migrateSchema(db *sql.DB) error {
 		{"events", "response_model", "TEXT NOT NULL DEFAULT ''"},
 		{"events", "substituted", "INTEGER NOT NULL DEFAULT 0"},
 		{"events", "transport", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "risk", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "risk_prompt", "TEXT NOT NULL DEFAULT ''"},
 		{"hourly", "substituted", "INTEGER NOT NULL DEFAULT 0"},
 		{"hourly", "gen_output", "INTEGER NOT NULL DEFAULT 0"},
 		{"hourly", "gen_ms", "INTEGER NOT NULL DEFAULT 0"},
@@ -470,7 +479,7 @@ func (s *Store) write(batch []Event) error {
 			e.Endpoint, e.AuthType, e.AuthIndex, e.Source, e.APIKeyID, e.APIKey, e.AccessProvider, e.ReasoningEffort,
 			e.ServiceTier, e.Stream, e.Failed, e.StatusCode, e.Error, e.LatencyMs, e.TTFTMs, t.InputUncached,
 			t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total, e.ClientIP, e.UserAgent,
-			e.ResponseModel, subInt, e.Transport); errExec != nil {
+			e.ResponseModel, subInt, e.Transport, e.Risk, e.RiskPrompt); errExec != nil {
 			return errExec
 		}
 		ttftCount := 0

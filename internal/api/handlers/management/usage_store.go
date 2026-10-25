@@ -110,7 +110,7 @@ func parseUsageDimensionFilter(c *gin.Context) (usagestore.StatsFilter, bool) {
 
 // GetUsageStoreStats returns aggregated usage and estimated cost for a time range.
 // Query: from, to (unix seconds or RFC3339; default last 24h), bucket (hour|day), tz_offset (minutes east of UTC),
-// optional model, provider, api_key_id, auth_index filters, and failed / substituted result filters.
+// optional model, provider, api_key_id, auth_index filters, and failed / substituted / risk result filters.
 func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -128,7 +128,7 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if filter.Failed, filter.Substituted, ok = parseUsageResultFilter(c); !ok {
+	if filter.Failed, filter.Substituted, filter.Risk, ok = parseUsageResultFilter(c); !ok {
 		return
 	}
 	stats, err := s.Stats(c.Request.Context(), from, to, c.Query("bucket"), tz, filter)
@@ -139,12 +139,12 @@ func (h *Handler) GetUsageStoreStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-// parseUsageResultFilter reads the optional failed and substituted booleans.
-func parseUsageResultFilter(c *gin.Context) (failed, substituted *bool, ok bool) {
+// parseUsageResultFilter reads the optional failed, substituted and risk booleans.
+func parseUsageResultFilter(c *gin.Context) (failed, substituted, risk *bool, ok bool) {
 	for _, p := range []struct {
 		name string
 		dst  **bool
-	}{{"failed", &failed}, {"substituted", &substituted}} {
+	}{{"failed", &failed}, {"substituted", &substituted}, {"risk", &risk}} {
 		v := strings.TrimSpace(c.Query(p.name))
 		if v == "" {
 			continue
@@ -152,14 +152,14 @@ func parseUsageResultFilter(c *gin.Context) (failed, substituted *bool, ok bool)
 		b, errBool := strconv.ParseBool(v)
 		if errBool != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": p.name + " must be true or false"})
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		*p.dst = &b
 	}
-	return failed, substituted, true
+	return failed, substituted, risk, true
 }
 
-// parseUsageEventFilter reads from, to, model, provider, api_key_id, auth_index, failed, substituted, before, after, limit.
+// parseUsageEventFilter reads from, to, model, provider, api_key_id, auth_index, failed, substituted, risk, before, after, limit.
 func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 	dim, ok := parseUsageDimensionFilter(c)
 	if !ok {
@@ -179,7 +179,7 @@ func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return f, false
 	}
-	if f.Failed, f.Substituted, ok = parseUsageResultFilter(c); !ok {
+	if f.Failed, f.Substituted, f.Risk, ok = parseUsageResultFilter(c); !ok {
 		return f, false
 	}
 	if v := strings.TrimSpace(c.Query("before")); v != "" {
@@ -215,7 +215,7 @@ func parseUsageEventFilter(c *gin.Context) (usagestore.EventFilter, bool) {
 
 // GetUsageStoreEvents returns stored requests newest first (or oldest first when after is specified).
 // Query: from, to, model, provider, api_key_id, auth_index, failed (true|false), substituted (true|false),
-// before (event id), after (event id), limit (<=500).
+// risk (true|false), before (event id), after (event id), limit (<=500).
 func (h *Handler) GetUsageStoreEvents(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
@@ -247,7 +247,7 @@ var usageExportColumns = []string{"id", "time", "request_id", "provider", "execu
 	"auth_type", "auth_index", "source", "api_key", "access_provider", "reasoning_effort", "service_tier", "stream",
 	"failed", "status_code", "error", "latency_ms", "ttft_ms", "input_uncached", "cache_read", "cache_write", "output",
 	"reasoning", "unclassified", "total", "cost_usd", "priced", "client_ip", "user_agent", "response_model", "substituted", "transport",
-	"output_tps", "client_country", "client_region", "client_city", "client_isp", "client_org"}
+	"output_tps", "client_country", "client_region", "client_city", "client_isp", "client_org", "risk", "risk_prompt"}
 
 // sanitizeCSVCell prefixes a single quote to string cell values starting with formula triggers
 // (=, +, -, @, tab, CR) per OWASP CSV injection guidelines.
@@ -330,6 +330,7 @@ func (h *Handler) ExportUsageStoreEvents(c *gin.Context) {
 			sanitizeCSVCell(e.ResponseModel), strconv.FormatBool(e.Substituted), e.Transport,
 			strconv.FormatFloat(e.OutputTPS, 'f', 1, 64),
 			sanitizeCSVCell(country), sanitizeCSVCell(region), sanitizeCSVCell(city), sanitizeCSVCell(isp), sanitizeCSVCell(org),
+			e.Risk, sanitizeCSVCell(e.RiskPrompt),
 		})
 	})
 	w.Flush()
