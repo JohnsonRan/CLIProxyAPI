@@ -17,6 +17,11 @@ func TestExtractResponseRisk(t *testing.T) {
 		{"claude end_turn", "claude", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`, ""},
 		{"claude text mentioning refusal", "claude", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"\"refusal\""}}`, ""},
 		{"claude refusal string elsewhere", "claude", `{"type":"content_block_start","content_block":{"type":"refusal"}}`, ""},
+		{"claude stream fallback", "claude", `data: {"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}}`, ResponseRiskRefusalFallback},
+		{"claude non-stream fallback", "claude", `{"type":"message","content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}],"stop_reason":"end_turn"}`, ResponseRiskRefusalFallback},
+		{"claude delta text mentioning fallback", "claude", `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"fallback"}}`, ""},
+		{"claude block text containing fallback", "claude", `{"type":"content_block_start","content_block":{"type":"text","text":"fallback"}}`, ""},
+		{"claude both refusal and fallback prefers refusal", "claude", `{"type":"message","content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}],"stop_reason":"refusal","stop_details":{"category":"cyber"}}`, "refusal_cyber"},
 		{"codex trusted access", "codex", `{"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber"]}}`, ResponseRiskTrustedAccessForCyber},
 		{"codex websocket metadata", "codex", `{"type":"codex.response.metadata","metadata":{"openai_verification_recommendation":["other","trusted_access_for_cyber"]}}`, ResponseRiskTrustedAccessForCyber},
 		{"codex buffering metadata", "codex", `{"type":"response.metadata","metadata":{"type":"safety_buffering","retry_model":"gpt-x"}}`, ResponseRiskSafetyBuffering},
@@ -63,6 +68,10 @@ func TestUsageReporterKeepsFirstResponseRisk(t *testing.T) {
 	bufferingTop := extractResponseRisk([]byte(`{"type":"response.created","safety_buffering":{"use_cases":["bio"]}}`), "codex")
 	if bufferingTop.Kind != ResponseRiskSafetyBuffering || bufferingTop.Reason != "use_cases: bio" {
 		t.Fatalf("bufferingTop = %+v", bufferingTop)
+	}
+	fb := extractResponseRisk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}}`), "claude")
+	if fb.Kind != ResponseRiskRefusalFallback || fb.Reason != "claude-fable-5 -> claude-opus-4-8" {
+		t.Fatalf("fb = %+v", fb)
 	}
 	if got := reporter.buildRecordForModel("gpt-image-x", usage.Detail{}, false, usage.Failure{}).UpstreamRisk; got != "" {
 		t.Fatalf("additional-model records must not carry the risk, got %q", got)
