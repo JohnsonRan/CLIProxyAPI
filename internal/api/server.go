@@ -255,6 +255,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
 	s.managementRoutesEnabled.Store(hasManagementSecret)
 	redisqueue.SetEnabled(hasManagementSecret || (cfg != nil && cfg.Home.Enabled))
+	if authManager != nil {
+		usagestore.SetAuthLister(authManager.List)
+	}
 	usagestore.Apply(cfg)
 	if hasManagementSecret {
 		s.registerManagementRoutes()
