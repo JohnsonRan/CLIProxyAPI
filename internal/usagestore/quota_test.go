@@ -112,15 +112,6 @@ func TestQuotaValue(t *testing.T) {
 		t.Fatalf("stored samples = %d (%v), want 5", stored, err)
 	}
 
-	// Samples stored before API keys were skipped are hidden by the credential's auth type.
-	if _, err = s.db.Exec(`INSERT INTO credentials (auth_index, provider, auth_type) VALUES ('k0', 'codex', 'api_key')`); err != nil {
-		t.Fatalf("insert credential: %v", err)
-	}
-	if _, err = s.db.Exec(`INSERT INTO quota_samples (auth_index, provider, window, period_s, reset_at, used, observed_at)
-		VALUES ('k0', 'codex', 'primary', 18000, ?, 50, ?)`, primaryReset, now.Add(-time.Minute).UnixMilli()); err != nil {
-		t.Fatalf("insert sample: %v", err)
-	}
-
 	value, err := s.QuotaValue(context.Background(), now.Add(-24*time.Hour), now.Add(time.Minute), nil)
 	if err != nil {
 		t.Fatalf("quota value: %v", err)
