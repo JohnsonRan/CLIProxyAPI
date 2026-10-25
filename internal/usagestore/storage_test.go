@@ -86,3 +86,83 @@ func TestStorageAndOptimize(t *testing.T) {
 		t.Fatalf("second optimize must be refused: %v", err)
 	}
 }
+
+func TestOptimizeDefaultAndNegativeRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 15, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now()
+	old := now.Add(-20 * 24 * time.Hour).UnixMilli()
+	for i := 0; i < 50; i++ {
+		s.Enqueue(Event{Timestamp: old, Provider: "codex", Model: "m"})
+		s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "codex", Model: "m"})
+	}
+
+	waitForEvents := func(want int64) {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			st, err := s.Storage(context.Background())
+			if err == nil && st.Events == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %d events (have %d)", want, st.Events)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitForEvents(100)
+
+	// keepDays == 0 uses s.retention (15 days), so the 50 events at 20 days ago are deleted.
+	if err = s.StartOptimize(0); err != nil {
+		t.Fatalf("start optimize: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	var st StorageStatus
+	for {
+		if st, err = s.Storage(context.Background()); err != nil {
+			t.Fatalf("storage: %v", err)
+		}
+		if !st.Optimize.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("optimize did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st.Optimize.DeletedEvents != 50 || st.Events != 50 || st.Optimize.Error != "" {
+		t.Fatalf("default retention optimize: %+v (events: %d)", st.Optimize, st.Events)
+	}
+
+	// Negative retention keeps forever: nothing is deleted when keepDays == 0.
+	s.SetRetentionDays(-1)
+	for i := 0; i < 50; i++ {
+		s.Enqueue(Event{Timestamp: old, Provider: "codex", Model: "m"})
+	}
+	waitForEvents(100)
+
+	if err = s.StartOptimize(0); err != nil {
+		t.Fatalf("start optimize with negative retention: %v", err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		if st, err = s.Storage(context.Background()); err != nil {
+			t.Fatalf("storage: %v", err)
+		}
+		if !st.Optimize.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("optimize did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st.Optimize.DeletedEvents != 0 || st.Events != 100 || st.Optimize.Error != "" {
+		t.Fatalf("negative retention optimize: %+v (events: %d)", st.Optimize, st.Events)
+	}
+}
