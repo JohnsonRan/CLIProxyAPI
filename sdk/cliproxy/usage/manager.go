@@ -66,6 +66,9 @@ type Record struct {
 	ResponseModel string
 	// UpstreamModel stores the canonical upstream model expected to be served, when an executor maps the requested model.
 	UpstreamModel string
+	// UpstreamRisk names a safety action the upstream response announced, e.g. "refusal_cyber"
+	// (Claude stop_reason refusal) or "trusted_access_for_cyber" (Codex response.metadata).
+	UpstreamRisk string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.

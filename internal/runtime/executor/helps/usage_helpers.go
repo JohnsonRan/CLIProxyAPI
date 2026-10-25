@@ -71,6 +71,9 @@ type UsageReporter struct {
 	// model, so later frames skip parsing entirely.
 	responseModelFinal atomic.Bool
 
+	// upstreamRisk holds the first safety action the upstream response announced (see response_risk.go).
+	upstreamRisk atomic.Pointer[string]
+
 	upstreamModelMu sync.RWMutex
 	// upstreamModel holds the canonical upstream model expected to be served when
 	// it differs from the requested model (e.g. local Kimi model mappings).
@@ -220,7 +223,16 @@ func (r *UsageReporter) accessTokenFingerprint() string {
 // ObserveResponseModel stores the model reported by an upstream response or event and
 // ignores payloads without one; the substitution warning is emitted at publish time.
 func (r *UsageReporter) ObserveResponseModel(payload []byte) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil {
+		return
+	}
+	// Safety signals can follow the terminal model event, so they are read before the early return.
+	if r.upstreamRisk.Load() == nil {
+		if risk := extractResponseRisk(payload, r.provider); risk != "" {
+			r.upstreamRisk.CompareAndSwap(nil, &risk)
+		}
+	}
+	if r.responseModelFinal.Load() {
 		return
 	}
 	provider := ""
@@ -677,9 +689,13 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
 	upstreamModel := ""
+	upstreamRisk := ""
 	if model == r.model {
 		responseModel = r.ResponseModel()
 		upstreamModel = r.UpstreamModel()
+		if risk := r.upstreamRisk.Load(); risk != nil {
+			upstreamRisk = *risk
+		}
 	}
 	return usage.Record{
 		RequestID:            r.requestID,
@@ -706,6 +722,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
 		ResponseModel:        responseModel,
 		UpstreamModel:        upstreamModel,
+		UpstreamRisk:         upstreamRisk,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
 		RequestedAt:          r.requestedAt,
