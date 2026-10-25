@@ -17,6 +17,12 @@ const (
 	ResponseRiskSafetyBuffering = "safety_buffering"
 	// responseRiskRefusalPrefix prefixes the category of a Claude refusal, e.g. "refusal_cyber".
 	responseRiskRefusalPrefix = "refusal"
+	// ResponseRiskPromptBlockedPrefix prefixes a Gemini promptFeedback.blockReason, e.g.
+	// "prompt_blocked_prohibited_content": the prompt itself was blocked.
+	ResponseRiskPromptBlockedPrefix = "prompt_blocked_"
+	// ResponseRiskOutputBlockedPrefix prefixes a Gemini safety finishReason, e.g.
+	// "output_blocked_safety": generation was stopped by the safety filter.
+	ResponseRiskOutputBlockedPrefix = "output_blocked_"
 )
 
 var (
@@ -24,7 +30,16 @@ var (
 	riskNeedleSensitive     = []byte(`"sensitive"`)
 	riskNeedleTrustedAccess = []byte(ResponseRiskTrustedAccessForCyber)
 	riskNeedleBuffering     = []byte(`"safety_buffering"`)
+	riskNeedleBlockReason   = []byte(`"blockReason"`)
+	riskNeedleFinishReason  = []byte(`"finishReason"`)
 )
+
+// geminiSafetyFinishReasons are the finishReason values of the Gemini safety filters. RECITATION
+// (copyright) and ordinary stops are not risk control.
+var geminiSafetyFinishReasons = map[string]bool{
+	"SAFETY": true, "PROHIBITED_CONTENT": true, "BLOCKLIST": true, "SPII": true,
+	"IMAGE_SAFETY": true, "IMAGE_PROHIBITED_CONTENT": true,
+}
 
 // ResponseRisk is a safety action an upstream response announced and the reason it gave, if any.
 type ResponseRisk struct {
@@ -47,6 +62,12 @@ func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 			return ResponseRisk{}
 		}
 		return ResponseRisk{Kind: extractCodexMetadataRisk(jsonPayload(payload))}
+	case "gemini", "gemini-interactions", "vertex", "aistudio", "antigravity":
+		// finishReason only appears on the last chunk, so ordinary deltas skip the JSON lookups.
+		if !bytes.Contains(payload, riskNeedleBlockReason) && !bytes.Contains(payload, riskNeedleFinishReason) {
+			return ResponseRisk{}
+		}
+		return extractGeminiSafetyBlock(jsonPayload(payload))
 	default:
 		return ResponseRisk{}
 	}
@@ -102,6 +123,51 @@ func extractCodexMetadataRisk(data []byte) string {
 		return ResponseRiskSafetyBuffering
 	}
 	return ""
+}
+
+// extractGeminiSafetyBlock reads a blocked prompt (promptFeedback.blockReason) or a candidate the
+// safety filter stopped (finishReason), from plain or Antigravity-wrapped (response.*) payloads.
+// The reason is the upstream message when given, otherwise the blocked safety categories.
+func extractGeminiSafetyBlock(data []byte) ResponseRisk {
+	if len(data) == 0 {
+		return ResponseRisk{}
+	}
+	root := gjson.ParseBytes(data)
+	if wrapped := root.Get("response"); wrapped.IsObject() {
+		root = wrapped
+	}
+	feedback := root.Get("promptFeedback")
+	if block := feedback.Get("blockReason").String(); block != "" && block != "BLOCK_REASON_UNSPECIFIED" {
+		reason := strings.TrimSpace(feedback.Get("blockReasonMessage").String())
+		if reason == "" {
+			reason = blockedSafetyRatings(feedback.Get("safetyRatings"))
+		}
+		return ResponseRisk{Kind: ResponseRiskPromptBlockedPrefix + sanitizeRiskToken(block), Reason: reason}
+	}
+	for _, candidate := range root.Get("candidates").Array() {
+		finish := candidate.Get("finishReason").String()
+		if !geminiSafetyFinishReasons[finish] {
+			continue
+		}
+		reason := strings.TrimSpace(candidate.Get("finishMessage").String())
+		if reason == "" {
+			reason = blockedSafetyRatings(candidate.Get("safetyRatings"))
+		}
+		return ResponseRisk{Kind: ResponseRiskOutputBlockedPrefix + sanitizeRiskToken(finish), Reason: reason}
+	}
+	return ResponseRisk{}
+}
+
+// blockedSafetyRatings lists the safety categories Gemini blocked on, or rated HIGH.
+func blockedSafetyRatings(ratings gjson.Result) string {
+	var parts []string
+	for _, rating := range ratings.Array() {
+		probability := rating.Get("probability").String()
+		if rating.Get("blocked").Bool() || probability == "HIGH" {
+			parts = append(parts, rating.Get("category").String()+" ("+probability+")")
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // sanitizeRiskToken keeps an upstream-controlled label short and limited to [a-z0-9_].

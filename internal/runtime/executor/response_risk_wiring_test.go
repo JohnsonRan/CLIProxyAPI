@@ -145,3 +145,36 @@ func TestClaudeExecuteRecordsRefusalCategory(t *testing.T) {
 	}
 	capture.await(t, "refusal_bio", "blocked")
 }
+
+func geminiRiskAuth(baseURL string) *cliproxyauth.Auth {
+	return &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": baseURL}}
+}
+
+func TestGeminiExecuteRecordsBlockedPrompt(t *testing.T) {
+	capture := captureRiskRecords(t, "gemini")
+	server := claudeRiskServer("application/json", `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT","blockReasonMessage":"The prompt was blocked."},"usageMetadata":{"promptTokenCount":3,"totalTokenCount":3}}`)
+	defer server.Close()
+	_, _ = NewGeminiExecutor(&config.Config{}).Execute(context.Background(), geminiRiskAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gemini-3.1-pro-preview",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
+	capture.await(t, "prompt_blocked_prohibited_content", "The prompt was blocked.")
+}
+
+func TestGeminiStreamRecordsSafetyStop(t *testing.T) {
+	capture := captureRiskRecords(t, "gemini")
+	server := claudeRiskServer("text/event-stream",
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}`+"\n\n"+
+			`data: {"candidates":[{"finishReason":"SAFETY","safetyRatings":[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","probability":"HIGH","blocked":true},{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}`+"\n\n")
+	defer server.Close()
+	result, err := NewGeminiExecutor(&config.Config{}).ExecuteStream(context.Background(), geminiRiskAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gemini-3.1-pro-preview",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini, Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	for range result.Chunks {
+	}
+	capture.await(t, "output_blocked_safety", "HARM_CATEGORY_DANGEROUS_CONTENT (HIGH)")
+}
