@@ -9,7 +9,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Risk values recorded on events the upstream flagged for safety reasons.
+// Risk values recorded on events the upstream flagged for safety reasons. Besides these and the
+// riskErrorCodes, the executor reports refusal_<category> (Claude stop_reason refusal) and
+// trusted_access_for_cyber (Codex response.metadata) through Record.UpstreamRisk.
 const (
 	// RiskModelReroute: Codex served another model than requested. The Codex CLI reports every
 	// such OpenAI-Model mismatch as a reroute for high-risk cyber activity.
@@ -40,6 +42,11 @@ func classifyRisk(record coreusage.Record, substituted bool) string {
 				return code
 			}
 		}
+	}
+	// Signals the response announced: Claude refusals (refusal_<category>), Codex
+	// trusted_access_for_cyber and in-stream safety_buffering.
+	if upstream := strings.TrimSpace(record.UpstreamRisk); upstream != "" {
+		return upstream
 	}
 	if !strings.EqualFold(strings.TrimSpace(record.Provider), "codex") {
 		return ""
