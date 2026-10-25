@@ -226,7 +226,9 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 	if r == nil {
 		return
 	}
-	// Safety signals can follow the terminal model event, so they are read before the early return.
+	// Risk signals are read on every observed frame up to publication (the Codex CLI stops
+	// reading on response.completed, so upstream metadata precedes completion); frames after the
+	// record is published are not reflected.
 	if r.upstreamRisk.Load() == nil {
 		if risk := extractResponseRisk(payload, r.provider); risk.Kind != "" {
 			r.upstreamRisk.CompareAndSwap(nil, &risk)

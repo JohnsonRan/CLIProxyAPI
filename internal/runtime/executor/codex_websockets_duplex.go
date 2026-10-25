@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -572,6 +573,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 		var outputFallback [][]byte
 		// A business rejection followed by EOF with nothing outstanding stays terminal.
 		terminalBusinessRejection := false
+		currentUsageContext := func(prepared *codexWebsocketPrepared) context.Context {
+			if prepared != nil {
+				return coreusage.WithRequestPayload(ctx, prepared.originalPayload)
+			}
+			return coreusage.WithRequestPayload(ctx, nil)
+		}
 		for {
 			kind, payload, errRead := readCodexWebsocketMessage(streamCtx, sess, conn, readCh)
 			if errRead != nil {
@@ -639,7 +646,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 							connectionErr = turnErr
 						}
 					}
-					reporter.PublishFailure(ctx, connectionErr)
+					reporter.PublishFailure(currentUsageContext(current), connectionErr)
 					send(cliproxyexecutor.StreamChunk{Err: connectionErr})
 				}
 				return
@@ -664,7 +671,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					if settings == nil {
 						metadataMu.Unlock()
 						connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("automatic successor has no retained parent settings")}
-						reporter.PublishFailure(ctx, connectionErr)
+						reporter.PublishFailure(currentUsageContext(nil), connectionErr)
 						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
 						return
 					}
@@ -770,7 +777,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					// Account health is independent of which queued request failed.
 					// The conductor records the original classification without replaying
 					// this already-started stream on another credential.
-					reporter.PublishFailure(ctx, credentialErr)
+					reporter.PublishFailure(currentUsageContext(current), credentialErr)
 					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
 						send(cliproxyexecutor.StreamChunk{Err: credentialErr})
 					}
@@ -804,7 +811,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					// either request. Preserve the event and fail the socket without
 					// guessing a scope, replaying input, or cooling the credential.
 					connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("cannot associate websocket failure with a response or pending create")}
-					reporter.PublishFailure(ctx, connectionErr)
+					reporter.PublishFailure(currentUsageContext(nil), connectionErr)
 					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
 						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
 					}
@@ -826,7 +833,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			if replayErr != nil {
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", replayErr)
-				eventReporter.PublishFailure(ctx, replayErr)
+				eventReporter.PublishFailure(currentUsageContext(eventPrepared), replayErr)
 				send(cliproxyexecutor.StreamChunk{Err: replayErr})
 				return
 			}
@@ -834,7 +841,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				var status interface{ StatusCode() int }
 				terminalBusinessRejection = errors.As(terminalErr, &status) && status.StatusCode() == http.StatusBadRequest
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
-				eventReporter.PublishFailure(ctx, terminalErr)
+				eventReporter.PublishFailure(currentUsageContext(eventPrepared), terminalErr)
 				if firstResponse {
 					send(cliproxyexecutor.StreamChunk{Err: terminalErr})
 					return
@@ -875,12 +882,13 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				if eventType != "response.incomplete" {
 					cacheCodexReasoningReplayFromCompleted(current.replayScope, payload)
 				}
+				publishCtx := currentUsageContext(current)
 				if detail, ok := helps.ParseCodexUsageWithOutputItems(payload, outputItems, outputFallback); ok {
-					reporter.Publish(ctx, detail)
+					reporter.Publish(publishCtx, detail)
 				} else {
-					reporter.EnsurePublished(ctx)
+					reporter.EnsurePublished(publishCtx)
 				}
-				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
+				publishCodexImageToolUsageWithOutputItems(publishCtx, reporter, current.clientBody, payload, outputItems, outputFallback)
 			}
 			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
 				return

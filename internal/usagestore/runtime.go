@@ -56,6 +56,7 @@ func Apply(cfg *config.Config) {
 	if s != nil {
 		s.SetRetentionDays(sc.RetentionDays)
 		riskPromptsOff.Store(sc.RiskPrompts.Disable)
+		coreusage.SetRequestPayloadCapture(!sc.RiskPrompts.Disable)
 		s.pricer.Configure(sc.Pricing)
 		if s.geo != nil {
 			s.geo.Configure(sc.GeoIP)
@@ -66,6 +67,7 @@ func Apply(cfg *config.Config) {
 	pricer.Configure(sc.Pricing)
 	opened, err := Open(path, sc.RetentionDays, pricer)
 	if err != nil {
+		coreusage.SetRequestPayloadCapture(false)
 		log.Errorf("usage store disabled: %v", err)
 		return
 	}
@@ -73,6 +75,7 @@ func Apply(cfg *config.Config) {
 		opened.geo.Configure(sc.GeoIP)
 	}
 	riskPromptsOff.Store(sc.RiskPrompts.Disable)
+	coreusage.SetRequestPayloadCapture(!sc.RiskPrompts.Disable)
 	current.Store(opened)
 	go opened.refreshPrices()
 	opened.startResolver()
@@ -88,6 +91,8 @@ func Shutdown() {
 }
 
 func closeLocked() {
+	coreusage.SetRequestPayloadCapture(false)
+	riskPromptsOff.Store(true)
 	if s := current.Swap(nil); s != nil {
 		s.Close()
 		log.Info("usage store closed")
