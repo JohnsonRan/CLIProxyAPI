@@ -205,7 +205,6 @@ func TestUsageStoreGeoIPHandlers(t *testing.T) {
 	h := &Handler{}
 	r := gin.New()
 	r.GET("/geoip", h.GetUsageStoreGeoIP)
-	r.POST("/geoip/refresh", h.RefreshUsageStoreGeoIP)
 
 	do := func(method, url string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -218,11 +217,8 @@ func TestUsageStoreGeoIPHandlers(t *testing.T) {
 	if w := do(http.MethodGet, "/geoip"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "usage_store_disabled") {
 		t.Fatalf("GET /geoip when disabled: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(http.MethodPost, "/geoip/refresh"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "usage_store_disabled") {
-		t.Fatalf("POST /geoip/refresh when disabled: %d %s", w.Code, w.Body.String())
-	}
 
-	// 2. When store is enabled, but geoip is disabled -> status returns enabled=false, refresh returns 400
+	// 2. When store is enabled, but geoip is disabled -> status returns enabled=false
 	cfg := &config.Config{}
 	cfg.UsageStore = config.UsageStoreConfig{
 		Enable:  true,
@@ -240,10 +236,6 @@ func TestUsageStoreGeoIPHandlers(t *testing.T) {
 	var st usagestore.GeoIPStatus
 	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Enabled {
 		t.Fatalf("expected enabled=false, got %+v (err: %v)", st, err)
-	}
-
-	if w = do(http.MethodPost, "/geoip/refresh"); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "geoip is disabled") {
-		t.Fatalf("POST /geoip/refresh when geoip.disable=true: %d %s", w.Code, w.Body.String())
 	}
 
 	// 3. Re-enable geoip
