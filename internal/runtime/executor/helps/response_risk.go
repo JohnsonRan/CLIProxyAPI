@@ -23,11 +23,15 @@ const (
 	// ResponseRiskOutputBlockedPrefix prefixes a Gemini safety finishReason, e.g.
 	// "output_blocked_safety": generation was stopped by the safety filter.
 	ResponseRiskOutputBlockedPrefix = "output_blocked_"
+	// ResponseRiskRefusalFallback names a Claude server-side fallback event (the requested model
+	// declined and the API retried on a fallback model within the same request).
+	ResponseRiskRefusalFallback = "refusal_fallback"
 )
 
 var (
 	riskNeedleRefusal       = []byte(`"refusal"`)
 	riskNeedleSensitive     = []byte(`"sensitive"`)
+	riskNeedleFallback      = []byte(`"fallback"`)
 	riskNeedleTrustedAccess = []byte(ResponseRiskTrustedAccessForCyber)
 	riskNeedleBuffering     = []byte(`"safety_buffering"`)
 	riskNeedleBlockReason   = []byte(`"blockReason"`)
@@ -53,10 +57,12 @@ type ResponseRisk struct {
 func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude":
-		if !bytes.Contains(payload, riskNeedleRefusal) && !bytes.Contains(payload, riskNeedleSensitive) {
+		hasRefusal := bytes.Contains(payload, riskNeedleRefusal) || bytes.Contains(payload, riskNeedleSensitive)
+		hasFallback := bytes.Contains(payload, riskNeedleFallback)
+		if !hasRefusal && !hasFallback {
 			return ResponseRisk{}
 		}
-		return extractClaudeRefusal(jsonPayload(payload))
+		return extractClaudeRisk(jsonPayload(payload))
 	case "codex":
 		if !bytes.Contains(payload, riskNeedleTrustedAccess) && !bytes.Contains(payload, riskNeedleBuffering) {
 			return ResponseRisk{}
@@ -74,7 +80,7 @@ func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 }
 
 // extractClaudeRisk reads stop_reason refusal/sensitive or a server-side fallback block.
-func extractClaudeRefusal(data []byte) ResponseRisk {
+func extractClaudeRisk(data []byte) ResponseRisk {
 	if len(data) == 0 {
 		return ResponseRisk{}
 	}
@@ -99,7 +105,38 @@ func extractClaudeRefusal(data []byte) ResponseRisk {
 		}
 	}
 
+	// Server-side fallback: Anthropic retried on a fallback model when the requested model declined.
+	// Streaming: content_block_start event with content_block.type == "fallback".
+	// Non-streaming: message with content[].type == "fallback".
+	if msgType == "content_block_start" {
+		if block := root.Get("content_block"); block.Get("type").String() == "fallback" {
+			return claudeFallbackRisk(block)
+		}
+	} else if msgType == "message" {
+		for _, block := range root.Get("content").Array() {
+			if block.Get("type").String() == "fallback" {
+				return claudeFallbackRisk(block)
+			}
+		}
+	}
 	return ResponseRisk{}
+}
+
+func claudeFallbackRisk(block gjson.Result) ResponseRisk {
+	fromModel := strings.TrimSpace(block.Get("from.model").String())
+	toModel := strings.TrimSpace(block.Get("to.model").String())
+	reason := ""
+	if fromModel != "" && toModel != "" {
+		reason = fromModel + " -> " + toModel
+	} else if fromModel != "" {
+		reason = fromModel
+	} else {
+		reason = toModel
+	}
+	return ResponseRisk{
+		Kind:   ResponseRiskRefusalFallback,
+		Reason: reason,
+	}
 }
 
 // extractCodexMetadataRisk reads the safety fields of a Codex response.metadata frame.
