@@ -14,6 +14,15 @@ type UsageStoreConfig struct {
 	Pricing UsagePricingConfig `yaml:"pricing,omitempty" json:"pricing,omitempty"`
 	// GeoIP configures the online lookup of client IP location and network (ip.sb).
 	GeoIP UsageGeoIPConfig `yaml:"geoip,omitempty" json:"geoip,omitempty"`
+	// RiskPrompts controls keeping the prompt of requests the upstream flagged (cyber_policy, model reroute).
+	RiskPrompts UsageRiskPromptsConfig `yaml:"risk-prompts,omitempty" json:"risk-prompts,omitempty"`
+}
+
+// UsageRiskPromptsConfig controls whether the usage store keeps the current turn of a request
+// the upstream flagged for safety reasons, next to the event.
+type UsageRiskPromptsConfig struct {
+	// Disable stops storing prompts; the risk type is still recorded. Default false (enabled).
+	Disable bool `yaml:"disable,omitempty" json:"disable,omitempty"`
 }
 
 // UsageGeoIPConfig controls the online lookup of client IP location and network for usage

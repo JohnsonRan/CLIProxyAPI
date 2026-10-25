@@ -1224,6 +1224,12 @@ observability:
         # are cached in the usage database. Private and loopback addresses are never sent.
         # Set true to stop all lookups. Default false (enabled).
         disable: false
+      risk-prompts:
+        # Requests the upstream flags for safety reasons (Codex cyber_policy/bio_policy/invalid_prompt
+        # rejections, model reroutes, safety buffering) are marked with a risk type. Their current
+        # turn (last user message to the end, tool calls included, up to 32 KB) is stored as text with
+        # the event and pruned with it. Set true to keep only the risk type. Default false (enabled).
+        disable: false
 
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false

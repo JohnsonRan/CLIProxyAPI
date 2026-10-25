@@ -1664,6 +1664,7 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	} else if _, exists := opts.Metadata[cliproxyexecutor.SelectionIDMetadataKey]; exists {
 		ctx = coreusage.WithSelectionID(ctx, "")
 	}
+	ctx = coreusage.WithRequestPayload(ctx, opts.OriginalRequest)
 	return ctx
 }
 
