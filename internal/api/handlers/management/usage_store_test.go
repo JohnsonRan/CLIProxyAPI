@@ -259,3 +259,43 @@ func TestUsageStoreGeoIPHandlers(t *testing.T) {
 		t.Fatalf("expected enabled=true, got %+v (err: %v)", st, err)
 	}
 }
+
+func TestUsageStoreStorageHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{}
+	r := gin.New()
+	r.GET("/storage", h.GetUsageStoreStorage)
+	r.POST("/storage/optimize", h.OptimizeUsageStore)
+	do := func(method, url, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, url, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	usagestore.Shutdown()
+	if w := do(http.MethodGet, "/storage", ""); w.Code != http.StatusConflict {
+		t.Fatalf("GET /storage when disabled: %d %s", w.Code, w.Body.String())
+	}
+
+	cfg := &config.Config{}
+	cfg.UsageStore = config.UsageStoreConfig{Enable: true, Path: filepath.Join(t.TempDir(), "usage.db"),
+		Pricing: config.UsagePricingConfig{DisableModelsDev: true}, GeoIP: config.UsageGeoIPConfig{Disable: true}}
+	usagestore.Apply(cfg)
+	defer usagestore.Shutdown()
+
+	w := do(http.MethodGet, "/storage", "")
+	var st usagestore.StorageStatus
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &st) != nil || st.FileBytes <= 0 || st.Path != cfg.UsageStore.Path {
+		t.Fatalf("GET /storage: %d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []string{`{"keep_days":-1}`, `{"keep_days":99999}`, `{"keep_days":"x"}`} {
+		if w = do(http.MethodPost, "/storage/optimize", body); w.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w = do(http.MethodPost, "/storage/optimize", `{"keep_days":7}`); w.Code != http.StatusAccepted {
+		t.Fatalf("POST optimize: %d %s", w.Code, w.Body.String())
+	}
+}
