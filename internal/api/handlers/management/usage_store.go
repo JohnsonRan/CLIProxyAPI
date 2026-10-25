@@ -485,3 +485,52 @@ func (h *Handler) GetUsageStoreGeoIP(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, s.GeoIPStatus(c.Request.Context()))
 }
+
+// GetUsageStoreStorage reports the database size, free pages, daily growth and optimize progress.
+func (h *Handler) GetUsageStoreStorage(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	st, err := s.Storage(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, st)
+}
+
+// maxOptimizeKeepDays bounds keep_days to ten years.
+const maxOptimizeKeepDays = 3650
+
+// OptimizeUsageStore starts deleting events older than keep_days (0 or absent keeps retention) and
+// a VACUUM in the background; it answers 202 with the storage status, or 409 while one runs.
+func (h *Handler) OptimizeUsageStore(c *gin.Context) {
+	s := currentUsageStore(c)
+	if s == nil {
+		return
+	}
+	var body struct {
+		KeepDays int `json:"keep_days"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+	}
+	if body.KeepDays < 0 || body.KeepDays > maxOptimizeKeepDays {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("keep_days must be 0..%d", maxOptimizeKeepDays)})
+		return
+	}
+	if err := s.StartOptimize(body.KeepDays); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "optimize_running", "message": err.Error()})
+		return
+	}
+	st, err := s.Storage(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, st)
+}

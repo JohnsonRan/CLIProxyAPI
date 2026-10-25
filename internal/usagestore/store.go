@@ -257,6 +257,10 @@ type Store struct {
 	cancel   context.CancelFunc
 	lookups  sync.WaitGroup
 	resolver sync.Once
+	// maint carries optimize requests to the writer goroutine (keep days, 0 = retention only).
+	maint    chan int
+	optMu    sync.Mutex
+	optState OptimizeStatus
 }
 
 // Open creates or opens the database at path and starts the writer.
@@ -302,6 +306,7 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		ch:     make(chan Event, writeBuffer),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
+		maint:  make(chan int, 1),
 		pricer: pricer,
 		geo:    NewGeoIP(db),
 	}
@@ -429,6 +434,11 @@ func (s *Store) run() {
 			if len(batch) >= writeBatch {
 				flush()
 			}
+		case keepDays := <-s.maint:
+			// Runs here so new events wait in the channel instead of failing on the vacuum's lock.
+			flush()
+			s.optimize(keepDays)
+			lastPurge = time.Now()
 		case <-ticker.C:
 			flush()
 			if time.Since(lastPurge) >= purgeInterval {
@@ -523,14 +533,22 @@ func (s *Store) purge() {
 	if days < 0 {
 		return
 	}
-	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+	if _, err := s.purgeBefore(time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()); err != nil {
+		log.Errorf("usage store: purge: %v", err)
+	}
+}
+
+// purgeBefore deletes events (and quota samples) older than cutoff ms and returns the events deleted.
+func (s *Store) purgeBefore(cutoff int64) (int64, error) {
+	var deleted int64
 	for {
 		res, err := s.db.Exec(`DELETE FROM events WHERE id IN (SELECT id FROM events WHERE ts < ? LIMIT ?)`, cutoff, purgeChunk)
 		if err != nil {
-			log.Errorf("usage store: purge: %v", err)
-			return
+			return deleted, err
 		}
-		if n, _ := res.RowsAffected(); n < purgeChunk {
+		n, _ := res.RowsAffected()
+		deleted += n
+		if n < purgeChunk {
 			// Quota samples are only useful next to the events they are divided by.
 			if _, errQuota := s.db.Exec(`DELETE FROM quota_samples WHERE observed_at < ?`, cutoff); errQuota != nil {
 				log.Errorf("usage store: purge quota samples: %v", errQuota)
@@ -538,7 +556,7 @@ func (s *Store) purge() {
 			if s.geo != nil {
 				s.geo.prune(context.Background())
 			}
-			return
+			return deleted, nil
 		}
 	}
 }
