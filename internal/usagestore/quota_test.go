@@ -74,7 +74,7 @@ func TestQuotaValue(t *testing.T) {
 	primaryReset := now.Add(3 * time.Hour).Unix() // 5h window started 2h ago
 	secondaryReset := now.Add(6 * 24 * time.Hour).Unix()
 	snapshot := func(observed time.Time, primary, secondary int, resetAfterJitter int64) []*coreauth.Auth {
-		return []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+		quota := coreauth.QuotaState{
 			ObservedAt: observed,
 			Signals: map[string]string{
 				"X-Codex-Primary-Used-Percent":        strconv.Itoa(primary),
@@ -84,7 +84,11 @@ func TestQuotaValue(t *testing.T) {
 				"X-Codex-Secondary-Window-Minutes":    "10080",
 				"X-Codex-Secondary-Reset-At":          strconv.FormatInt(secondaryReset, 10),
 			},
-		}}}
+		}
+		// An API key relaying upstream quota headers must not be sampled.
+		apiKey := &coreauth.Auth{ID: "k1", Index: "k1", Provider: "codex", Quota: quota.Clone(),
+			Attributes: map[string]string{coreauth.AttributeAPIKey: "sk-test"}}
+		return []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: quota}, apiKey}
 	}
 	last := map[string]quotaLast{}
 	for _, step := range []struct {
@@ -106,6 +110,15 @@ func TestQuotaValue(t *testing.T) {
 	var stored int
 	if err = s.db.QueryRow(`SELECT COUNT(*) FROM quota_samples`).Scan(&stored); err != nil || stored != 5 {
 		t.Fatalf("stored samples = %d (%v), want 5", stored, err)
+	}
+
+	// Samples stored before API keys were skipped are hidden by the credential's auth type.
+	if _, err = s.db.Exec(`INSERT INTO credentials (auth_index, provider, auth_type) VALUES ('k0', 'codex', 'api_key')`); err != nil {
+		t.Fatalf("insert credential: %v", err)
+	}
+	if _, err = s.db.Exec(`INSERT INTO quota_samples (auth_index, provider, window, period_s, reset_at, used, observed_at)
+		VALUES ('k0', 'codex', 'primary', 18000, ?, 50, ?)`, primaryReset, now.Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatalf("insert sample: %v", err)
 	}
 
 	value, err := s.QuotaValue(context.Background(), now.Add(-24*time.Hour), now.Add(time.Minute), nil)
