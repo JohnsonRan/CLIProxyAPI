@@ -26,7 +26,7 @@ func TestExtractResponseRisk(t *testing.T) {
 		{"other provider", "openai", `{"stop_reason":"refusal"}`, ""},
 	}
 	for _, tc := range cases {
-		if got := extractResponseRisk([]byte(tc.payload), tc.provider); got != tc.want {
+		if got := extractResponseRisk([]byte(tc.payload), tc.provider).Kind; got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -45,6 +45,10 @@ func TestUsageReporterKeepsFirstResponseRiskAfterTerminalEvent(t *testing.T) {
 	}
 	if got := reporter.buildRecordForModel("gpt-x", usage.Detail{}, false, usage.Failure{}).UpstreamRisk; got != ResponseRiskTrustedAccessForCyber {
 		t.Fatalf("UpstreamRisk = %q, want %q", got, ResponseRiskTrustedAccessForCyber)
+	}
+	claude := extractResponseRisk([]byte(`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":" blocked under the Usage Policy "}}}`), "claude")
+	if claude.Reason != "blocked under the Usage Policy" {
+		t.Fatalf("claude reason = %q", claude.Reason)
 	}
 	if got := reporter.buildRecordForModel("gpt-image-x", usage.Detail{}, false, usage.Failure{}).UpstreamRisk; got != "" {
 		t.Fatalf("additional-model records must not carry the risk, got %q", got)

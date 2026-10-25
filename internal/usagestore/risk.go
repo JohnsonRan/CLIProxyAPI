@@ -32,30 +32,47 @@ const (
 	// riskPromptHeadBytes is how much of the turn start (the user message) survives truncation;
 	// the rest of the budget keeps the turn end, where the triggering tool output usually is.
 	riskPromptHeadBytes = 8 << 10
+	// maxRiskReasonBytes caps the upstream explanation kept with a flagged event.
+	maxRiskReasonBytes = 2 << 10
 )
 
-// classifyRisk names the upstream safety action behind a record, or returns "".
-func classifyRisk(record coreusage.Record, substituted bool) string {
+// classifyRisk names the upstream safety action behind a Codex or Claude record and the reason
+// the upstream gave, or returns "" for other providers and unflagged requests.
+func classifyRisk(record coreusage.Record, substituted bool) (risk, reason string) {
+	provider := strings.ToLower(strings.TrimSpace(record.Provider))
+	if provider != "codex" && provider != "claude" {
+		return "", ""
+	}
 	if record.Failed || record.Fail.StatusCode >= 400 {
 		for _, code := range riskErrorCodes {
 			if strings.Contains(record.Fail.Body, `"`+code+`"`) {
-				return code
+				return code, errorMessage(record.Fail.Body)
 			}
 		}
 	}
 	// Signals the response announced: Claude refusals (refusal_<category>), Codex
 	// trusted_access_for_cyber and in-stream safety_buffering.
 	if upstream := strings.TrimSpace(record.UpstreamRisk); upstream != "" {
-		return upstream
+		return upstream, truncate(strings.TrimSpace(record.UpstreamRiskReason), maxRiskReasonBytes)
 	}
-	if !strings.EqualFold(strings.TrimSpace(record.Provider), "codex") {
-		return ""
+	if provider != "codex" {
+		return "", ""
 	}
 	if substituted {
-		return RiskModelReroute
+		return RiskModelReroute, ""
 	}
 	if strings.EqualFold(record.ResponseHeaders.Get("X-Codex-Safety-Buffering-Enabled"), "true") {
-		return RiskSafetyBuffering
+		return RiskSafetyBuffering, ""
+	}
+	return "", ""
+}
+
+// errorMessage returns the upstream message of a rejection body, or "" when it has none.
+func errorMessage(body string) string {
+	for _, path := range []string{"error.message", "message", "response.error.message"} {
+		if m := strings.TrimSpace(gjson.Get(body, path).String()); m != "" {
+			return truncate(m, maxRiskReasonBytes)
+		}
 	}
 	return ""
 }

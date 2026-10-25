@@ -276,8 +276,8 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 		ResponseModel: served,
 		Transport:     transportOf(meta.WebSocket, record.Stream || coreusage.StreamFromContext(ctx)),
 		Substituted:   substituted,
-		Risk:          classifyRisk(record, substituted),
 	}
+	e.Risk, e.RiskReason = classifyRisk(record, substituted)
 	if e.Risk != "" && !riskPromptsOff.Load() {
 		e.RiskPrompt = turnPrompt(coreusage.RequestPayloadFromContext(ctx))
 	}

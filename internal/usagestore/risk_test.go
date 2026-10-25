@@ -18,26 +18,31 @@ func TestClassifyRisk(t *testing.T) {
 		record      coreusage.Record
 		substituted bool
 		want        string
+		wantReason  string
 	}{
 		{"cyber policy rejection", coreusage.Record{Provider: "codex", Failed: true,
-			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"type":"invalid_request","code":"cyber_policy","message":"flagged"}}`}}, false, "cyber_policy"},
-		{"bio policy on any provider", coreusage.Record{Provider: "openai", Failed: true,
-			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"bio_policy"}}`}}, false, "bio_policy"},
-		{"codex reroute", coreusage.Record{Provider: "codex"}, true, RiskModelReroute},
-		{"claude refusal from the response", coreusage.Record{Provider: "claude", UpstreamRisk: "refusal_cyber"}, false, "refusal_cyber"},
-		{"codex verification beats reroute", coreusage.Record{Provider: "codex", UpstreamRisk: "trusted_access_for_cyber"}, true, "trusted_access_for_cyber"},
+			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"type":"invalid_request","code":"cyber_policy","message":"flagged for cyber activity"}}`}}, false, "cyber_policy", "flagged for cyber activity"},
+		{"rejection without a message", coreusage.Record{Provider: "codex", Failed: true,
+			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"bio_policy"}}`}}, false, "bio_policy", ""},
+		{"other providers are ignored", coreusage.Record{Provider: "openai", Failed: true,
+			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"bio_policy"}}`}}, false, "", ""},
+		{"codex reroute", coreusage.Record{Provider: "codex"}, true, RiskModelReroute, ""},
+		{"claude refusal from the response", coreusage.Record{Provider: "claude", UpstreamRisk: "refusal_cyber",
+			UpstreamRiskReason: " blocked under the Usage Policy "}, false, "refusal_cyber", "blocked under the Usage Policy"},
+		{"claude substitution is not risk", coreusage.Record{Provider: "claude"}, true, "", ""},
+		{"codex verification beats reroute", coreusage.Record{Provider: "codex", UpstreamRisk: "trusted_access_for_cyber"}, true, "trusted_access_for_cyber", ""},
 		{"rejection code beats response signal", coreusage.Record{Provider: "codex", Failed: true, UpstreamRisk: "safety_buffering",
-			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"cyber_policy"}}`}}, false, "cyber_policy"},
-		{"other provider substitution is not risk", coreusage.Record{Provider: "kimi"}, true, ""},
-		{"codex safety buffering", coreusage.Record{Provider: "codex", ResponseHeaders: buffering}, false, RiskSafetyBuffering},
+			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"cyber_policy","message":"m"}}`}}, false, "cyber_policy", "m"},
+		{"other provider substitution is not risk", coreusage.Record{Provider: "kimi"}, true, "", ""},
+		{"codex safety buffering", coreusage.Record{Provider: "codex", ResponseHeaders: buffering}, false, RiskSafetyBuffering, ""},
 		{"ordinary failure", coreusage.Record{Provider: "codex", Failed: true,
-			Fail: coreusage.Failure{StatusCode: 429, Body: `{"error":{"code":"rate_limit_exceeded"}}`}}, false, ""},
+			Fail: coreusage.Failure{StatusCode: 429, Body: `{"error":{"code":"rate_limit_exceeded"}}`}}, false, "", ""},
 		{"policy code in a successful record is ignored", coreusage.Record{Provider: "codex",
-			Fail: coreusage.Failure{Body: `"cyber_policy"`}}, false, ""},
+			Fail: coreusage.Failure{Body: `"cyber_policy"`}}, false, "", ""},
 	}
 	for _, tc := range cases {
-		if got := classifyRisk(tc.record, tc.substituted); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		if got, reason := classifyRisk(tc.record, tc.substituted); got != tc.want || reason != tc.wantReason {
+			t.Errorf("%s: got %q (%q), want %q (%q)", tc.name, got, reason, tc.want, tc.wantReason)
 		}
 	}
 }
@@ -119,7 +124,7 @@ func TestRiskEventKeepsPrompt(t *testing.T) {
 	payload := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"find CVEs"}]}]}`)
 	ctx := coreusage.WithRequestPayload(context.Background(), payload)
 	rejected := coreusage.Record{Provider: "codex", Model: "gpt-x", Failed: true,
-		Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"cyber_policy"}}`}}
+		Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"cyber_policy","message":"flagged"}}`}}
 	plugin{}.HandleUsage(ctx, rejected)
 	plugin{}.HandleUsage(ctx, coreusage.Record{Provider: "codex", Model: "gpt-x"})
 	riskPromptsOff.Store(true)
@@ -141,7 +146,7 @@ func TestRiskEventKeepsPrompt(t *testing.T) {
 	if events[0].Risk != "cyber_policy" || events[0].RiskPrompt != "" {
 		t.Fatalf("disabled prompts: %+v", events[0])
 	}
-	if events[1].Risk != "cyber_policy" || !strings.Contains(events[1].RiskPrompt, "find CVEs") {
+	if events[1].Risk != "cyber_policy" || events[1].RiskReason != "flagged" || !strings.Contains(events[1].RiskPrompt, "find CVEs") {
 		t.Fatalf("risk event: risk=%q prompt=%q", events[1].Risk, events[1].RiskPrompt)
 	}
 	clean := false

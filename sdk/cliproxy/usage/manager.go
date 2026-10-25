@@ -69,6 +69,9 @@ type Record struct {
 	// UpstreamRisk names a safety action the upstream response announced, e.g. "refusal_cyber"
 	// (Claude stop_reason refusal) or "trusted_access_for_cyber" (Codex response.metadata).
 	UpstreamRisk string
+	// UpstreamRiskReason is the explanation the upstream gave with UpstreamRisk, e.g. Claude's
+	// stop_details.explanation; empty when none was given.
+	UpstreamRiskReason string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.

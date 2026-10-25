@@ -26,30 +26,38 @@ var (
 	riskNeedleBuffering     = []byte(`"safety_buffering"`)
 )
 
-// extractResponseRisk reports the safety action an upstream response frame announces, or "".
-// A substring check gates the JSON lookups, so ordinary frames cost one or two byte scans.
-func extractResponseRisk(payload []byte, provider string) string {
+// ResponseRisk is a safety action an upstream response announced and the reason it gave, if any.
+type ResponseRisk struct {
+	Kind   string
+	Reason string
+}
+
+// extractResponseRisk reports the safety action an upstream response frame announces; Kind is
+// empty when there is none. A substring check gates the JSON lookups, so ordinary frames cost
+// one or two byte scans.
+func extractResponseRisk(payload []byte, provider string) ResponseRisk {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude":
 		if !bytes.Contains(payload, riskNeedleRefusal) && !bytes.Contains(payload, riskNeedleSensitive) {
-			return ""
+			return ResponseRisk{}
 		}
 		return extractClaudeRefusal(jsonPayload(payload))
 	case "codex":
 		if !bytes.Contains(payload, riskNeedleTrustedAccess) && !bytes.Contains(payload, riskNeedleBuffering) {
-			return ""
+			return ResponseRisk{}
 		}
-		return extractCodexMetadataRisk(jsonPayload(payload))
+		return ResponseRisk{Kind: extractCodexMetadataRisk(jsonPayload(payload))}
 	default:
-		return ""
+		return ResponseRisk{}
 	}
 }
 
 // extractClaudeRefusal reads stop_reason refusal (or sensitive) from a non-streamed message or
-// from the streamed message_delta, and names it by stop_details.category.
-func extractClaudeRefusal(data []byte) string {
+// from the streamed message_delta, names it by stop_details.category and keeps
+// stop_details.explanation as the reason.
+func extractClaudeRefusal(data []byte) ResponseRisk {
 	if len(data) == 0 {
-		return ""
+		return ResponseRisk{}
 	}
 	root := gjson.ParseBytes(data)
 	stop := root.Get("stop_reason")
@@ -60,13 +68,16 @@ func extractClaudeRefusal(data []byte) string {
 	}
 	reason := stop.String()
 	if reason != "refusal" && reason != "sensitive" {
-		return ""
+		return ResponseRisk{}
 	}
 	category := sanitizeRiskToken(details.Get("category").String())
 	if category == "" {
 		category = reason
 	}
-	return responseRiskRefusalPrefix + "_" + category
+	return ResponseRisk{
+		Kind:   responseRiskRefusalPrefix + "_" + category,
+		Reason: strings.TrimSpace(details.Get("explanation").String()),
+	}
 }
 
 // extractCodexMetadataRisk reads the safety fields of a Codex response.metadata frame.
