@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -240,6 +241,11 @@ type Store struct {
 	dropped   atomic.Int64
 	pricer    *Pricer
 	geo       *GeoIP
+	// ctx ends with the store; background lookups use it so Close stops them.
+	ctx      context.Context
+	cancel   context.CancelFunc
+	lookups  sync.WaitGroup
+	resolver sync.Once
 }
 
 // Open creates or opens the database at path and starts the writer.
@@ -257,15 +263,25 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage store: schema: %w", errSchema)
 	}
-	if errMigrate := migrateSchema(db); errMigrate != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("usage store: migrate: %w", errMigrate)
-	}
 	if _, errGeo := db.Exec(ipGeoSchema); errGeo != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage store: ip_geo schema: %w", errGeo)
 	}
+	if errMigrate := migrateSchema(db); errMigrate != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage store: migrate: %w", errMigrate)
+	}
+	if _, errIndex := db.Exec(ipGeoIndex); errIndex != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage store: ip_geo index: %w", errIndex)
+	}
+	if errBackfill := backfillIPGeo(db); errBackfill != nil {
+		log.Warnf("usage store: register client ips: %v", errBackfill)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Store{
+		ctx:    ctx,
+		cancel: cancel,
 		path:   path,
 		db:     db,
 		ch:     make(chan Event, writeBuffer),
@@ -323,6 +339,7 @@ func migrateSchema(db *sql.DB) error {
 		{"hourly", "substituted", "INTEGER NOT NULL DEFAULT 0"},
 		{"hourly", "gen_output", "INTEGER NOT NULL DEFAULT 0"},
 		{"hourly", "gen_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"ip_geo", "seen_at", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		exists, err := hasColumn(col.table, col.name)
 		if err != nil {
@@ -349,8 +366,10 @@ func (s *Store) Enqueue(e Event) {
 	}
 }
 
-// Close flushes buffered events and closes the database.
+// Close stops background lookups, then flushes buffered events and closes the database.
 func (s *Store) Close() {
+	s.cancel()
+	s.lookups.Wait()
 	close(s.stop)
 	<-s.done
 }
@@ -431,6 +450,10 @@ func (s *Store) write(batch []Event) error {
 		return err
 	}
 	defer func() { _ = upHourly.Close() }()
+	newPublicIP, err := registerClientIPs(tx, batch)
+	if err != nil {
+		return fmt.Errorf("register client ips: %w", err)
+	}
 	latest := map[string]*Event{}
 	for i := range batch {
 		e := &batch[i]
@@ -468,7 +491,13 @@ func (s *Store) write(batch []Event) error {
 			return errExec
 		}
 	}
-	return tx.Commit()
+	if errCommit := tx.Commit(); errCommit != nil {
+		return errCommit
+	}
+	if newPublicIP && s.geo != nil {
+		s.geo.Kick()
+	}
+	return nil
 }
 
 func (s *Store) purge() {

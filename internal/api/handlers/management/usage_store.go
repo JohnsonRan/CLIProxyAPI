@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -456,25 +455,6 @@ func writeUsagePricing(c *gin.Context, s *usagestore.Store) {
 func (h *Handler) GetUsageStoreGeoIP(c *gin.Context) {
 	s := currentUsageStore(c)
 	if s == nil {
-		return
-	}
-	c.JSON(http.StatusOK, s.GeoIPStatus(c.Request.Context()))
-}
-
-// RefreshUsageStoreGeoIP looks up one round of new client IPs now.
-func (h *Handler) RefreshUsageStoreGeoIP(c *gin.Context) {
-	s := currentUsageStore(c)
-	if s == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
-	defer cancel()
-	if _, err := s.ResolveClientIPs(ctx); err != nil {
-		if errors.Is(err, usagestore.ErrGeoIPDisabled) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "geoip is disabled"})
-			return
-		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, s.GeoIPStatus(c.Request.Context()))

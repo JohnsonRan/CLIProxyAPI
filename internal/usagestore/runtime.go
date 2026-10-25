@@ -73,7 +73,7 @@ func Apply(cfg *config.Config) {
 	}
 	current.Store(opened)
 	go opened.refreshPrices()
-	go opened.resolveClientIPs()
+	opened.startResolver()
 	log.Infof("usage store enabled: %s", path)
 }
 
@@ -106,15 +106,13 @@ func (s *Store) RefreshPrices(ctx context.Context) error {
 	return s.pricer.Refresh(ctx, client)
 }
 
-// ResolveClientIPs looks up one round of new public client IPs now.
-func (s *Store) ResolveClientIPs(ctx context.Context) (int, error) {
-	if s == nil || s.geo == nil {
-		return 0, ErrGeoIPDisabled
-	}
+func (s *Store) resolveRound() {
 	client := &http.Client{}
 	proxy, _ := proxyURL.Load().(string)
 	util.SetProxy(&sdkconfig.SDKConfig{ProxyURL: proxy}, client)
-	return s.geo.Resolve(ctx, client)
+	if _, err := s.geo.Resolve(s.ctx, client); err != nil && !errors.Is(err, ErrGeoIPDisabled) && s.ctx.Err() == nil {
+		log.Warnf("usage store: look up client ips: %v", err)
+	}
 }
 
 // Pricer returns the store's price resolver.
@@ -139,22 +137,33 @@ func (s *Store) refreshPrices() {
 	}
 }
 
-// resolveClientIPs looks up new public client IPs once a minute, or sooner when kicked.
+// startResolver runs the background lookup loop once per store; Close waits for it.
+func (s *Store) startResolver() {
+	s.resolver.Do(func() {
+		s.lookups.Add(1)
+		go func() {
+			defer s.lookups.Done()
+			s.resolveClientIPs()
+		}()
+	})
+}
+
+// resolveClientIPs drains pending client IPs (paced by GeoIP.Resolve) each minute, or sooner when
+// the writer registers a new public address, until the store closes.
 func (s *Store) resolveClientIPs() {
 	ticker := time.NewTicker(geoIPRoundEvery)
 	defer ticker.Stop()
 	for {
-		if s.geo != nil && !s.geo.isDisabled() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			if _, err := s.ResolveClientIPs(ctx); err != nil && !errors.Is(err, ErrGeoIPDisabled) {
-				log.Warnf("usage store: look up client ips: %v", err)
-			}
-			cancel()
+		if s.ctx.Err() != nil {
+			return
+		}
+		if !s.geo.isDisabled() {
+			s.resolveRound()
 		}
 		select {
 		case <-ticker.C:
 		case <-s.geo.kick:
-		case <-s.stop:
+		case <-s.ctx.Done():
 			return
 		}
 	}
