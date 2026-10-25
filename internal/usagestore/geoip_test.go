@@ -169,6 +169,11 @@ func TestGeoIPLooksUpEachPublicIPOnceAndJoinsEvents(t *testing.T) {
 	if !st.Enabled || st.Provider != "ip.sb" || st.Resolved != 1 || st.Pending != 0 || st.LastLookupAt == nil {
 		t.Fatalf("status = %+v", st)
 	}
+	// A restarted resolver with nothing left to look up still reports the last lookup.
+	if again := NewGeoIP(s.geo.db).Status(context.Background()); again.LastLookupAt == nil ||
+		!again.LastLookupAt.Equal(*st.LastLookupAt) {
+		t.Fatalf("status after restart = %+v, want last lookup %v", again, st.LastLookupAt)
+	}
 }
 
 func TestGeoIPKeepsUnfinishedAddressesOnServerErrors(t *testing.T) {
