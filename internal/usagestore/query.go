@@ -113,9 +113,10 @@ type StatsFilter struct {
 	Provider  []string
 	APIKeyID  []string
 	AuthIndex []string
-	// Failed and Substituted narrow by request result; they require per-request events.
+	// Failed, Substituted and Risk narrow by request result; they require per-request events.
 	Failed      *bool
 	Substituted *bool
+	Risk        *bool
 }
 
 // coversRange reports whether per-request events still exist from `from` onwards.
@@ -138,7 +139,7 @@ func (s *Store) coversRange(from time.Time) bool {
 // shortcut: rollups are hourly, so half-hour time zones get day buckets shifted by 30 minutes there.
 func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tzOffsetMinutes int, filter StatsFilter) (*Stats, error) {
 	covered := s.coversRange(from)
-	useEvents := covered || filter.Failed != nil || filter.Substituted != nil
+	useEvents := covered || filter.Failed != nil || filter.Substituted != nil || filter.Risk != nil
 	fromSec := from.Unix() / 3600 * 3600
 	if useEvents {
 		fromSec = from.Unix()
@@ -178,6 +179,9 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		if filter.Substituted != nil {
 			query += " AND substituted = ?"
 			args = append(args, *filter.Substituted)
+		}
+		if filter.Risk != nil {
+			query += riskClause(*filter.Risk)
 		}
 	} else {
 		bucketExpr := "hour"
@@ -325,6 +329,7 @@ type EventFilter struct {
 	AuthIndex   []string
 	Failed      *bool
 	Substituted *bool
+	Risk        *bool
 	BeforeID    int64
 	AfterID     int64
 	Limit       int
@@ -370,6 +375,9 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	if f.Substituted != nil {
 		cond("substituted = ?", *f.Substituted)
 	}
+	if f.Risk != nil {
+		where = append(where, strings.TrimPrefix(riskClause(*f.Risk), " AND "))
+	}
 	if f.BeforeID > 0 {
 		cond("id < ?", f.BeforeID)
 	}
@@ -379,7 +387,7 @@ func eventQuery(f EventFilter, limit int) (string, []any) {
 	query := `SELECT id, ts, request_id, provider, executor_type, model, alias, endpoint, auth_type, auth_index, source,
 		api_key_id, api_key, access_provider, reasoning_effort, service_tier, stream, failed, status_code, error,
 		latency_ms, ttft_ms, input_uncached, cache_read, cache_write, output, reasoning, unclassified, total,
-		client_ip, user_agent, response_model, substituted, transport,
+		client_ip, user_agent, response_model, substituted, transport, risk, risk_prompt,
 		g.country_code, g.country, g.region, g.city, g.asn, g.isp, g.org, g.ok
 		FROM events LEFT JOIN ip_geo g ON g.ip = events.client_ip`
 	if len(where) > 0 {
@@ -411,7 +419,7 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 			&e.Endpoint, &e.AuthType, &e.AuthIndex, &e.Source, &e.APIKeyID, &e.APIKey, &e.AccessProvider,
 			&e.ReasoningEffort, &e.ServiceTier, &e.Stream, &e.Failed, &e.StatusCode, &e.Error, &e.LatencyMs, &e.TTFTMs,
 			&t.InputUncached, &t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total,
-			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport,
+			&e.ClientIP, &e.UserAgent, &e.ResponseModel, &e.Substituted, &e.Transport, &e.Risk, &e.RiskPrompt,
 			&geoCC, &geoCountry, &geoRegion, &geoCity, &geoASN, &geoISP, &geoOrg, &geoOK); errScan != nil {
 			return errScan
 		}

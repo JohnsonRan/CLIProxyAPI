@@ -55,6 +55,7 @@ func Apply(cfg *config.Config) {
 	}
 	if s != nil {
 		s.SetRetentionDays(sc.RetentionDays)
+		riskPromptsOff.Store(sc.RiskPrompts.Disable)
 		s.pricer.Configure(sc.Pricing)
 		if s.geo != nil {
 			s.geo.Configure(sc.GeoIP)
@@ -71,6 +72,7 @@ func Apply(cfg *config.Config) {
 	if opened.geo != nil {
 		opened.geo.Configure(sc.GeoIP)
 	}
+	riskPromptsOff.Store(sc.RiskPrompts.Disable)
 	current.Store(opened)
 	go opened.refreshPrices()
 	opened.startResolver()
@@ -238,7 +240,7 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 	}
 	substituted := served != "" && helps.IsModelSubstituted(expectedModel, served) && (record.Model == "" || helps.IsModelSubstituted(record.Model, served))
 
-	return Event{
+	e := Event{
 		Timestamp:       ts.UnixMilli(),
 		RequestID:       strings.TrimSpace(internallogging.GetRequestID(ctx)),
 		Provider:        orUnknown(record.Provider),
@@ -274,7 +276,12 @@ func eventFromRecord(ctx context.Context, record coreusage.Record) Event {
 		ResponseModel: served,
 		Transport:     transportOf(meta.WebSocket, record.Stream || coreusage.StreamFromContext(ctx)),
 		Substituted:   substituted,
+		Risk:          classifyRisk(record, substituted),
 	}
+	if e.Risk != "" && !riskPromptsOff.Load() {
+		e.RiskPrompt = turnPrompt(coreusage.RequestPayloadFromContext(ctx))
+	}
+	return e
 }
 
 func firstNonEmpty(values ...string) string {
