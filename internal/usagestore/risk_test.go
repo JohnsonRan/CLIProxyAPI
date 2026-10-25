@@ -116,6 +116,9 @@ func TestTurnPromptClipsMiddle(t *testing.T) {
 }
 
 func TestRiskEventKeepsPrompt(t *testing.T) {
+	coreusage.SetRequestPayloadCapture(true)
+	defer coreusage.SetRequestPayloadCapture(false)
+
 	s, err := Open(filepath.Join(t.TempDir(), "usage.db"), 30, testPricer(t))
 	if err != nil {
 		t.Fatalf("open: %v", err)
