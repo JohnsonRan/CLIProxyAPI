@@ -21,7 +21,7 @@ type UsageStoreConfig struct {
 // UsageRiskPromptsConfig controls whether the usage store keeps the current turn of a request
 // the upstream flagged for safety reasons, next to the event.
 type UsageRiskPromptsConfig struct {
-	// Disable stops storing prompts; the risk type is still recorded. Default false (enabled).
+	// Disable stops storing prompts; the risk type and reason are still recorded. Default false (enabled).
 	Disable bool `yaml:"disable,omitempty" json:"disable,omitempty"`
 }
 

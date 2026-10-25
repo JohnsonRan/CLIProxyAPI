@@ -72,7 +72,7 @@ type UsageReporter struct {
 	responseModelFinal atomic.Bool
 
 	// upstreamRisk holds the first safety action the upstream response announced (see response_risk.go).
-	upstreamRisk atomic.Pointer[string]
+	upstreamRisk atomic.Pointer[ResponseRisk]
 
 	upstreamModelMu sync.RWMutex
 	// upstreamModel holds the canonical upstream model expected to be served when
@@ -228,7 +228,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 	}
 	// Safety signals can follow the terminal model event, so they are read before the early return.
 	if r.upstreamRisk.Load() == nil {
-		if risk := extractResponseRisk(payload, r.provider); risk != "" {
+		if risk := extractResponseRisk(payload, r.provider); risk.Kind != "" {
 			r.upstreamRisk.CompareAndSwap(nil, &risk)
 		}
 	}
@@ -689,7 +689,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
 	upstreamModel := ""
-	upstreamRisk := ""
+	var upstreamRisk ResponseRisk
 	if model == r.model {
 		responseModel = r.ResponseModel()
 		upstreamModel = r.UpstreamModel()
@@ -722,7 +722,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
 		ResponseModel:        responseModel,
 		UpstreamModel:        upstreamModel,
-		UpstreamRisk:         upstreamRisk,
+		UpstreamRisk:         upstreamRisk.Kind,
+		UpstreamRiskReason:   upstreamRisk.Reason,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
 		RequestedAt:          r.requestedAt,
