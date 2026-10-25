@@ -24,6 +24,13 @@ func TestExtractResponseRisk(t *testing.T) {
 		{"codex moderation only", "codex", `{"type":"response.metadata","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`, ""},
 		{"codex text mentioning the flag", "codex", `{"type":"response.output_text.delta","delta":"trusted_access_for_cyber"}`, ""},
 		{"other provider", "openai", `{"stop_reason":"refusal"}`, ""},
+		{"gemini blocked prompt", "gemini", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "prompt_blocked_safety"},
+		{"antigravity wrapped block", "antigravity", `{"response":{"promptFeedback":{"blockReason":"OTHER"}}}`, "prompt_blocked_other"},
+		{"vertex safety stop", "vertex", `data: {"candidates":[{"finishReason":"PROHIBITED_CONTENT","finishMessage":"m"}]}`, "output_blocked_prohibited_content"},
+		{"gemini ordinary stop", "gemini", `{"candidates":[{"finishReason":"STOP"}]}`, ""},
+		{"gemini recitation is not risk", "aistudio", `{"candidates":[{"finishReason":"RECITATION"}]}`, ""},
+		{"gemini unspecified block", "gemini", `{"promptFeedback":{"blockReason":"BLOCK_REASON_UNSPECIFIED"}}`, ""},
+		{"gemini delta", "gemini", `{"candidates":[{"content":{"parts":[{"text":"SAFETY"}]}}]}`, ""},
 	}
 	for _, tc := range cases {
 		if got := extractResponseRisk([]byte(tc.payload), tc.provider).Kind; got != tc.want {

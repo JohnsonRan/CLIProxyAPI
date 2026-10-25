@@ -30,6 +30,8 @@ func TestClassifyRisk(t *testing.T) {
 		{"claude refusal from the response", coreusage.Record{Provider: "claude", UpstreamRisk: "refusal_cyber",
 			UpstreamRiskReason: " blocked under the Usage Policy "}, false, "refusal_cyber", "blocked under the Usage Policy"},
 		{"claude substitution is not risk", coreusage.Record{Provider: "claude"}, true, "", ""},
+		{"gemini blocked prompt", coreusage.Record{Provider: "antigravity", UpstreamRisk: "prompt_blocked_safety", UpstreamRiskReason: "r"}, false, "prompt_blocked_safety", "r"},
+		{"gemini substitution is not risk", coreusage.Record{Provider: "gemini"}, true, "", ""},
 		{"codex verification beats reroute", coreusage.Record{Provider: "codex", UpstreamRisk: "trusted_access_for_cyber"}, true, "trusted_access_for_cyber", ""},
 		{"rejection code beats response signal", coreusage.Record{Provider: "codex", Failed: true, UpstreamRisk: "safety_buffering",
 			Fail: coreusage.Failure{StatusCode: 400, Body: `{"error":{"code":"cyber_policy","message":"m"}}`}}, false, "cyber_policy", "m"},
