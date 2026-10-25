@@ -17,24 +17,28 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
 )
 
 const (
 	defaultGeoIPEndpoint = "https://api.ip.sb/geoip/"
-	// ip.sb allows 100 requests per minute (5 per second) per caller; stay well below it.
-	geoIPLookupGap    = 700 * time.Millisecond
-	geoIPRoundSize    = 60
+	// ip.sb's free API allows each caller 100 requests per minute and at most 5 per second.
+	geoIPPerSecond    = 5
+	geoIPPerMinute    = 100
+	geoIPWorkers      = 5
+	geoIPBatchSize    = 25
+	geoIPRateLimitGap = time.Minute
 	geoIPRoundEvery   = time.Minute
 	geoIPRetryAfter   = 24 * time.Hour
 	geoIPUserAgent    = "CLIProxyAPI-usage-store"
 	geoIPMaxBodyBytes = 64 << 10
-	geoIPQueueLimit   = 10000
 )
 
 var (
 	// ErrGeoIPDisabled is returned when a lookup round is requested while lookups are disabled.
-	ErrGeoIPDisabled = errors.New("geoip is disabled")
-	cgnatPrefix      = netip.MustParsePrefix("100.64.0.0/10")
+	ErrGeoIPDisabled    = errors.New("geoip is disabled")
+	errGeoIPRateLimited = errors.New("geoip lookup: HTTP 429, paused for a minute")
+	cgnatPrefix         = netip.MustParsePrefix("100.64.0.0/10")
 )
 
 // ClientGeo holds IP geolocation and network owner information for an event.
@@ -48,6 +52,14 @@ type ClientGeo struct {
 	ISP         string `json:"isp,omitempty"`
 	Org         string `json:"org,omitempty"`
 }
+
+// ip_geo.ok values.
+const (
+	ipGeoPending  = -1 // public address registered by the writer, not looked up yet
+	ipGeoNotFound = 0  // looked up without a usable answer; retried after geoIPRetryAfter
+	ipGeoFound    = 1
+	ipGeoLocal    = 2 // private, loopback or unparsable; never sent
+)
 
 // GeoIPStatus reports lookup state for the management API.
 type GeoIPStatus struct {
@@ -71,39 +83,59 @@ CREATE TABLE IF NOT EXISTS ip_geo (
 	isp TEXT NOT NULL DEFAULT '',
 	org TEXT NOT NULL DEFAULT '',
 	ok INTEGER NOT NULL DEFAULT 0,
-	looked_up_at INTEGER NOT NULL DEFAULT 0
+	looked_up_at INTEGER NOT NULL DEFAULT 0,
+	seen_at INTEGER NOT NULL DEFAULT 0
 );`
 
-// GeoIP resolves new public client IPs through an online API in small, rate-limited rounds
-// and stores the answers in the usage database.
+// ipGeoIndex serves the pending/due selection; it needs seen_at, so it runs after migrateSchema.
+const ipGeoIndex = `CREATE INDEX IF NOT EXISTS ip_geo_ok ON ip_geo(ok, seen_at);`
+
+// GeoIP looks up registered public client IPs through an online API, paced to the free limit,
+// and stores the answers in the usage database. The writer registers every client IP in ip_geo
+// with the event, so pending work lives in the database and survives errors, restarts, long
+// requests and event id reuse after retention.
 type GeoIP struct {
 	db       *sql.DB
 	endpoint string
-	gap      time.Duration
 	nowFunc  func() time.Time
+	sleep    func(ctx context.Context, d time.Duration) error
 	kick     chan struct{}
+	// started, when set, observes every lookup start (tests check the pacing with it).
+	started func(ip string, at time.Time)
 
-	mu        sync.Mutex
-	disabled  bool
-	lastAt    *time.Time
-	lastError string
-	// queue holds public client IPs awaiting a lookup; scanned is the highest event id already
-	// examined, so each refill reads only new events instead of the whole table.
-	queue   []string
-	queued  map[string]struct{}
-	scanned int64
+	mu          sync.Mutex
+	disabled    bool
+	lastAt      *time.Time
+	lastError   string
+	pausedUntil time.Time
+
 	running sync.Mutex
+	// Guarded by running: the per-second limiter and the start times of the last
+	// geoIPPerMinute lookups, oldest first, for the rolling one-minute cap.
+	perSecond *rate.Limiter
+	starts    []time.Time
 }
 
 // NewGeoIP returns a resolver that caches results in db.
 func NewGeoIP(db *sql.DB) *GeoIP {
 	return &GeoIP{
-		db:       db,
-		endpoint: defaultGeoIPEndpoint,
-		gap:      geoIPLookupGap,
-		nowFunc:  time.Now,
-		kick:     make(chan struct{}, 1),
-		queued:   map[string]struct{}{},
+		db:        db,
+		endpoint:  defaultGeoIPEndpoint,
+		nowFunc:   time.Now,
+		sleep:     sleepContext,
+		kick:      make(chan struct{}, 1),
+		perSecond: rate.NewLimiter(rate.Every(time.Second/geoIPPerSecond), 1),
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -175,121 +207,126 @@ type ipGeoRow struct {
 	OK                                           bool
 }
 
-// Status reports lookup progress.
+// Status reports lookup progress without changing any lookup state.
 func (g *GeoIP) Status(ctx context.Context) GeoIPStatus {
-	if err := g.refill(ctx); err != nil {
-		log.Debugf("usage store: refill geoip queue: %v", err)
-	}
-	st := GeoIPStatus{Enabled: !g.isDisabled(), Provider: "ip.sb"}
+	st := GeoIPStatus{Provider: "ip.sb"}
 	g.mu.Lock()
-	st.LastLookupAt, st.LastError, st.Pending = g.lastAt, g.lastError, int64(len(g.queue))
+	st.Enabled = !g.disabled
+	st.LastLookupAt, st.LastError = g.lastAt, g.lastError
 	g.mu.Unlock()
-	if err := g.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ip_geo WHERE ok = 1`).Scan(&st.Resolved); err != nil {
+	if err := g.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ip_geo WHERE ok = ?`, ipGeoFound).Scan(&st.Resolved); err != nil {
 		log.Debugf("usage store: count resolved ips: %v", err)
+	}
+	if err := g.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ip_geo WHERE ok = ? OR (ok = ? AND looked_up_at < ?)`,
+		ipGeoPending, ipGeoNotFound, g.retryBefore()).Scan(&st.Pending); err != nil {
+		log.Debugf("usage store: count pending ips: %v", err)
 	}
 	return st
 }
 
-func (g *GeoIP) enqueue(ip string) {
-	if _, scope := ipScope(ip); scope != "public" {
-		return
-	}
-	// shortcut: an address past the queue limit is skipped until a restart rescans the table; raise the limit or persist the backlog if that bites.
-	if _, ok := g.queued[ip]; ok || len(g.queue) >= geoIPQueueLimit {
-		return
-	}
-	g.queued[ip] = struct{}{}
-	g.queue = append(g.queue, ip)
+func (g *GeoIP) retryBefore() int64 {
+	return g.nowFunc().Add(-geoIPRetryAfter).UnixMilli()
 }
 
-// refill queues client IPs of events written since the last scan that have no cached answer,
-// plus failed lookups that are due for a retry.
-func (g *GeoIP) refill(ctx context.Context) error {
-	g.mu.Lock()
-	from := g.scanned
-	g.mu.Unlock()
-	var hi sql.NullInt64
-	if err := g.db.QueryRowContext(ctx, `SELECT MAX(id) FROM events`).Scan(&hi); err != nil {
-		return err
-	}
-	var fresh []string
-	if hi.Valid && hi.Int64 > from {
-		// Newest first: the addresses on screen get their location first.
-		rows, err := g.db.QueryContext(ctx, `SELECT e.client_ip FROM events e
-			WHERE e.id > ? AND e.id <= ? AND e.client_ip <> ''
-			AND NOT EXISTS (SELECT 1 FROM ip_geo g WHERE g.ip = e.client_ip)
-			GROUP BY e.client_ip ORDER BY MAX(e.id) DESC`, from, hi.Int64)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var ip string
-			if errScan := rows.Scan(&ip); errScan != nil {
-				_ = rows.Close()
-				return errScan
-			}
-			fresh = append(fresh, ip)
-		}
-		if errRows := rows.Err(); errRows != nil {
-			_ = rows.Close()
-			return errRows
-		}
-		_ = rows.Close()
-	}
-	retryBefore := g.nowFunc().Add(-geoIPRetryAfter).UnixMilli()
-	rows, err := g.db.QueryContext(ctx, `SELECT ip FROM ip_geo WHERE ok = 0 AND looked_up_at < ?`, retryBefore)
+// candidates lists up to limit addresses to look up: never looked up first (newest first),
+// then failed lookups that are due for a retry.
+func (g *GeoIP) candidates(ctx context.Context, limit int) ([]string, error) {
+	rows, err := g.db.QueryContext(ctx, `SELECT ip FROM ip_geo
+		WHERE ok = ? OR (ok = ? AND looked_up_at < ?)
+		ORDER BY ok, seen_at DESC LIMIT ?`, ipGeoPending, ipGeoNotFound, g.retryBefore(), limit)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	var out []string
 	for rows.Next() {
 		var ip string
 		if errScan := rows.Scan(&ip); errScan != nil {
+			return nil, errScan
+		}
+		out = append(out, ip)
+	}
+	return out, rows.Err()
+}
+
+// ipGeoState is the ip_geo.ok value a newly seen client IP is registered with.
+func ipGeoState(ip string) int {
+	if _, scope := ipScope(ip); scope == "public" {
+		return ipGeoPending
+	}
+	return ipGeoLocal
+}
+
+// registerClientIPs adds every new client IP of a batch to ip_geo inside the writer transaction:
+// public ones as pending, everything else as local, so local addresses are never sent. It
+// reports whether a new public address was registered.
+func registerClientIPs(tx *sql.Tx, batch []Event) (bool, error) {
+	seen := map[string]int64{}
+	for i := range batch {
+		ip := batch[i].ClientIP
+		if ip == "" {
+			continue
+		}
+		if ts, ok := seen[ip]; !ok || batch[i].Timestamp > ts {
+			seen[ip] = batch[i].Timestamp
+		}
+	}
+	if len(seen) == 0 {
+		return false, nil
+	}
+	ins, err := tx.Prepare(`INSERT OR IGNORE INTO ip_geo (ip, ok, seen_at) VALUES (?, ?, ?)`)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = ins.Close() }()
+	newPublic := false
+	for ip, ts := range seen {
+		state := ipGeoState(ip)
+		res, errExec := ins.Exec(ip, state, ts)
+		if errExec != nil {
+			return false, errExec
+		}
+		if n, _ := res.RowsAffected(); n > 0 && state == ipGeoPending {
+			newPublic = true
+		}
+	}
+	return newPublic, nil
+}
+
+// backfillIPGeo registers client IPs of events stored before the writer registered them.
+func backfillIPGeo(db *sql.DB) error {
+	rows, err := db.Query(`SELECT client_ip, MAX(ts) FROM events
+		WHERE client_ip <> '' AND NOT EXISTS (SELECT 1 FROM ip_geo g WHERE g.ip = events.client_ip)
+		GROUP BY client_ip`)
+	if err != nil {
+		return err
+	}
+	var batch []Event
+	for rows.Next() {
+		var e Event
+		if errScan := rows.Scan(&e.ClientIP, &e.Timestamp); errScan != nil {
+			_ = rows.Close()
 			return errScan
 		}
-		fresh = append(fresh, ip)
+		batch = append(batch, e)
 	}
 	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
 		return errRows
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, ip := range fresh {
-		g.enqueue(ip)
+	_ = rows.Close()
+	if len(batch) == 0 {
+		return nil
 	}
-	if hi.Valid && hi.Int64 > g.scanned {
-		g.scanned = hi.Int64
+	tx, err := db.Begin()
+	if err != nil {
+		return err
 	}
-	return nil
-}
-
-// take removes up to n addresses from the head of the queue.
-func (g *GeoIP) take(n int) []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if n > len(g.queue) {
-		n = len(g.queue)
+	defer func() { _ = tx.Rollback() }()
+	if _, err = registerClientIPs(tx, batch); err != nil {
+		return err
 	}
-	out := append([]string(nil), g.queue[:n]...)
-	g.queue = g.queue[n:]
-	for _, ip := range out {
-		delete(g.queued, ip)
-	}
-	return out
-}
-
-// requeue puts addresses that were not looked up back at the head of the queue.
-func (g *GeoIP) requeue(ips []string) {
-	if len(ips) == 0 {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	rest := g.queue
-	g.queue = nil
-	for _, ip := range append(append([]string(nil), ips...), rest...) {
-		g.enqueue(ip)
-	}
+	return tx.Commit()
 }
 
 type ipSBResponse struct {
@@ -302,8 +339,8 @@ type ipSBResponse struct {
 	Org         string `json:"organization"`
 }
 
-// lookup asks the API about one address. A 4xx answer is final (stored as not found); network
-// errors and 5xx/429 are returned so the round stops and the address is retried later.
+// lookup asks the API about one address. A 4xx answer is stored as not found; network errors,
+// 5xx and 429 are returned so the address stays pending and is tried again later.
 func (g *GeoIP) lookup(ctx context.Context, client *http.Client, addr netip.Addr) (*ipGeoRow, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.endpoint+url.PathEscape(addr.String()), nil)
 	if err != nil {
@@ -326,7 +363,9 @@ func (g *GeoIP) lookup(ctx context.Context, client *http.Client, addr netip.Addr
 		return nil, fmt.Errorf("read geoip response: %w", err)
 	}
 	switch {
-	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, errGeoIPRateLimited
+	case resp.StatusCode >= 500:
 		return nil, fmt.Errorf("geoip lookup: HTTP %d", resp.StatusCode)
 	case resp.StatusCode != http.StatusOK:
 		return &ipGeoRow{}, nil
@@ -335,6 +374,10 @@ func (g *GeoIP) lookup(ctx context.Context, client *http.Client, addr netip.Addr
 	if errDecode := json.Unmarshal(body, &r); errDecode != nil {
 		return nil, fmt.Errorf("decode geoip response: %w", errDecode)
 	}
+	if strings.TrimSpace(r.CountryCode) == "" && r.ASN == 0 {
+		// An answer without location or network is kept as not found so it is retried later.
+		return &ipGeoRow{}, nil
+	}
 	return &ipGeoRow{
 		CountryCode: strings.TrimSpace(r.CountryCode), Country: strings.TrimSpace(r.Country),
 		Region: strings.TrimSpace(r.Region), City: strings.TrimSpace(r.City),
@@ -342,11 +385,7 @@ func (g *GeoIP) lookup(ctx context.Context, client *http.Client, addr netip.Addr
 	}, nil
 }
 
-func (g *GeoIP) save(ctx context.Context, ip string, row *ipGeoRow) error {
-	ok := 0
-	if row.OK {
-		ok = 1
-	}
+func (g *GeoIP) save(ctx context.Context, ip string, row *ipGeoRow, ok int) error {
 	_, err := g.db.ExecContext(ctx, `INSERT INTO ip_geo (ip, country_code, country, region, city, asn, isp, org, ok, looked_up_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(ip) DO UPDATE SET country_code = excluded.country_code, country = excluded.country,
@@ -357,65 +396,163 @@ func (g *GeoIP) save(ctx context.Context, ip string, row *ipGeoRow) error {
 	return err
 }
 
-// Resolve looks up at most one round of pending addresses, paced below the API rate limit.
+// waitTurn blocks until another lookup may start: not during a rate-limit pause, at most
+// geoIPPerSecond per second, and at most geoIPPerMinute in any rolling minute. The caller holds
+// g.running. It returns the start time.
+func (g *GeoIP) waitTurn(ctx context.Context) (time.Time, error) {
+	for {
+		now := g.nowFunc()
+		g.mu.Lock()
+		wait := g.pausedUntil.Sub(now)
+		g.mu.Unlock()
+		if len(g.starts) >= geoIPPerMinute {
+			if d := g.starts[0].Add(time.Minute).Sub(now); d > wait {
+				wait = d
+			}
+		}
+		if wait <= 0 {
+			r := g.perSecond.ReserveN(now, 1)
+			if wait = r.DelayFrom(now); wait <= 0 {
+				if len(g.starts) >= geoIPPerMinute {
+					g.starts = g.starts[1:]
+				}
+				g.starts = append(g.starts, now)
+				return now, nil
+			}
+			// Re-check the pause after waiting instead of holding this token.
+			r.CancelAt(now)
+		}
+		if err := g.sleep(ctx, wait); err != nil {
+			return time.Time{}, err
+		}
+	}
+}
+
+// Resolve looks up pending addresses until none are left, up to geoIPWorkers at a time and
+// paced by waitTurn. A 429 pauses new lookups for a minute and ends the call; network errors
+// and 5xx end it too. ctx cancels in-flight lookups; unfinished addresses stay pending.
 func (g *GeoIP) Resolve(ctx context.Context, client *http.Client) (int, error) {
+	g.running.Lock()
+	defer g.running.Unlock()
 	if g.isDisabled() {
 		return 0, ErrGeoIPDisabled
 	}
-	// One round at a time; a manual refresh while the loop runs just waits for it.
-	g.running.Lock()
-	defer g.running.Unlock()
 	if client == nil {
 		client = &http.Client{}
 	}
-	if err := g.refill(ctx); err != nil {
-		return 0, fmt.Errorf("list new client ips: %w", err)
+	var (
+		resMu    sync.Mutex
+		done     int
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	fail := func(err error) {
+		resMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		resMu.Unlock()
 	}
-	ips := g.take(geoIPRoundSize)
-	done := 0
-	var lookupErr error
-	for i, ip := range ips {
-		if g.isDisabled() {
-			g.requeue(ips[i:])
+	failed := func() bool {
+		resMu.Lock()
+		defer resMu.Unlock()
+		return firstErr != nil
+	}
+	slots := make(chan struct{}, geoIPWorkers)
+	for !failed() && !g.isDisabled() {
+		// Each batch finishes before the next is selected, so no address is picked twice.
+		ips, err := g.candidates(ctx, geoIPBatchSize)
+		if err != nil {
+			fail(fmt.Errorf("list pending client ips: %w", err))
 			break
 		}
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				lookupErr = ctx.Err()
-			case <-time.After(g.gap):
-			}
-			if lookupErr != nil {
-				g.requeue(ips[i:])
+		if len(ips) == 0 {
+			break
+		}
+		for _, ip := range ips {
+			if failed() || g.isDisabled() {
 				break
 			}
+			addr, scope := ipScope(ip)
+			if scope != "public" {
+				if errSave := g.save(ctx, ip, &ipGeoRow{}, ipGeoLocal); errSave != nil {
+					fail(fmt.Errorf("mark local client ip: %w", errSave))
+				}
+				continue
+			}
+			// Take a worker slot before pacing, so the pace applies to the moment the request is
+			// actually sent and a pause or failure that happened while waiting is seen.
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				fail(ctx.Err())
+			}
+			if ctx.Err() != nil {
+				break
+			}
+			if failed() {
+				<-slots
+				break
+			}
+			at, errWait := g.waitTurn(ctx)
+			if errWait != nil {
+				<-slots
+				fail(errWait)
+				break
+			}
+			if failed() || g.isDisabled() {
+				<-slots
+				break
+			}
+			if g.started != nil {
+				g.started(ip, at)
+			}
+			wg.Add(1)
+			go func(ip string, addr netip.Addr) {
+				defer wg.Done()
+				defer func() { <-slots }()
+				row, errLookup := g.lookup(ctx, client, addr)
+				if errLookup != nil {
+					// A 429, a network error or a 5xx pauses new lookups for a minute. The pause
+					// outlives this call, so a pass started by a new address waits it out too.
+					// fail first: a dispatcher that sees the pause then also sees the failure.
+					fail(errLookup)
+					if ctx.Err() == nil {
+						g.mu.Lock()
+						g.pausedUntil = g.nowFunc().Add(geoIPRateLimitGap)
+						g.mu.Unlock()
+					}
+					return
+				}
+				ok := ipGeoNotFound
+				if row.OK {
+					ok = ipGeoFound
+				}
+				if errSave := g.save(ctx, ip, row, ok); errSave != nil {
+					fail(fmt.Errorf("save geoip result: %w", errSave))
+					return
+				}
+				resMu.Lock()
+				done++
+				resMu.Unlock()
+			}(ip, addr)
 		}
-		addr, _ := ipScope(ip)
-		row, errLookup := g.lookup(ctx, client, addr)
-		if errLookup != nil {
-			lookupErr = errLookup
-			g.requeue(ips[i:])
-			break
-		}
-		if errSave := g.save(ctx, ip, row); errSave != nil {
-			lookupErr = fmt.Errorf("save geoip result: %w", errSave)
-			g.requeue(ips[i:])
-			break
-		}
-		done++
+		wg.Wait()
 	}
+	wg.Wait()
 	now := g.nowFunc().UTC()
 	g.mu.Lock()
 	if done > 0 {
 		g.lastAt = &now
 	}
-	if lookupErr != nil {
-		g.lastError = lookupErr.Error()
-	} else {
+	if ctx.Err() == nil {
 		g.lastError = ""
+		if firstErr != nil {
+			g.lastError = firstErr.Error()
+		}
 	}
 	g.mu.Unlock()
-	return done, lookupErr
+	return done, firstErr
 }
 
 // prune drops cached answers for addresses no stored event refers to any more.
