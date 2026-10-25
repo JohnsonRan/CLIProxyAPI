@@ -47,7 +47,6 @@ env:
     patch/commandcode-oauth
     patch/session-claude-identity-once
     patch/claude-request-nocopy-reads
-    patch/responses-ws-terminal-error-race
     patch/antigravity-replay-signature-guard
     patch/responses-ws-interrupt-window
     patch/thinking-validate-once
