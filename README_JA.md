@@ -2,6 +2,8 @@
 
 [English](README.md) | [中文](README_CN.md) | 日本語
 
+> **ダウンストリーム Fork**：このリポジトリは [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) から毎日 `main` を再構築し、その上に独立したパッチを重ねています。下記の[この Fork の機能](#この-fork-の機能)と、パッチブランチ・統合順序・メンテナンス規則については [`MAINTAIN.md`](MAINTAIN.md) を参照してください。
+
 デスクトップで CLIProxyAPI を利用したい場合は、[EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) デスクトップクライアントをおすすめします。グラフィカルな設定画面、自動更新、システムトレイ連携、CLIProxyAPI サービスのワンクリック起動/停止などの機能を提供します。
 
 CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインターフェースを提供するプロキシサーバーです。
@@ -24,11 +26,11 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
-        <td>Anthropic Claudeシリーズモデル（Claude Fable 5.1、Claude Opus 5.5、Claude Sonnet 5.5）。Fable 5.1は長期のコーディングや知識作業向けで、Opus 5.5は低いコストで高度なエージェント型コーディングに対応します。</td>
+        <td>Anthropic Claudeシリーズモデル（Claude Fable 5.1、Claude Opus 5.5、Claude Sonnet 5.5、Claude Haiku 5.5）。Fable 5.1は長期のコーディングや知識作業向けで、Opus 5.5は低いコストで高度なエージェント型コーディングに対応します。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://antigravity.google/"><img src="./assets/logo/antigravity.svg" alt="Antigravity" width="28" height="28" /></a></td>
-        <td>Google GeminiシリーズにはGemini 3.8 FlashやGemini 3.1 Pro Previewがあります。CLIProxyAPIはGemini API、AI Studio、Vertex AI、Gemini CLI、Antigravityのアカウントに対応し、利用できるモデルは経路によって異なります。Gemini 3.8 Flashは、長期のソフトウェア開発やエージェントのワークフロー向けのGoogleの最新Flashモデルです。</td>
+        <td>Google GeminiシリーズにはGemini 4 ArgonやGemini 3.8 Flashがあります。CLIProxyAPIはGemini API、AI Studio、Vertex AI、Gemini CLI、Antigravityのアカウントに対応し、利用できるモデルは経路によって異なります。Gemini 3.8 Flashは、長期のソフトウェア開発やエージェントのワークフロー向けのGoogleの最新Flashモデルです。Antigravityの<a href="https://antigravity.google/docs/models/">公式モデル提供状況</a>では、Claude Sonnet 5.5（thinking）とClaude Opus 5.5（thinking）はGoogle AI Pro（試用版を除く）、Google AI Ultra、Enterpriseで利用可能とされています。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://docs.x.ai/developers/grok-4-7"><img src="./assets/logo/xai.svg" alt="xAI" width="28" height="28" /></a></td>
@@ -36,7 +38,7 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://dev.meta.ai/docs/overview"><img src="./assets/logo/meta.svg" alt="Meta" width="28" height="28" /></a></td>
-        <td>Meta Museシリーズモデル（Muse Spark 1.3、Muse Spark 1.2など）。CLIProxyAPIはMetaログインによるMuse CodeアカウントとMeta Model APIキーに対応し、Muse Spark 1.3をコーディングやエージェントのワークフローに利用できます。</td>
+        <td>Meta Museシリーズモデル（Muse Wonder Full、Muse Wonder、Muse Spark 1.3など）。CLIProxyAPIはMetaログインによるMuse CodeアカウントとMeta Model APIキーに対応し、Muse Spark 1.3をコーディングやエージェントのワークフローに利用できます。MetaはMuse WonderをMeta Model APIとMuse Code向けに、Muse Wonder FullをMuse Codeのサブスクリプション利用者向けに発表しました。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
@@ -45,70 +47,42 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
 </tbody>
 </table>
 
-## スポンサー
+## この Fork の機能
 
-[![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-en.png)](https://www.packyapi.com/register?aff=cliproxyapi)
+上流のすべての機能に加えて、以下を提供します。各機能はそれぞれ独立した `patch/*` ブランチで管理されており、範囲、設定キー、既知の制限、関連する上流の作業は [`MAINTAIN.md`](MAINTAIN.md) に記載しています。
 
-PackyCodeのスポンサーシップに感謝します！
+**管理と可観測性**
 
-PackyCodeは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。
+- この Fork の[管理パネル](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)をデフォルトで提供し、パネルからオンデマンドで更新できます。
+- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。
+- モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
+- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI、Command Code）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
 
-PackyCodeは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://www.packyapi.com/register?aff=cliproxyapi">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「cliproxyapi」を入力すると10%割引になります。
+**アクセス制御**
 
----
+- グローバルおよびクライアントキーごとのモデル許可/除外リスト、キーの表示名、削除せずにキーを無効化する機能。
+- クライアントキーが使えるプロバイダーの制限（`client.key-scopes`）。
+- 認証ファイルの `allowed_models` による認証情報ごとのモデル許可リスト。
 
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>AICodeMirrorのスポンサーシップに感謝します！AICodeMirrorはClaude Code / Codex / Gemini向けの公式高安定性リレーサービスを提供しており、エンタープライズグレードの同時接続、迅速な請求書発行、24時間365日の専任技術サポートを備えています。Claude Code / Codex / Geminiの公式チャネルが元の価格の38% / 2% / 9%で利用でき、チャージ時にはさらに割引があります！CLIProxyAPIユーザー向けの特別特典：<a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF">こちらのリンク</a>から登録すると、初回チャージが20%割引になり、エンタープライズのお客様は最大25%割引を受けられます！</td>
-</tr>
-<tr>
-<td width="180"><a href="https://apikey.fan/register?aff=CLIProxyAPI"><img src="./assets/apikey.png" alt="APIKEY.FUN" width="150"></a></td>
-<td>APIKEY.FUNのスポンサーシップに感謝します！APIKEY.FUNはプロフェッショナルなエンタープライズ向けAIリレーサービスで、企業および個人開発者に安定・高効率・低コストなAIモデルAPI接続サービスを提供しています。Claude、OpenAI、Geminiなどの主要人気モデルに対応し、価格は公式価格の7%から利用できます。本プロジェクトの<a href="https://apikey.fan/register?aff=CLIProxyAPI">専用リンク</a>から登録すると、さらに<b>チャージが永続的に5%割引</b>となる特別優待を受けられます。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://api.fenno.ai/s/Cvf0"><img src="./assets/fennoai.png" alt="FennoAI" width="150"></a></td>
-<td>FennoAI は、安定性と効率性に優れた API リレーサービスプロバイダーで、現在は主に Codex リレーサービスを提供しています。OpenAI および Anthropic プロトコルに対応し、Codex、Claude Code、OpenCode などの主要なコーディングツールへ柔軟に接続できます。1日あたり数千億 Token 規模のエンタープライズ利用を安定して支え、国内および海外法人向けの企業間決済と請求書発行にも対応しています。FennoAI は CLIProxyAPI ユーザー限定の特典を提供しています。<a href="https://api.fenno.ai/s/Cvf0">専用リンク</a>からサブスクリプションを購入すると、わずか 1.99 ドルで 50 ドル相当の Coding Plan クレジットを獲得できます。さらに紹介報酬にも対応しており、招待した友人が購入すると最大 20% のコミッションを獲得できます。招待が多いほど、報酬も高くなります。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://s.qiniu.com/7zUJri"><img src="./assets/qiniucloud.png" alt="Qiniu Cloud AI" width="150"></a></td>
-<td>本プロジェクトは <a href="https://s.qiniu.com/7zUJri">七牛雲AI</a> にご支援いただいています！七牛雲AI は七牛雲（02567.HK）傘下のエンタープライズ向け大規模モデル MaaS プラットフォームです。世界の主要モデル150以上をワンストップで呼び出せ、世界の主要モデルプロバイダーのプロトコルに対応し、テキスト、画像、音声、動画、ファイル処理などのフルモーダル処理能力をカバーしています。169万を超える企業および開発者ユーザーにサービスを提供しています。専用特典：企業ユーザーは <b>1,200万 Token</b> を無料で受け取れ、友人招待で最大100億 Tokenを獲得できます。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa"><img src="./assets/cubence.png" alt="Cubence" width="150"></a></td>
-<td>Cubenceのスポンサーシップに感謝します！Cubenceは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。Cubenceは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「CLIPROXYAPI」を入力すると10%割引になります。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://go.apimart.ai/gh-cliproxyapi"><img src="./assets/apimart-en.png" alt="APIMart" width="150"></a></td>
-<td>APIMartによる本プロジェクトへのご支援に感謝します！APIMartは、AI画像・動画生成に特化した低価格APIプラットフォームです。GPT-Image-2は1枚あたりわずか&#36;0.006で、1ドルで160枚以上の画像を生成できます。画像と動画の両方を1つの非同期APIで扱えます。タスクを送信してIDを取得し、ポーリングまたはコールバックで結果を受け取れます。数万枚規模の画像をタイムアウトなしでバッチ生成でき、コードを変更せずにモデルを切り替えられます。従量課金制で月額料金は不要です。<a href="https://go.apimart.ai/gh-cliproxyapi">こちらの登録リンク</a>からすぐに始められます。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.swiftproxy.net/?code=PR67S9A95"><img src="./assets/swiftproxy.png" alt="Swiftproxy" width="150"></a></td>
-<td>Swiftproxyは、世界220以上の国と地域をカバーする9,000万以上のクリーンな住宅IPを提供し、HTTP(S)/SOCKS5、IPローテーション、Sticky Session、詳細な地域指定に対応しています。AI APIツールや自動化ワークフローが異なる地域からオンラインサービスへ安定してアクセスできるよう支援し、APIリクエスト、Webアクセス、データ収集、地域別テストなどに最適です。住宅プロキシは&#36;0.7/GBから利用でき、無料テストにも対応しています。割引コードPROXY90の使用で10%割引になります。<a href="https://www.swiftproxy.net/?code=PR67S9A95">今すぐSwiftproxyを試す</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.rapidproxy.io/?code=KHM9B6E6M"><img src="./assets/rapidproxy.png" alt="RapidProxy" width="150"></a></td>
-<td><a href="https://www.rapidproxy.io/?code=KHM9B6E6M">RapidProxy</a> は、自動化や複数アカウント運用向けに設計された高性能プロキシプロバイダーで、クリーンな住宅プロキシとネイティブ静的 ISP IP を提供しています。世界中に9,000万以上の住宅 IP を保有し、スマートローテーション、安定したセッション、高い同時接続性能に対応しています。Webスクレイピング、ブラウザ自動化、SNSアカウント管理、EC運用、アカウントの一括登録などに最適です。住宅プロキシはわずか &#36;0.55/GB から利用でき、トラフィックに有効期限はありません。コード RAPID10 の使用で10%割引になり、<a href="https://www.rapidproxy.io/?code=KHM9B6E6M">今すぐ無料トライアルを開始できます。</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://pateway.ai/?ch=jjvdb"><img src="./assets/patewayai.png" alt="PatewayAI" width="150"></a></td>
-<td>PatewayAI は、経験豊富な AI 開発者向けの API リレーサービスプロバイダーで、Claude および Codex シリーズのモデルを完全にサポートしています。すべてのモデルは高品質な公式チャネルから提供され、希釈や偽装は一切なく、課金明細も透明で確認可能です。エコノミーモードは公式価格のわずか5%から利用できます。<a href="https://pateway.ai/?ch=jjvdb">こちらのリンク</a>から登録するとトライアルクレジットを受け取れるほか、不定期のキャンペーンで無料クレジットを獲得できます。また、エンタープライズ級の同時接続、専用管理ダッシュボード、正式な契約書と請求書に対応し、双方に最大150米ドルが付与される紹介特典も提供しています。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://agentmarket.fluxapay.xyz/marketplace/tokenplans"><img src="./assets/fluxa-baidu-ai-cloud.png" alt="FluxA &amp; Baidu AI Cloud" width="150"></a></td>
-<td>FluxA &amp; Baidu AI Cloud による本プロジェクトへのご支援に感謝します！FluxA と百度智能雲が共同で提供する AgenticPlan は、AI Agent がモデル、API、ツールを自律的に購入・管理・利用できるようにします。百度千帆 TokenPlan が含まれ、通常価格の60%という低価格から DeepSeek V4、GLM 5.2、Kimi などのフラッグシップモデルを利用できます。さらに FluxA AgentMarket API の呼び出しクレジットが付与され、検索、データスクレイピング、ソーシャルメディア、金融、暗号資産、画像生成、動画など、1,000以上の有料 API を利用できます。<br><br>ユーザーの承認のもと、AI Agent は公式 Visa カード決済を利用してリソースを自律的に調達し、API Key の管理、使用量の監視、更新計画の策定も行えます。これにより Agent は「自律的にタスクを完了する」段階から、真に「予算を自律的に計画し、タスクを完了する」段階へ進化できます。<a href="https://agentmarket.fluxapay.xyz/marketplace/tokenplans">AgenticPlan の詳細を見る</a>。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.openlux.ai/register?channel=c_6axb1q5n"><img src="./assets/openlux.png" alt="OpenLux" width="150"></a></td>
-<td>OpenLux による本プロジェクトへのご支援に感謝します！<br><br>OpenLux は、世界の主要プロバイダーが提供する主流の大規模 AI モデルを集約した、企業向けのワンストップ AI プラットフォームです。迅速で安定したサービスと適時の技術サポートを提供しています。Claude、OpenAI、Gemini シリーズのモデルの基本料金は、それぞれ公式料金の8.82%、4%、8%からご利用いただけます。<br><br>CLI Proxy API ユーザー限定特典：専用リンクから登録すると、チャージ時に最大7.5%の割引を受けられます！<br><br>今すぐ OpenLux を試す → <a href="https://www.openlux.ai/register?channel=c_6axb1q5n">https://www.openlux.ai/register?channel=c_6axb1q5n</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cliproxyapi"><img src="./assets/modelflare.png" alt="Modelflare" width="150"></a></td>
-<td>Modelflare による本プロジェクトへのご支援に感謝します！Modelflare：フルスペックで安定、水増しなし。世界の SOTA モデルを低コストで利用できます。米国法人 Havenbyte LLC が運営し、GPT、Claude、Gemini、Grok などの主要モデルと一般的な互換プロトコルに対応しているほか、40 種類以上の画像・動画モデルもサポートしています。キャッシュ補償が大きな特長です：一部の OpenAI 価格優先・安定・プレミアムグループでは、1 日あたり 65%、75%、85% のキャッシュヒット率を保証し、対象リクエストが目標に達しなかった場合は差額を補償します。精算後に使用量ダッシュボードで確認できます。特別キャンペーン：1 回 US&#36;20 のチャージで価格倍率 0.015 倍の GPT 特別グループが、1 回 US&#36;50 のチャージで価格倍率 0.03 倍の Claude 特別グループが解放されます。<a href="https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cliproxyapi">専用リンク</a>から登録してご参加ください。</td>
-</tr>
-</tbody>
-</table>
+**エンドポイントとプロバイダー**
+
+- OpenAI 互換および Gemini プロバイダー向けの `/v1/embeddings` と `/v1/rerank`。
+- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）、TypeSafe System One（`/v1/systemone`）。
+- Command Code（commandcode.ai）の OAuth ログイン。
+- `openai-compatibility` プロバイダーの `auto-discover-models` と `excluded-models`。
+- `/v1/models` でモダリティ、コンテキスト長、最大出力トークン数、推論サポートを提供（OpenRouter 形式）。
+
+**通信と信頼性**
+
+- HTTP、SSE、WebSocket のエンドツーエンド `gzip`/`br`/`zstd`/`deflate` 圧縮（クライアント側と上流側の両方）。
+- HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
+- ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
+- Codex OAuth リフレッシュの耐障害性、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
+
+**パフォーマンスと配布**
+
+- PGO でビルドされたバイナリ、Docker イメージでの `GOGC=200`、ホットなリクエストパスでのメモリ割り当て削減。
+- マルチアーキテクチャ（`linux/amd64`、`linux/arm64`）イメージ：`ghcr.io/johnsonran/cli-proxy-api`。
 
 ## 概要
 
@@ -194,14 +168,6 @@ Claude、Gemini、OpenAI、Antigravityのサブスクリプションを統合し
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 TUI、システムトレイ、マルチプロバイダーOAuthを備えたWindows向けCLIProxyAPIフォーク - AIコーディングツール用、APIキー不要
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-Claude Codeモデルを素早く切り替えるVSCode拡張機能。バックエンドとしてCLIProxyAPIを統合し、バックグラウンドでの自動ライフサイクル管理を搭載
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-CLIProxyAPIを使用してAIコーディングアシスタントのクォータを監視するTauri + React製のWindowsデスクトップアプリ。Gemini、Claude、OpenAI Codex、Antigravityアカウントの使用量をリアルタイムダッシュボード、システムトレイ統合、ワンクリックプロキシコントロールで追跡 - APIキー不要
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -298,6 +264,10 @@ React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレ
 ### [sub2api](https://github.com/PlaygrndLabs/sub2api)
 
 Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIProxyAPI を Cloudflare Workers + Containers にワンクリックでデプロイします。ログインと設定は R2 に永続化され、ダッシュボードはパスワードで保護され、クライアント API キーを作成するまで API リクエストはすべて拒否されます。
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)に掲載されています：`hermes plugins install cliproxyapi-provider`。
 
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

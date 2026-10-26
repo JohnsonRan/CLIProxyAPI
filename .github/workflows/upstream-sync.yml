@@ -97,13 +97,18 @@ jobs:
 
           if ! git merge --squash origin/ci; then
             mapfile -d '' -t conflicts < <(git diff --name-only --diff-filter=U -z)
-            if (( ${#conflicts[@]} != 1 )) || [[ ${conflicts[0]} != README.md ]]; then
-              printf '::error::Unexpected ci squash conflicts:'
-              printf ' %q' "${conflicts[@]}"
-              printf '\n'
-              exit 1
-            fi
-            git restore --source=origin/ci --staged --worktree -- README.md
+            # The READMEs are downstream-owned; any other conflict is unexpected.
+            for file in "${conflicts[@]}"; do
+              case "${file}" in
+                README.md|README_CN.md|README_JA.md) ;;
+                *)
+                  printf '::error::Unexpected ci squash conflicts:'
+                  printf ' %q' "${conflicts[@]}"
+                  printf '\n'
+                  exit 1 ;;
+              esac
+            done
+            git restore --source=origin/ci --staged --worktree -- "${conflicts[@]}"
           fi
           if ! git diff --quiet --diff-filter=U --; then
             echo '::error::Unresolved conflicts remain after applying ci branch'

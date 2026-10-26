@@ -5,7 +5,7 @@ This repository is a maintained downstream distribution of [`router-for-me/CLIPr
 ## Branch Architecture
 
 - **Upstream baseline**: `https://github.com/router-for-me/CLIProxyAPI.git` (`main`)
-- **`ci`**: Downstream maintenance overlay carrying this `MAINTAIN.md`, downstream `README.md` notice, `.github/workflows/upstream-sync.yml`, `.github/workflows/ghcr-docker.yml`, the combination-conflict resolver `.github/scripts/resolve-union-conflict.sh`, and multi-patch integration tests (`sdk/api/handlers/downstream_client_access_combination_test.go`, `internal/api/downstream_commandcode_systemone_combination_test.go`; they compile only on the integrated tree). Never mix product runtime changes into `ci`.
+- **`ci`**: Downstream maintenance overlay carrying this `MAINTAIN.md`, the downstream `README.md`, `README_CN.md` and `README_JA.md` (see Downstream Policy), `.github/workflows/upstream-sync.yml`, `.github/workflows/ghcr-docker.yml`, the combination-conflict resolver `.github/scripts/resolve-union-conflict.sh`, and multi-patch integration tests (`sdk/api/handlers/downstream_client_access_combination_test.go`, `internal/api/downstream_commandcode_systemone_combination_test.go`; they compile only on the integrated tree). Never mix product runtime changes into `ci`.
 - **`patch/<name>`**: Independent product patch branches, each branched directly from `upstream/main` and kept suitable for standalone review and independent build/test. One patch carries one feature or fix, so a patch becomes empty once upstream absorbs it.
 - **`main`**: Integrated release branch rebuilt from `upstream/main` with one countable squash commit per branch (`merge ci branch` followed by each `merge patch/<name> branch` in fixed order). Never commit fixes only to `main`.
 
@@ -358,7 +358,7 @@ declare -A compat_bases=([tmp/patch/usage-store-exclude-embeddings]=988f916e6494
 git fetch origin ci "${branches[@]}"
 
 git checkout -B main upstream/main
-git merge --squash origin/ci || git restore --source=origin/ci --staged --worktree -- README.md
+git merge --squash origin/ci || git restore --source=origin/ci --staged --worktree -- README.md README_CN.md README_JA.md
 git commit -m "merge ci branch"
 for branch in "${branches[@]}"; do
   if [[ -n "${compat_bases[${branch}]:-}" ]]; then
@@ -408,4 +408,5 @@ Former upstream flake, now fixed downstream: `TestResponsesLateInterruptDoesNotP
 
 - **No upstream pull requests.** This fork never opens pull requests against the upstream repository; the `Related Upstream Work` entries record upstream context only. Patches are maintained downstream indefinitely and are retired only when upstream lands an equivalent implementation, detected by a rebuild that finds the patch empty or conflicting.
 - **`main` is intentionally unprotected.** The scheduled sync rebuilds and force-pushes `main`, so it carries no branch protection. Safety comes from `--force-with-lease`, the `upstream-sync-main` concurrency group, fail-closed conflict and empty-patch handling, and validation before the push. Protect the `patch/*` and `ci` branches against deletion instead; `main` is a derived artifact that nothing else may be based on.
+- **Downstream READMEs.** `README.md`, `README_CN.md` and `README_JA.md` on `ci` are upstream's files without the sponsor section, plus a fork notice and a "Fork Features" section. The squash merge takes upstream edits elsewhere in them; when one conflicts, the sync keeps the `ci` copy, so refresh the files from `upstream/main` now and then (drop the sponsor section again). Update the feature list in all three languages when a user-visible patch is added or retired.
 - **Cross-repo patches.** Core and panel patches that depend on each other are listed under `Cross-repo` on both sides. Ship the provider side first.

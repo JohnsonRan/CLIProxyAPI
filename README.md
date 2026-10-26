@@ -2,7 +2,7 @@
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)
 
-> **Downstream Fork Notice**: This repository carries downstream patches on top of [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI): end-to-end HTTP/SSE/WS compression, HTTP incremental Responses and the HTTP-to-WebSocket Codex bridge, embeddings and rerank endpoints, per-client-key model access control, an opt-in client quota endpoint (`GET /v1/usage`), Claude and Codex reliability fixes, this fork's management panel by default, and multi-arch GHCR images. See [`MAINTAIN.md`](MAINTAIN.md) for patch branches, sync order, and maintenance rules.
+> **Downstream fork**: this repository rebuilds `main` from [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) every day and layers independent patches on top. See [Fork Features](#fork-features) below and [`MAINTAIN.md`](MAINTAIN.md) for patch branches, integration order and maintenance rules.
 
 If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
 
@@ -26,11 +26,11 @@ You can access the following providers locally and with multiple CLI accounts th
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude/fable"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
-        <td>Anthropic Claude models (Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5). Fable 5.1 is built for ambitious, long-running coding and knowledge work; Opus 5.5 brings strong agentic coding at a lower cost.</td>
+        <td>Anthropic Claude models (Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, Claude Haiku 5.5). Fable 5.1 is built for ambitious, long-running coding and knowledge work; Opus 5.5 brings strong agentic coding at a lower cost.</td>
     </tr>
     <tr>
         <td align="center"><a href="https://antigravity.google/"><img src="./assets/logo/antigravity.svg" alt="Antigravity" width="28" height="28" /></a></td>
-        <td>Google Gemini models include Gemini 3.8 Flash and Gemini 3.1 Pro Preview. CLIProxyAPI supports Gemini API, AI Studio, Vertex AI, Gemini CLI, and Antigravity accounts; model availability varies by channel. Gemini 3.8 Flash is Google's latest Flash model for long-horizon software engineering and agentic workflows.</td>
+        <td>Google Gemini models include Gemini 4 Argon and Gemini 3.8 Flash. CLIProxyAPI supports Gemini API, AI Studio, Vertex AI, Gemini CLI, and Antigravity accounts; model availability varies by channel. Gemini 3.8 Flash is Google's latest Flash model for long-horizon software engineering and agentic workflows. Antigravity's <a href="https://antigravity.google/docs/models/">official model availability</a> lists Claude Sonnet 5.5 (thinking) and Claude Opus 5.5 (thinking) for Google AI Pro (non-trial), Google AI Ultra, and Enterprise.</td>
     </tr>
     <tr>
         <td align="center"><a href="https://docs.x.ai/developers/grok-4-7"><img src="./assets/logo/xai.svg" alt="xAI" width="28" height="28" /></a></td>
@@ -38,7 +38,7 @@ You can access the following providers locally and with multiple CLI accounts th
     </tr>
     <tr>
         <td align="center"><a href="https://dev.meta.ai/docs/overview"><img src="./assets/logo/meta.svg" alt="Meta" width="28" height="28" /></a></td>
-        <td>Meta Muse models (Muse Spark 1.3, Muse Spark 1.2, etc.). CLIProxyAPI supports Muse Code accounts through Meta login and Meta Model API keys, with Muse Spark 1.3 for coding and agentic workflows.</td>
+        <td>Meta Muse models (Muse Wonder Full, Muse Wonder, Muse Spark 1.3, etc.). CLIProxyAPI supports Muse Code accounts through Meta login and Meta Model API keys, with Muse Spark 1.3 for coding and agentic workflows. Meta has announced Muse Wonder for Meta Model API and Muse Code, and Muse Wonder Full for Muse Code subscribers.</td>
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
@@ -48,74 +48,42 @@ You can access the following providers locally and with multiple CLI accounts th
 </table>
 
 
-## Sponsor
+## Fork Features
 
-[![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-en.png)](https://www.packyapi.com/register?aff=cliproxyapi)
+Everything upstream offers, plus the following. Each feature lives on its own `patch/*` branch; [`MAINTAIN.md`](MAINTAIN.md) documents its scope, config keys, known limits and related upstream work.
 
-Thanks to PackyCode for sponsoring this project!
+**Management and observability**
 
-PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more.
+- This fork's [management panel](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) is served by default and can be updated on demand from the panel.
+- Built-in usage statistics persisted to SQLite (`observability.usage.store`), with no external collector: costs from models.dev or custom prices, latency/TTFT/output-speed analysis, live in-flight requests, client IP location, quota value estimates for Codex and Claude subscriptions, upstream risk-control events, CSV/JSON export and database optimization.
+- Model fingerprint detection ([LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)) to check which model really answers behind a served model name.
+- Client quota endpoint `GET /v1/usage`: a client API key reads the quota of the OAuth credentials (Codex, Claude, Antigravity, xAI, Command Code) assigned to it, including those behind chained proxies.
 
-PackyCode provides special discounts for our software users: register using <a href="https://www.packyapi.com/register?aff=cliproxyapi">this link</a> and enter the "cliproxyapi" promo code during recharge to get 10% off.
+**Access control**
 
----
+- Global and per-client-key model allow/deny lists, key display names, and disabling a key without removing it.
+- Restricting client keys to providers (`client.key-scopes`).
+- `allowed_models` on auth files to whitelist models per credential.
 
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>Thanks to AICodeMirror for sponsoring this project! AICodeMirror provides official high-stability relay services for Claude Code / Codex / Gemini, with enterprise-grade concurrency, fast invoicing, and 24/7 dedicated technical support. Claude Code / Codex / Gemini official channels at 38% / 2% / 9% of original price, with extra discounts on top-ups! AICodeMirror offers special benefits for CLIProxyAPI users: register via <a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF">this link</a> to enjoy 20% off your first top-up, and enterprise customers can get up to 25% off!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://apikey.fan/register?aff=CLIProxyAPI"><img src="./assets/apikey.png" alt="APIKEY.FUN" width="150"></a></td>
-<td>Thanks to APIKEY.FUN for sponsoring this project! APIKEY.FUN is a professional enterprise-grade AI relay platform dedicated to providing stable, efficient, and low-cost AI model API access for enterprises and individual developers. The platform supports popular mainstream models such as Claude, OpenAI, and Gemini, with prices as low as 7% of the official price. Register through this project's <a href="https://apikey.fan/register?aff=CLIProxyAPI">exclusive link</a> to enjoy a special <b>permanent 5% top-up discount</b>.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://api.fenno.ai/s/Cvf0"><img src="./assets/fennoai.png" alt="FennoAI" width="150"></a></td>
-<td>FennoAI is a stable and efficient API relay service provider, currently focused on Codex relay services. It is compatible with OpenAI and Anthropic protocols and can flexibly integrate with mainstream coding tools such as Codex, Claude Code, and OpenCode. It can reliably support enterprise-grade demand of hundreds of billions of tokens per day, with B2B settlement and invoicing available for both domestic and overseas entities. FennoAI offers an exclusive benefit for CLIProxyAPI users: purchase a subscription through the <a href="https://api.fenno.ai/s/Cvf0">exclusive link</a> and receive $50 worth of Coding Plan credits for just $1.99. Referral rewards are also available: earn up to 20% commission when invited friends make a purchase. The more friends you invite, the greater the rewards.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://s.qiniu.com/7zUJri"><img src="./assets/qiniucloud.png" alt="Qiniu Cloud AI" width="150"></a></td>
-<td>Thanks to <a href="https://s.qiniu.com/7zUJri">Qiniu Cloud AI</a> for sponsoring this project! Qiniu Cloud AI is an enterprise-grade large-model MaaS platform under Qiniu Cloud (02567.HK). It provides one-stop access to 150+ mainstream global models, is compatible with protocols from major global model providers, and covers full-modal processing capabilities for text, image, audio, video, and files. It serves more than 1.69 million enterprise and developer users. Exclusive benefits: enterprise users can claim 12 million free tokens, and invite friends to earn up to tens of billions of tokens.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa"><img src="./assets/cubence.png" alt="Cubence" width="150"></a></td>
-<td>Thanks to Cubence for sponsoring this project! Cubence is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. Cubence provides special discounts for our software users: register using <a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa">this link</a> and enter the "CLIPROXYAPI" promo code during recharge to get 10% off.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://bestproxy.com/?keyword=ayh7otlb"><img src="./assets/bestproxy.png" alt="Bestproxy" width="150"></a></td>
-<td>Bestproxy provides high-purity residential IPs with dedicated one-IP-per-account support. 🟡Residential Proxy - &#36;0.5/GB；🟡Static Residential Proxy - Starting at &#36;3/IP；🟡Unlimited Residential Proxy - Starting at &#36;67/Day.  ✅<a href="https://bestproxy.com/?keyword=ayh7otlb">Get Free Trial.</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://go.apimart.ai/gh-cliproxyapi"><img src="./assets/apimart-en.png" alt="APIMart" width="150"></a></td>
-<td>Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image &amp; video generation — GPT-Image-2 from &#36;0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-cliproxyapi">sign up here</a> to get started.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.swiftproxy.net/?code=PR67S9A95"><img src="./assets/swiftproxy.png" alt="Swiftproxy" width="150"></a></td>
-<td>Swiftproxy provides 90M+ clean residential IPs across 220+ locations, supporting HTTP(S)/SOCKS5, IP rotation, Sticky Sessions, and precise location targeting. It helps AI API tools and automation workflows access online services reliably from different locations, making it ideal for API requests, web access, data collection, and location-based testing. Residential proxies from &#36;0.7/GB. Free testing is available, with 10% off using code PROXY90. <a href="https://www.swiftproxy.net/?code=PR67S9A95">Try Swiftproxy Now</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.rapidproxy.io/?code=KHM9B6E6M"><img src="./assets/rapidproxy.png" alt="RapidProxy" width="150"></a></td>
-<td><a href="https://www.rapidproxy.io/?code=KHM9B6E6M">RapidProxy</a> is a high-performance proxy provider built for automation and multi-account operations, offering clean residential proxies and native static ISP IPs. With 90M+ residential IPs worldwide, smart rotation, stable sessions, and high-concurrency support, RapidProxy is ideal for web scraping, browser automation, social media account management, e-commerce operations, bulk account registration, and more. Residential proxies start at just &#36;0.55/GB, with traffic that never expires. Use code RAPID10 for 10% off, and <a href="https://www.rapidproxy.io/?code=KHM9B6E6M">start your free trial today.</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://pateway.ai/?ch=jjvdb"><img src="./assets/patewayai.png" alt="PatewayAI" width="150"></a></td>
-<td>PatewayAI is an API relay service provider for experienced AI developers, with full support for the Claude and Codex model families. All models come from high-quality official channels, with no dilution or counterfeiting, and transparent, verifiable billing details. Economy mode starts at just 5% of the official price. Register through <a href="https://pateway.ai/?ch=jjvdb">this link</a> to receive trial credits and participate in occasional promotions for free credits. The platform also supports enterprise-grade concurrency, a dedicated management dashboard, formal contracts and invoices, and two-way referral rewards of up to &#36;150.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://agentmarket.fluxapay.xyz/marketplace/tokenplans"><img src="./assets/fluxa-baidu-ai-cloud.png" alt="FluxA &amp; Baidu AI Cloud" width="150"></a></td>
-<td>Thanks to FluxA &amp; Baidu AI Cloud for supporting this project! FluxA and Baidu AI Cloud jointly launched AgenticPlan, enabling AI Agents to autonomously purchase, manage, and use models, APIs, and tools. It includes Baidu Qianfan TokenPlan at prices as low as 60% of the standard rate, with access to flagship models such as DeepSeek V4, GLM 5.2, and Kimi. It also includes FluxA AgentMarket API call credits, unlocking 1,000+ paid APIs for search, data scraping, social media, finance, cryptocurrency, image generation, video, and more.<br><br>With user authorization, AI Agents can also use official Visa card payments to independently procure resources, manage API keys, monitor usage, and plan renewals—helping Agents evolve from “autonomously completing tasks” to truly being able to “autonomously plan budgets and complete tasks.” <a href="https://agentmarket.fluxapay.xyz/marketplace/tokenplans">Learn more about AgenticPlan</a>.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.openlux.ai/register?channel=c_6axb1q5n"><img src="./assets/openlux.png" alt="OpenLux" width="150"></a></td>
-<td>Thank you to OpenLux for sponsoring this project!<br><br>OpenLux is an all-in-one AI platform for businesses, bringing together leading AI models from major providers worldwide. With fast, reliable service and responsive technical support, OpenLux offers base pricing for Claude, OpenAI, and Gemini models as low as 8.82%, 4%, and 8% of official rates, respectively.<br><br>Exclusive offer for CLI Proxy API users: Sign up through our referral link and enjoy up to 7.5% off credit top-ups!<br><br>Get started with OpenLux → <a href="https://www.openlux.ai/register?channel=c_6axb1q5n">https://www.openlux.ai/register?channel=c_6axb1q5n</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cliproxyapi"><img src="./assets/modelflare.png" alt="Modelflare" width="150"></a></td>
-<td>Thanks to Modelflare for sponsoring this project! Modelflare: Full strength, stable, nothing watered down. Global SOTA models at a lower cost. Operated by US-based Havenbyte LLC, Modelflare supports GPT, Claude, Gemini, Grok, and other leading models through common compatible protocols, plus 40+ image and video models. Cache compensation is a highlight: selected OpenAI groups (price-first, stable, and premium) guarantee daily cache hit rates of 65%, 75%, or 85%, and if eligible requests fall short, Modelflare refunds the difference, visible on the usage dashboard after settlement. Special offers: a single top-up of US&#36;20 unlocks the GPT discount group at a 0.015x price multiplier, and a single top-up of US&#36;50 unlocks the Claude discount group at a 0.03x multiplier. Register via <a href="https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cliproxyapi">this exclusive link</a> to get started.</td>
-</tr>
-</tbody>
-</table>
+**Endpoints and providers**
+
+- `/v1/embeddings` and `/v1/rerank` for OpenAI-compatible and Gemini providers.
+- `/v1/responses/input_tokens`, OpenAI Decisions (`/v1/decisions`) and TypeSafe System One (`/v1/systemone`).
+- Command Code (commandcode.ai) OAuth login.
+- `auto-discover-models` and `excluded-models` for `openai-compatibility` providers.
+- `/v1/models` lists modalities, context length, max output tokens and reasoning support (OpenRouter style).
+
+**Transport and reliability**
+
+- End-to-end `gzip`/`br`/`zstd`/`deflate` compression for HTTP, SSE and WebSocket, on both client and upstream legs.
+- HTTP incremental Responses and an HTTP-to-WebSocket bridge for Codex upstreams.
+- Connection reuse for ChatGPT uTLS and proxied upstreams; cancellable SOCKS5 dials.
+- Codex OAuth refresh resilience, Claude web search recovery after credential failover, fail-fast when every credential is out of quota (`X-Should-Retry: false`), keepalives for long silent Codex app streams, and Responses WebSocket fixes.
+
+**Performance and distribution**
+
+- PGO-built binaries, `GOGC=200` in the Docker image, and fewer allocations on hot request paths.
+- Multi-arch (`linux/amd64`, `linux/arm64`) images at `ghcr.io/johnsonran/cli-proxy-api`.
 
 ## Overview
 
@@ -201,14 +169,6 @@ Native macOS menu bar app that unifies Claude, Gemini, OpenAI, and Antigravity s
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -308,6 +268,10 @@ A modern, responsive web dashboard and management console for CLIProxyAPI built 
 ### [sub2api](https://github.com/PlaygrndLabs/sub2api)
 
 A Cloudflare-based LLM gateway and proxy server: CLIProxyAPI deployed to Cloudflare Workers + Containers in one click. Logins and config persist in R2, the dashboard sits behind a password, and API calls are refused until a client API key exists.
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+Model-provider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that registers one Hermes provider per CLIProxyAPI provider, each on the wire its executor accepts (Anthropic Messages, Responses or Chat Completions), with context windows and reasoning levels read from CLIProxyAPI. Optional read-only Management API pass for exact provider grouping. Listed in the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider): `hermes plugins install cliproxyapi-provider`.
 
 > [!NOTE]  
 > If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
