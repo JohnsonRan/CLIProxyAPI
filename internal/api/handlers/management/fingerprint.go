@@ -14,9 +14,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// shortcut: lmfpd v0.1.0 cannot disable its timer, so this is its maximum (~24.9 days); switch to the SDK's off value once an SDK release supports it.
-// Cancellation in practice comes from the management request context.
-const maxSDKTimeout = 2147483647 * time.Millisecond
+// noSDKTimeout disables the lmfpd request timer (a negative Timeout, since v0.2.0); the management request
+// context is the only cancellation, as no timeout may follow an established upstream connection.
+const noSDKTimeout = -time.Nanosecond
 
 // fingerprintDetectRequest selects the model and API format used for one detection round.
 type fingerprintDetectRequest struct {
@@ -208,7 +208,7 @@ func (h *Handler) FingerprintDetect(api http.Handler) gin.HandlerFunc {
 			NoStream:    req.NoStream,
 			Strict:      req.Strict,
 			Count:       req.Count,
-			Timeout:     maxSDKTimeout,
+			Timeout:     noSDKTimeout,
 		})
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
