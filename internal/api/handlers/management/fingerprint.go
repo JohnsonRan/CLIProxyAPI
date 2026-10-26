@@ -2,9 +2,11 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,11 +30,78 @@ type fingerprintDetectRequest struct {
 	NoStream    bool   `json:"no_stream"`
 	Strict      bool   `json:"strict"`
 	Count       int    `json:"count"`
+	// Progress streams NDJSON events (sample updates, then the result) instead of one JSON body.
+	Progress bool `json:"progress"`
 }
 
 type fingerprintDetectResponse struct {
 	*lmfpd.DetectResult
 	BuiltAt string `json:"built_at"`
+}
+
+// fingerprintProgress writes one NDJSON line per sample change and a final result or error line. The status and
+// headers are sent with the first line, so errors before any sample (invalid config) still get a JSON status.
+type fingerprintProgress struct {
+	w       gin.ResponseWriter
+	mu      sync.Mutex
+	started bool
+	last    map[int]string
+}
+
+type fingerprintProgressSample struct {
+	State         string  `json:"state"`
+	Count         int     `json:"count"`
+	ExpectedCount int     `json:"expected_count"`
+	FirstByteMs   *int64  `json:"first_byte_ms"`
+	ResponseModel *string `json:"response_model"`
+	Error         *string `json:"error"`
+}
+
+func (p *fingerprintProgress) write(event any) {
+	if !p.started {
+		p.started = true
+		p.w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		p.w.Header().Set("Cache-Control", "no-cache")
+		p.w.Header().Set("X-Accel-Buffering", "no")
+		p.w.WriteHeader(http.StatusOK)
+	}
+	line, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	// Write errors mean the panel went away; the request context then cancels the round.
+	_, _ = p.w.Write(append(line, '\n'))
+	p.w.Flush()
+}
+
+// onSample drops repeats: a streamed reply reports every text piece, but the panel only shows state and count.
+func (p *fingerprintProgress) onSample(index int, sample lmfpd.Sample) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := sample.State + "/" + strconv.Itoa(sample.Count)
+	if p.last[index] == key {
+		return
+	}
+	p.last[index] = key
+	p.write(gin.H{"type": "sample", "index": index, "sample": fingerprintProgressSample{
+		State:         sample.State,
+		Count:         sample.Count,
+		ExpectedCount: sample.ExpectedCount,
+		FirstByteMs:   sample.FirstByteMs,
+		ResponseModel: sample.ResponseModel,
+		Error:         sample.Error,
+	}})
+}
+
+// finish reports whether the outcome was written as a stream line; if not, the caller answers with plain JSON.
+func (p *fingerprintProgress) finish(event gin.H) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.started {
+		return false
+	}
+	p.write(event)
+	return true
 }
 
 var (
@@ -198,6 +267,12 @@ func (h *Handler) FingerprintDetect(api http.Handler) gin.HandlerFunc {
 		}
 		defer lbServer.Close()
 
+		var options []lmfpd.DetectOption
+		var progress *fingerprintProgress
+		if req.Progress {
+			progress = &fingerprintProgress{w: c.Writer, last: map[int]string{}}
+			options = append(options, lmfpd.OnSample(progress.onSample))
+		}
 		result, err := detector.Detect(ctx, lmfpd.DetectConfig{
 			BaseURL:     lbServer.BaseURL(),
 			APIKey:      apiKey,
@@ -209,11 +284,16 @@ func (h *Handler) FingerprintDetect(api http.Handler) gin.HandlerFunc {
 			Strict:      req.Strict,
 			Count:       req.Count,
 			Timeout:     noSDKTimeout,
-		})
+		}, options...)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			if progress == nil || !progress.finish(gin.H{"type": "error", "error": err.Error()}) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			}
 			return
 		}
-		c.JSON(http.StatusOK, fingerprintDetectResponse{DetectResult: result, BuiltAt: detector.BuiltAt()})
+		response := fingerprintDetectResponse{DetectResult: result, BuiltAt: detector.BuiltAt()}
+		if progress == nil || !progress.finish(gin.H{"type": "result", "result": response}) {
+			c.JSON(http.StatusOK, response)
+		}
 	}
 }
