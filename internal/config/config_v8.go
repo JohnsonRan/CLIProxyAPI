@@ -40,6 +40,7 @@ var v8SharedPaths = []configPath{
 	{"oauth.providers.codex.response-steering", "upstream.codex.response-steering"},
 	{"oauth.providers.codex.upstream-request-compression", "upstream.codex.upstream-request-compression"},
 	{"oauth.providers.codex.upstream-request-compression-min-bytes", "upstream.codex.upstream-request-compression-min-bytes"},
+	{"oauth.providers.codex.upstream-request-compression-encoding", "upstream.codex.upstream-request-compression-encoding"},
 	{"oauth.providers.codex.websocket-compression", "upstream.codex.websocket-compression"},
 	{"oauth.providers.claude.model-level-cooling", "upstream.claude.model-level-cooling"},
 	{"oauth.providers.claude.claude-code.disable-cloaking-model-list", "upstream.claude.disable-cloaking-model-list"},
@@ -97,6 +98,7 @@ func buildV8Paths() []configPath {
 		{"codex.response-steering", "upstream.codex.response-steering"},
 		{"codex.upstream-request-compression", "upstream.codex.upstream-request-compression"},
 		{"codex.upstream-request-compression-min-bytes", "upstream.codex.upstream-request-compression-min-bytes"},
+		{"codex.upstream-request-compression-encoding", "upstream.codex.upstream-request-compression-encoding"},
 		{"codex.websocket-compression", "upstream.codex.websocket-compression"},
 		{"codex", "oauth.providers.codex"}, {"codex-header-defaults", "oauth.providers.codex.header-defaults"},
 		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
@@ -276,6 +278,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 	if err != nil {
 		return err
 	}
+	normalizeLegacyCodexRequestCompression(root)
 	decoded := legacyConfig(*cfg)
 	if err = root.Decode(&decoded); err != nil {
 		return err
