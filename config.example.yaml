@@ -361,8 +361,6 @@ upstream:
     # and SIWC requests are never compressed). A 400/415 rejection is retried once
     # with an uncompressed body. Default: true.
     upstream-request-compression: true
-    # Request coding: "zstd" (default, what the official client sends), "gzip" or "br".
-    upstream-request-compression-encoding: "zstd"
     # Request bodies smaller than this many bytes are sent uncompressed.
     upstream-request-compression-min-bytes: 1024
     # Enable permessage-deflate compression on Codex WebSocket connections

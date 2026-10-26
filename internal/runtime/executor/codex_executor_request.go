@@ -2,7 +2,6 @@ package executor
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
@@ -157,14 +155,12 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
 	rawJSON = helps.FinalizePayload(ctx, rawJSON)
 	wireBody := rawJSON
-	encoding := ""
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&
 		!codexAuthUsesAPIKey(auth) && !codexUseSIWCForRequest(ctx, auth, headers) &&
 		len(rawJSON) >= e.cfg.Codex.RequestCompressionMinBytes() {
 		parsedURL, errParse := neturl.Parse(url)
 		if errParse == nil && strings.EqualFold(parsedURL.Hostname(), "chatgpt.com") && strings.HasPrefix(parsedURL.Path, "/backend-api/codex/") {
-			encoding = e.cfg.Codex.RequestCompressionEncoding()
-			if compressed, errCompress := compressCodexRequestBody(encoding, rawJSON); errCompress != nil {
+			if compressed, errCompress := compressCodexRequestBody(rawJSON); errCompress != nil {
 				log.Errorf("codex executor: compress request body error: %v", errCompress)
 			} else if len(compressed) < len(rawJSON) {
 				wireBody = compressed
@@ -176,7 +172,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		return nil, nil, err
 	}
 	if len(wireBody) < len(rawJSON) {
-		httpReq.Header.Set("Content-Encoding", encoding)
+		httpReq.Header.Set("Content-Encoding", "zstd")
 	}
 	alignCodexContentEncoding(httpReq)
 	if httpReq.Header.Get("Accept-Encoding") == "" {
@@ -194,26 +190,9 @@ var (
 	codexZstdRequestEncoderErr  error
 )
 
-// compressCodexRequestBody encodes a request body; one shared zstd encoder serves every
+// compressCodexRequestBody zstd-encodes a request body; one shared encoder serves every
 // request because EncodeAll is safe for concurrent use and creating encoders is costly.
-func compressCodexRequestBody(encoding string, body []byte) ([]byte, error) {
-	switch encoding {
-	case "gzip", "br":
-		var buf bytes.Buffer
-		var writer io.WriteCloser
-		if encoding == "gzip" {
-			writer = gzip.NewWriter(&buf)
-		} else {
-			writer = brotli.NewWriterLevel(&buf, brotli.DefaultCompression)
-		}
-		if _, errWrite := writer.Write(body); errWrite != nil {
-			return nil, errWrite
-		}
-		if errClose := writer.Close(); errClose != nil {
-			return nil, errClose
-		}
-		return buf.Bytes(), nil
-	}
+func compressCodexRequestBody(body []byte) ([]byte, error) {
 	codexZstdRequestEncoderOnce.Do(func() {
 		codexZstdRequestEncoder, codexZstdRequestEncoderErr = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
 	})
@@ -307,11 +286,10 @@ func decodeCodexUpstreamResponse(resp *http.Response) error {
 	return nil
 }
 
-// doCodexRequest retries a rejected compressed body once without rerunning payload rules.
+// doCodexRequest retries a rejected zstd body once without rerunning payload rules.
 func doCodexRequest(client *http.Client, req *http.Request, upstreamBody []byte, prepareHeaders func(*http.Request), responseReady func(*http.Response)) (*http.Response, error) {
 	alignCodexContentEncoding(req)
-	encoding := req.Header.Get("Content-Encoding")
-	compressed := encoding == "zstd" || encoding == "gzip" || encoding == "br"
+	compressed := req.Header.Get("Content-Encoding") == "zstd"
 	resp, errDo := client.Do(req)
 	if errDo != nil {
 		return nil, errDo

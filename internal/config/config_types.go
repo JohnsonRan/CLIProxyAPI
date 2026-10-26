@@ -255,9 +255,6 @@ type CodexConfig struct {
 	UpstreamRequestCompression bool `yaml:"upstream-request-compression" json:"upstream-request-compression"`
 	// UpstreamRequestCompressionMinBytes defaults to 1024 when zero or negative.
 	UpstreamRequestCompressionMinBytes int `yaml:"upstream-request-compression-min-bytes,omitempty" json:"upstream-request-compression-min-bytes,omitempty"`
-	// UpstreamRequestCompressionEncoding selects the request coding: "zstd" (default, what the
-	// official Codex client sends), "gzip" or "br".
-	UpstreamRequestCompressionEncoding string `yaml:"upstream-request-compression-encoding,omitempty" json:"upstream-request-compression-encoding,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
@@ -314,22 +311,9 @@ func (c *CodexConfig) RequestCompressionMinBytes() int {
 	return c.UpstreamRequestCompressionMinBytes
 }
 
-// RequestCompressionEncoding returns the Content-Encoding for compressed Codex request bodies.
-func (c *CodexConfig) RequestCompressionEncoding() string {
-	if c != nil {
-		switch strings.ToLower(strings.TrimSpace(c.UpstreamRequestCompressionEncoding)) {
-		case "gzip", "x-gzip":
-			return "gzip"
-		case "br", "brotli":
-			return "br"
-		}
-	}
-	return "zstd"
-}
-
 // normalizeLegacyCodexRequestCompression accepts the string form of
 // codex.upstream-request-compression that earlier downstream builds wrote ("zstd", "gzip",
-// "br", "auto", "off") by turning it into the boolean switch plus the encoding field.
+// "br", "auto", "off"): "off" and its synonyms disable it, any coding enables zstd.
 func normalizeLegacyCodexRequestCompression(root *yaml.Node) {
 	node := yamlPath(root, "codex.upstream-request-compression")
 	if node == nil || node.Kind != yaml.ScalarNode || node.Tag == "!!bool" {
@@ -340,10 +324,6 @@ func normalizeLegacyCodexRequestCompression(root *yaml.Node) {
 	switch value {
 	case "off", "none", "false", "identity", "disabled":
 		enabled = false
-	case "gzip", "x-gzip", "br", "brotli":
-		if yamlPath(root, "codex.upstream-request-compression-encoding") == nil {
-			setYAMLPath(root, "codex.upstream-request-compression-encoding", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
-		}
 	}
 	node.Tag, node.Style, node.Value = "!!bool", 0, strconv.FormatBool(enabled)
 }
