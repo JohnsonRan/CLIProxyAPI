@@ -257,6 +257,8 @@ type Store struct {
 	cancel   context.CancelFunc
 	lookups  sync.WaitGroup
 	resolver sync.Once
+	// quotaActive holds auth indexes that served requests since their last active quota probe.
+	quotaActive sync.Map
 	// maint carries optimize requests to the writer goroutine (keep days, 0 = retention only).
 	maint    chan int
 	optMu    sync.Mutex
@@ -497,6 +499,7 @@ func (s *Store) write(batch []Event) error {
 			e.ResponseModel, subInt, e.Transport, e.Risk, e.RiskPrompt, e.RiskReason); errExec != nil {
 			return errExec
 		}
+		s.markQuotaActive(e.Provider, e.AuthIndex)
 		ttftCount := 0
 		if e.TTFTMs > 0 {
 			ttftCount = 1

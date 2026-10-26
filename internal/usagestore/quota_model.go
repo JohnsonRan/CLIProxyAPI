@@ -9,6 +9,7 @@ import (
 type QuotaModel struct {
 	AuthIndex        string              `json:"auth_index"`
 	Provider         string              `json:"provider"`
+	Pool             string              `json:"pool"`
 	PeriodSeconds    int64               `json:"period_seconds"`
 	Status           string              `json:"status"` // "fitted" | "insufficient"
 	Windows          int                 `json:"windows"`
