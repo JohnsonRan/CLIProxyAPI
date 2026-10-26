@@ -97,3 +97,43 @@ func TestResponseCompressionFlushError(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalToProxyCompressionDefaults pins the defaults clients rely on with an empty config:
+// permessage-deflate on /v1/responses and compressed SSE in every supported coding.
+func TestLocalToProxyCompressionDefaults(t *testing.T) {
+	server := newTestServerWithConfig(t, &config.Config{})
+	event := "data: " + strings.Repeat("streamed delta ", 16) + "\n\n"
+	server.engine.GET("/sse-default", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		for i := 0; i < 3; i++ {
+			_, _ = c.Writer.WriteString(event)
+			c.Writer.Flush()
+		}
+	})
+	httpServer := httptest.NewServer(server.engine)
+	defer httpServer.Close()
+
+	conn, response, errDial := (&websocket.Dialer{EnableCompression: true}).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/v1/responses", nil)
+	if errDial != nil {
+		t.Fatal(errDial)
+	}
+	if errClose := conn.Close(); errClose != nil {
+		log.Errorf("close default compression test websocket: %v", errClose)
+	}
+	if got := response.Header.Get("Sec-WebSocket-Extensions"); !strings.Contains(got, "permessage-deflate") {
+		t.Fatalf("default /v1/responses websocket extensions = %q, want permessage-deflate", got)
+	}
+
+	for _, encoding := range responseCompressionEncodings {
+		request := httptest.NewRequest(http.MethodGet, "/sse-default", nil)
+		request.Header.Set("Accept-Encoding", encoding)
+		recorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(recorder, request)
+		if got := recorder.Header().Get("Content-Encoding"); got != encoding {
+			t.Fatalf("default SSE Content-Encoding = %q, want %q", got, encoding)
+		}
+		if got := string(compressionTestBody(t, encoding, recorder.Body.Bytes())); got != strings.Repeat(event, 3) {
+			t.Fatalf("%s SSE body mismatch", encoding)
+		}
+	}
+}

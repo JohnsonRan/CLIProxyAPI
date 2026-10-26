@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -102,7 +104,7 @@ func negotiateResponseCompression(header string) (string, bool) {
 	identityAllowed := identityQuality > 0 || (!explicitIdentity && (!explicitWildcard || wildcardQuality > 0))
 	selected := ""
 	highestQuality := 0.0
-	for _, encoding := range []string{"zstd", "gzip"} {
+	for _, encoding := range responseCompressionEncodings {
 		quality, explicit := qualities[encoding]
 		if !explicit {
 			quality = wildcardQuality
@@ -173,9 +175,13 @@ type responseCompressorPool interface {
 	Put(any)
 }
 
+// responseCompressionEncodings is the server preference for equal client quality.
+var responseCompressionEncodings = []string{"zstd", "br", "gzip", "deflate"}
+
 // responseCompressorPools reuse encoders across responses. The default zstd encoder keeps an
-// 8 MiB window and its buffers (about 18 MB per stream); a 1 MiB window with lower encoder
-// memory loses little ratio on API responses, which are far smaller than the window.
+// 8 MiB window and its buffers (about 18 MB per stream) and the default brotli window (4 MiB)
+// several MiB; 1 MiB and 256 KiB windows with lower encoder memory lose little ratio on API
+// responses, which are far smaller than the window.
 var responseCompressorPools = map[string]responseCompressorPool{
 	"zstd": &sync.Pool{New: func() any {
 		encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(1<<20), zstd.WithLowerEncoderMem(true))
@@ -185,7 +191,9 @@ var responseCompressorPools = map[string]responseCompressorPool{
 		}
 		return encoder
 	}},
-	"gzip": &sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }},
+	"br":      &sync.Pool{New: func() any { return brotli.NewWriterOptions(io.Discard, brotli.WriterOptions{Quality: 5, LGWin: 18}) }},
+	"gzip":    &sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }},
+	"deflate": &sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}, // HTTP deflate is the zlib format
 }
 
 // newResponseCompressor takes a pooled encoder writing to dst, or nil when none can be created.
@@ -211,6 +219,7 @@ type responseCompressionWriter struct {
 	buffer     bytes.Buffer
 	compressor responseCompressor
 	decided    bool
+	compressed bool
 	writeErr   error
 	written    bool
 	size       int
@@ -222,6 +231,12 @@ func (w *responseCompressionWriter) Unwrap() http.ResponseWriter {
 		return nil
 	}
 	return w.ResponseWriter
+}
+
+// IsDownstreamCompressed tells the request log, which records the plaintext body, to drop the
+// Content-Encoding this writer adds.
+func (w *responseCompressionWriter) IsDownstreamCompressed() bool {
+	return w.compressed
 }
 
 func (w *responseCompressionWriter) Written() bool {
@@ -349,9 +364,14 @@ func (w *responseCompressionWriter) decide(force bool, size int) {
 		return
 	}
 	w.compressor = compressor
+	w.compressed = true
 	w.decided = true
 	w.Header().Del("Content-Length")
 	w.Header().Set("Content-Encoding", w.encoding)
+	// The encoded bytes differ from the identity representation a strong validator names.
+	if etag := w.Header().Get("ETag"); etag != "" && !strings.HasPrefix(etag, "W/") {
+		w.Header().Set("ETag", "W/"+etag)
+	}
 	// Gin otherwise commits headers lazily when the encoder emits its first bytes.
 	w.ResponseWriter.WriteHeaderNow()
 }

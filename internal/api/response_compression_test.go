@@ -4,19 +4,25 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -41,6 +47,14 @@ func compressionTestBody(t *testing.T, encoding string, body []byte) []byte {
 			t.Fatal(errNewReader)
 		}
 		defer decoder.Close()
+		reader = decoder
+	case "br":
+		reader = brotli.NewReader(reader)
+	case "deflate":
+		decoder, errNewReader := zlib.NewReader(reader)
+		if errNewReader != nil {
+			t.Fatal(errNewReader)
+		}
 		reader = decoder
 	}
 	decoded, errReadAll := io.ReadAll(reader)
@@ -67,6 +81,9 @@ func TestResponseCompression(t *testing.T) {
 	}{
 		{name: "zstd", accept: "zstd", encoding: "zstd"},
 		{name: "gzip", accept: "gzip", encoding: "gzip"},
+		{name: "br", accept: "br", encoding: "br"},
+		{name: "deflate", accept: "deflate", encoding: "deflate"},
+		{name: "preference_order", accept: "deflate, gzip, br", encoding: "br"},
 		{name: "large_known_length", accept: "gzip", encoding: "gzip", contentLength: true},
 		{name: "no_accept"},
 		{name: "identity", accept: "identity"},
@@ -79,8 +96,8 @@ func TestResponseCompression(t *testing.T) {
 		{name: "small_identity_overrides_wildcard", accept: "gzip, *;q=0, identity;q=1", body: "{}"},
 		{name: "identity_refused_no_encoding", accept: "identity;q=0,*;q=0", body: "{}"},
 		{name: "wildcard", accept: "*;q=0.5", encoding: "zstd"},
-		{name: "wildcard_explicit_exclusion", accept: "*;q=1,zstd;q=0", encoding: "gzip"},
-		{name: "all_excluded", accept: "*;q=1,zstd;q=0,gzip;q=0"},
+		{name: "wildcard_explicit_exclusion", accept: "*;q=1,zstd;q=0", encoding: "br"},
+		{name: "all_excluded", accept: "*;q=1,zstd;q=0,br;q=0,gzip;q=0,deflate;q=0"},
 		{name: "invalid_quality", accept: "zstd;q=invalid,gzip;q=2"},
 		{name: "small", accept: "zstd", body: "{}"},
 		{name: "small_known_length", accept: "gzip", body: "{}", contentLength: true},
@@ -432,5 +449,65 @@ func TestResponseCompressionWriteAfterFinishFails(t *testing.T) {
 		if _, errWrite := writer.WriteString("data: late\n\n"); errWrite == nil {
 			t.Fatalf("%s: a write after finish must fail, not go out uncompressed", encoding)
 		}
+	}
+}
+
+func TestResponseCompressionPooledEncodersAndWeakETag(t *testing.T) {
+	body := "{\"message\":\"" + strings.Repeat("compressible text ", 128) + "\"}"
+	engine := gin.New()
+	engine.Use(responseCompressionMiddleware(&config.Config{}))
+	engine.GET("/", func(c *gin.Context) {
+		c.Header("ETag", `"v1"`)
+		c.Data(http.StatusOK, "application/json", []byte(body))
+	})
+	for _, encoding := range responseCompressionEncodings {
+		for round := 0; round < 2; round++ { // the second round reuses the pooled encoder
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Accept-Encoding", encoding)
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, req)
+			if got := response.Header().Get("Content-Encoding"); got != encoding {
+				t.Fatalf("%s round %d: Content-Encoding = %q", encoding, round, got)
+			}
+			if got := response.Header().Get("ETag"); got != `W/"v1"` {
+				t.Fatalf("%s: ETag = %q, want weak", encoding, got)
+			}
+			if got := string(compressionTestBody(t, encoding, response.Body.Bytes())); got != body {
+				t.Fatalf("%s round %d: decoded body mismatch", encoding, round)
+			}
+		}
+	}
+}
+
+func TestResponseCompressionRequestLogKeepsPlaintext(t *testing.T) {
+	logsDir := t.TempDir()
+	body := `{"message":"` + strings.Repeat("logged text ", 256) + `"}`
+	engine := gin.New()
+	// Same order as NewServer: compression outside the request log.
+	engine.Use(responseCompressionMiddleware(&config.Config{}))
+	engine.Use(middleware.RequestLoggingMiddleware(logging.NewFileRequestLogger(true, logsDir, "", 10)))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.Data(http.StatusOK, "application/json", []byte(body))
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	request.Header.Set("Accept-Encoding", "zstd")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if response.Header().Get("Content-Encoding") != "zstd" {
+		t.Fatalf("response not compressed: %q", response.Header().Get("Content-Encoding"))
+	}
+	entries, errReadDir := os.ReadDir(logsDir)
+	if errReadDir != nil || len(entries) == 0 {
+		t.Fatalf("no request log written: %v", errReadDir)
+	}
+	logged, errReadFile := os.ReadFile(filepath.Join(logsDir, entries[0].Name()))
+	if errReadFile != nil {
+		t.Fatal(errReadFile)
+	}
+	if !strings.Contains(string(logged), body) {
+		t.Fatal("request log must hold the plaintext response body")
+	}
+	if strings.Contains(strings.ToLower(string(logged)), "content-encoding: zstd") {
+		t.Fatal("request log must not claim the plaintext body is zstd encoded")
 	}
 }

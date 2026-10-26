@@ -147,6 +147,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		_ = httpResp.Body.Close()
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return nil, errDecode
+	}
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		bodyBytes, errRead := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {

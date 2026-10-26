@@ -163,7 +163,7 @@ func TestResponseCompressionVaryPaths(t *testing.T) {
 }
 
 func TestResponseCompressionVaryCommitPaths(t *testing.T) {
-	for _, accept := range []string{"", "identity", "br", "gzip", "zstd"} {
+	for _, accept := range []string{"", "identity", "compress", "br", "gzip", "zstd"} {
 		for _, commit := range []string{"write", "write_string", "header_now", "flush", "flush_error", "implicit"} {
 			t.Run(accept+"/"+commit, func(t *testing.T) {
 				engine := gin.New()
@@ -233,7 +233,7 @@ func TestResponseCompressionVaryChangedWhileBuffered(t *testing.T) {
 }
 
 func TestResponseCompressionPlaintextWriterContract(t *testing.T) {
-	for _, accept := range []string{"", "identity", "br"} {
+	for _, accept := range []string{"", "identity", "compress"} {
 		t.Run(accept, func(t *testing.T) {
 			engine := gin.New()
 			engine.Use(responseCompressionMiddleware(&config.Config{}))

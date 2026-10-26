@@ -35,9 +35,9 @@ server:
   max-request-body-bytes: 0
 
   # Negotiated compression of downstream HTTP responses (including SSE streams).
-  # Responses are compressed only when the client advertises zstd or gzip in
-  # Accept-Encoding; WebSocket upgrades are never wrapped. Encoder memory is
-  # retained for the lifetime of an open stream and depends on prior pool usage.
+  # Responses are compressed only when the client advertises zstd, br, gzip or deflate
+  # in Accept-Encoding (equal quality prefers that order); WebSocket upgrades are never wrapped.
+  # Encoder memory is retained for the lifetime of an open stream and depends on prior pool usage.
   response-compression:
     # Default: true.
     enabled: true
@@ -355,12 +355,14 @@ upstream:
     # Experimental full-duplex Codex Responses WebSocket steering (default: false).
     # Keeps one upstream account/model per socket; accepted input is never replayed.
     response-steering: false
-    # Compress request bodies sent to the ChatGPT Codex backend with zstd,
-    # mirroring the official Codex client. Applies only to OAuth credentials
-    # targeting https://chatgpt.com/backend-api/codex (API-key credentials,
-    # custom base URLs, and SIWC requests are never compressed). A 400/415
-    # rejection is retried once with an uncompressed body. Default: false.
-    upstream-request-compression: false
+    # Compress request bodies sent to the ChatGPT Codex backend, mirroring the
+    # official Codex client. Applies only to OAuth credentials targeting
+    # https://chatgpt.com/backend-api/codex (API-key credentials, custom base URLs,
+    # and SIWC requests are never compressed). A 400/415 rejection is retried once
+    # with an uncompressed body. Default: true.
+    upstream-request-compression: true
+    # Request coding: "zstd" (default, what the official client sends), "gzip" or "br".
+    upstream-request-compression-encoding: "zstd"
     # Request bodies smaller than this many bytes are sent uncompressed.
     upstream-request-compression-min-bytes: 1024
     # Enable permessage-deflate compression on Codex WebSocket connections

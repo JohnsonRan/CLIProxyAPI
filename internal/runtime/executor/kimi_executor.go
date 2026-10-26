@@ -211,6 +211,10 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return resp, errDecode
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
@@ -348,6 +352,13 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("kimi executor: close response body error: %v", errClose)
+		}
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return nil, errDecode
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
