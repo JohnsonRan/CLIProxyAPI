@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -535,5 +536,32 @@ func TestCodexUpstreamCompression_DirectImagePayloadRewrite(t *testing.T) {
 				t.Fatalf("upstream calls=%d, want 1", calls)
 			}
 		})
+	}
+}
+
+func TestCompressCodexRequestBodyConcurrent(t *testing.T) {
+	decoder, errDecoder := zstd.NewReader(nil)
+	if errDecoder != nil {
+		t.Fatal(errDecoder)
+	}
+	defer decoder.Close()
+	errs := make(chan error, 32)
+	for i := 0; i < cap(errs); i++ {
+		go func(i int) {
+			body := []byte(strings.Repeat("request "+strconv.Itoa(i)+" ", 512))
+			compressed, errCompress := compressCodexRequestBody(body)
+			if errCompress == nil {
+				var decoded []byte
+				if decoded, errCompress = decoder.DecodeAll(compressed, nil); errCompress == nil && !bytes.Equal(decoded, body) {
+					errCompress = fmt.Errorf("request %d: round trip mismatch", i)
+				}
+			}
+			errs <- errCompress
+		}(i)
+	}
+	for i := 0; i < cap(errs); i++ {
+		if errRoundTrip := <-errs; errRoundTrip != nil {
+			t.Fatal(errRoundTrip)
+		}
 	}
 }
