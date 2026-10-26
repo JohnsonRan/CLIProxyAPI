@@ -80,6 +80,7 @@ func Apply(cfg *config.Config) {
 	go opened.refreshPrices()
 	opened.startResolver()
 	opened.startQuotaSampler()
+	opened.startQuotaProber()
 	log.Infof("usage store enabled: %s", path)
 }
 
