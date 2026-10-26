@@ -88,9 +88,14 @@ func isValidUsed(used float64) bool {
 	return !math.IsNaN(used) && !math.IsInf(used, 0) && used >= 0 && used <= 1000
 }
 
-// parseQuotaWindows reads the credential-wide windows of a passive snapshot. Model-specific
-// windows (Codex additional limits, Claude 7d_oi and the like) are skipped: their usage is not
-// the credential's whole traffic, so dividing it by the credential's cost would be wrong.
+// claudeFableWindow is the Claude weekly window of Fable models. On Max and premium seats Fable may use up to half of the weekly limit and also draws
+// on the shared 7d window; where Fable is not included the window reports 100% or more.
+const claudeFableWindow = "7d_oi"
+
+// parseQuotaWindows reads the credential-wide windows of a passive snapshot, plus the Claude
+// Fable window, which quotaPool assigns to the "fable" pool so only Fable traffic is divided by
+// it. Other model-specific windows (Codex additional limits) are skipped: their usage is not the
+// credential's whole traffic, so dividing it by the credential's cost would be wrong.
 func parseQuotaWindows(provider string, signals map[string]string, observedAt time.Time) []quotaWindow {
 	if len(signals) == 0 || observedAt.IsZero() {
 		return nil
@@ -127,7 +132,7 @@ func parseQuotaWindows(provider string, signals map[string]string, observedAt ti
 		for _, w := range []struct {
 			id     string
 			period int64
-		}{{"5h", 5 * 3600}, {"7d", 7 * 86400}} {
+		}{{"5h", 5 * 3600}, {"7d", 7 * 86400}, {claudeFableWindow, 7 * 86400}} {
 			prefix := "Anthropic-Ratelimit-Unified-" + w.id + "-"
 			utilization, okUsed := signalFloat(signals, prefix+"Utilization")
 			rawReset, _ := signalValue(signals, prefix+"Reset")
@@ -480,6 +485,14 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 
 	for i := range windows {
 		w := &windows[i]
+		sort.Slice(w.samplesList, func(a, b int) bool {
+			return w.samplesList[a].observedAt < w.samplesList[b].observedAt
+		})
+	}
+	exhausted := quotaExhaustedIntervals(windows)
+
+	for i := range windows {
+		w := &windows[i]
 		if !w.inRange && !w.inFitRange {
 			continue
 		}
@@ -499,9 +512,6 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 			resetIsBinding = true
 		}
 
-		sort.Slice(w.samplesList, func(a, b int) bool {
-			return w.samplesList[a].observedAt < w.samplesList[b].observedAt
-		})
 		var incSamples []samplePoint
 		for _, sp := range w.samplesList {
 			if sp.observedAt > toMs {
@@ -514,7 +524,8 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 			}
 		}
 
-		segs, extPercent, extChecked, errUsage := s.windowUsage(ctx, prices, w.AuthIndex, w.Pool, i, fromMs, toMs, resetIsBinding, incSamples, &w.Usage)
+		exclSQL := quotaExhaustedSQL(exhausted, w, fromMs, toMs)
+		segs, extPercent, extChecked, errUsage := s.windowUsage(ctx, prices, w.AuthIndex, w.Pool, exclSQL, i, fromMs, toMs, resetIsBinding, incSamples, &w.Usage)
 		if errUsage != nil {
 			return nil, errUsage
 		}
@@ -753,14 +764,61 @@ func sanitizeFinitePtr(p *float64) *float64 {
 	return p
 }
 
-// windowUsage sums one credential's events of a pool in [fromMs, toMs] into a, priced per model and tier,
-// collects per-interval segments, and evaluates fallback passive external usage over the quota samples.
-func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex, pool string, windowIdx int, fromMs, toMs int64, resetIsBinding bool, samples []samplePoint, a *Aggregate) ([]quotaSegment, float64, bool, error) {
+// quotaExhausted is a span in which a window instance stood at 100% or more. Requests its pool
+// covers were then either rejected or paid with usage credits, so they drew on no other window.
+type quotaExhausted struct {
+	authIndex, window, pool string
+	fromMs, toMs            int64
+}
+
+// quotaExhaustedIntervals lists the exhausted spans of window instances. windows must have sorted
+// samplesList. A span starts at the first sample at 100% or more, or at the nominal window start
+// when no earlier sample is below 100% (exhausted before sampling began, or a Fable window on a
+// plan that does not include Fable), and ends at the reset.
+func quotaExhaustedIntervals(windows []QuotaWindowValue) []quotaExhausted {
+	var out []quotaExhausted
+	for i := range windows {
+		w := &windows[i]
+		for k, sp := range w.samplesList {
+			if sp.usedPercent < 100 {
+				continue
+			}
+			from := sp.observedAt
+			if k == 0 {
+				from = w.StartAt * 1000
+			}
+			if to := w.ResetAt * 1000; from < to {
+				out = append(out, quotaExhausted{w.AuthIndex, w.Window, w.Pool, from, to})
+			}
+			break
+		}
+	}
+	return out
+}
+
+// quotaExhaustedSQL excludes from w's events those inside an exhausted span of another window of
+// the same credential whose pool covers them. w's own exhaustion needs no exclusion: its usage
+// already ends where its highest percentage was first seen.
+func quotaExhaustedSQL(exhausted []quotaExhausted, w *QuotaWindowValue, fromMs, toMs int64) string {
+	var b strings.Builder
+	for _, e := range exhausted {
+		if e.authIndex != w.AuthIndex || e.window == w.Window || e.toMs <= fromMs || e.fromMs > toMs {
+			continue
+		}
+		fmt.Fprintf(&b, " AND NOT (ts >= %d AND ts < %d%s)", e.fromMs, e.toMs, quotaPoolModelSQL(e.pool))
+	}
+	return b.String()
+}
+
+// windowUsage sums one credential's events of a pool in [fromMs, toMs] into a, priced per served model
+// and tier, collects per-interval segments, and evaluates fallback passive external usage over the quota
+// samples. exclSQL holds extra WHERE conditions (quotaExhaustedSQL).
+func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex, pool, exclSQL string, windowIdx int, fromMs, toMs int64, resetIsBinding bool, samples []samplePoint, a *Aggregate) ([]quotaSegment, float64, bool, error) {
 	op := "<="
 	if resetIsBinding {
 		op = "<"
 	}
-	poolSQL := quotaPoolModelSQL(pool)
+	poolSQL := quotaPoolModelSQL(pool) + exclSQL
 
 	numSamples := len(samples)
 	var caseSQL string
@@ -776,13 +834,13 @@ func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex,
 		caseSQL = b.String()
 	}
 
-	query := fmt.Sprintf(`SELECT model, service_tier, `+contextBandSQL(prices.thresholds)+` AS band,
+	query := fmt.Sprintf(`SELECT model, `+quotaServedModelSQL+` AS served, service_tier, `+contextBandSQL(prices.thresholds)+` AS band,
 		`+caseSQL+`,
 		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
 		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0),
 		SUM(`+genOutputSQL+`), SUM(`+genMsSQL+`)
 		FROM events WHERE auth_index = ? AND ts >= ? AND ts %s ?%s
-		GROUP BY model, service_tier, band, interval_idx`, op, poolSQL)
+		GROUP BY model, served, service_tier, band, interval_idx`, op, poolSQL)
 
 	rows, err := s.db.QueryContext(ctx, query, authIndex, fromMs, toMs)
 	if err != nil {
@@ -804,14 +862,18 @@ func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex,
 
 	intervalTokens := make([]int64, max(1, numSamples))
 	for rows.Next() {
-		var model, tier string
+		var requested, model, tier string
 		var band, intervalIdx int
 		var part Aggregate
 		t := &part.Tokens
-		if errScan := rows.Scan(&model, &tier, &band, &intervalIdx, &part.Requests, &part.Failed, &part.Substituted, &t.InputUncached,
+		if errScan := rows.Scan(&requested, &model, &tier, &band, &intervalIdx, &part.Requests, &part.Failed, &part.Substituted, &t.InputUncached,
 			&t.CacheRead, &t.CacheWrite, &t.Output, &t.Reasoning, &t.Unclassified, &t.Total, &part.latencySum,
 			&part.ttftSum, &part.ttftCount, &part.genOutput, &part.genMs); errScan != nil {
 			return nil, 0, false, errScan
+		}
+		// Price what served the request; keep the requested model when the served name has no price.
+		if _, ok := prices.lookup(model, tier, prices.bandInput(band)); !ok {
+			model = requested
 		}
 		prices.apply(&part, model, tier, prices.bandInput(band))
 		a.add(&part)

@@ -103,9 +103,13 @@ func antigravityQuotaPool(group string) string {
 }
 
 // quotaPool returns the pool of a stored window: the part of an Antigravity window ID before
-// its period suffix, empty for credential-wide windows.
+// its period suffix, "fable" for the Claude Fable weekly window (7d_oi), empty for
+// credential-wide windows.
 func quotaPool(provider, window string) string {
 	if !isAntigravity(provider) {
+		if window == claudeFableWindow && strings.EqualFold(strings.TrimSpace(provider), "claude") {
+			return "fable"
+		}
 		return ""
 	}
 	if i := strings.LastIndexByte(window, '-'); i > 0 {
@@ -114,10 +118,18 @@ func quotaPool(provider, window string) string {
 	return ""
 }
 
+// quotaServedModelSQL is the model that served an event: the response model when upstream
+// substituted another model (a Fable request answered by its Opus fallback draws on the shared
+// windows, not on the Fable one), else the requested model.
+const quotaServedModelSQL = `(CASE WHEN substituted = 1 AND response_model <> '' THEN response_model ELSE model END)`
+
 // quotaPoolModelSQL restricts an events query to the models a pool's quota covers. Events store
 // the upstream model name, and SQLite LIKE ignores ASCII case.
 func quotaPoolModelSQL(pool string) string {
 	switch pool {
+	case "fable":
+		// claude-fable-5-dd-* is the model-list cloak encoding of other models, not Fable.
+		return " AND " + quotaServedModelSQL + " LIKE 'claude-fable%' AND " + quotaServedModelSQL + " NOT LIKE 'claude-fable-5-dd-%'"
 	case "gemini":
 		return " AND model LIKE 'gemini%'"
 	case "claude-gpt":
