@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,112 +69,180 @@ func TestFingerprintDetectReportsDataLoadFailureAndRetries(t *testing.T) {
 	}
 }
 
-func TestStartLoopbackServerHandlesClientDisconnectAndDrains(t *testing.T) {
-	clientReadFirst := make(chan struct{})
-	clientClosed := make(chan struct{})
-	handlerFinished := make(chan struct{})
+type mockFailingResponseWriter struct {
+	header     http.Header
+	writeCalls int
+	flushCalls int
+	writeErr   error
+}
 
-	var handlerSawUncanceled bool
-	var handlerSawSecondWriteOK bool
+func (m *mockFailingResponseWriter) Header() http.Header {
+	if m.header == nil {
+		m.header = make(http.Header)
+	}
+	return m.header
+}
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer close(handlerFinished)
+func (m *mockFailingResponseWriter) WriteHeader(statusCode int) {}
+
+func (m *mockFailingResponseWriter) Write(p []byte) (int, error) {
+	m.writeCalls++
+	if m.writeErr != nil {
+		return 0, m.writeErr
+	}
+	return len(p), nil
+}
+
+func (m *mockFailingResponseWriter) Flush() {
+	m.flushCalls++
+}
+
+func TestLoopbackHandlerDetachesFromClientContext(t *testing.T) {
+	// Case 1: incoming request context was already cancelled before ServeHTTP.
+	clientCtx1, clientCancel1 := context.WithCancel(context.Background())
+	clientCancel1()
+
+	parentCtx := context.Background()
+	var sawErrBefore error
+	innerBefore := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawErrBefore = r.Context().Err()
+	})
+
+	lhBefore := &loopbackHandler{inner: innerBefore, parentCtx: parentCtx}
+	recBefore := httptest.NewRecorder()
+	reqBefore := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1", nil).WithContext(clientCtx1)
+	lhBefore.ServeHTTP(recBefore, reqBefore)
+
+	if sawErrBefore != nil {
+		t.Fatalf("inner handler saw cancelled context for pre-cancelled client context: %v", sawErrBefore)
+	}
+
+	// Case 2: incoming request context cancelled while inner handler is running.
+	clientCtx2, clientCancel2 := context.WithCancel(context.Background())
+	handlerEntered := make(chan struct{})
+	clientCancelled := make(chan struct{})
+	var sawErrDuring error
+
+	innerDuring := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handlerEntered)
+		<-clientCancelled
+		sawErrDuring = r.Context().Err()
+	})
+
+	lhDuring := &loopbackHandler{inner: innerDuring, parentCtx: parentCtx}
+	recDuring := httptest.NewRecorder()
+	reqDuring := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1", nil).WithContext(clientCtx2)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lhDuring.ServeHTTP(recDuring, reqDuring)
+	}()
+
+	<-handlerEntered
+	clientCancel2()
+	close(clientCancelled)
+	<-done
+
+	if sawErrDuring != nil {
+		t.Fatalf("inner handler saw cancelled context after client disconnected mid-request: %v", sawErrDuring)
+	}
+}
+
+func TestLoopbackHandlerCancelsWhenParentContextCancels(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	handlerEntered := make(chan struct{})
+	var sawDone bool
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handlerEntered)
+		<-r.Context().Done()
+		sawDone = true
+	})
+
+	lh := &loopbackHandler{inner: inner, parentCtx: parentCtx}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1", nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lh.ServeHTTP(rec, req)
+	}()
+
+	<-handlerEntered
+	parentCancel()
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("inner handler was not cancelled when parent context was cancelled")
+	}
+
+	if !sawDone {
+		t.Fatal("inner handler context was not cancelled when parent context was cancelled")
+	}
+}
+
+func TestLoopbackHandlerDrainsOnWriteError(t *testing.T) {
+	mock := &mockFailingResponseWriter{writeErr: io.ErrClosedPipe}
+	var write1Err, write2Err error
+	var write1N, write2N int
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			t.Error("ResponseWriter must implement http.Flusher")
 		}
 
-		// Send initial chunk
-		_, err := w.Write([]byte("chunk 1\n"))
-		if err != nil {
-			t.Errorf("first write failed: %v", err)
-		}
-		flusher.Flush()
-		close(clientReadFirst)
-
-		// Wait until client has closed connection
-		select {
-		case <-clientClosed:
-		case <-time.After(5 * time.Second):
-			t.Error("timed out waiting for client to close connection")
-			return
+		write1N, write1Err = w.Write([]byte("chunk 1"))
+		if flusher != nil {
+			flusher.Flush()
 		}
 
-		// Context must NOT be cancelled by client disconnect
-		handlerSawUncanceled = (r.Context().Err() == nil)
-
-		// Second write after client disconnect should not error (swallowed by drainResponseWriter)
-		_, err2 := w.Write([]byte("chunk 2 terminal usage\n"))
-		flusher.Flush()
-		handlerSawSecondWriteOK = (err2 == nil)
+		write2N, write2Err = w.Write([]byte("chunk 2 terminal usage"))
+		if flusher != nil {
+			flusher.Flush()
+		}
 	})
 
-	parentCtx := context.Background()
-	lbServer, err := startLoopbackServer(parentCtx, handler)
-	if err != nil {
-		t.Fatalf("startLoopbackServer failed: %v", err)
+	lh := &loopbackHandler{inner: inner, parentCtx: context.Background()}
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1", nil)
+	lh.ServeHTTP(mock, req)
+
+	if write1Err != nil || write1N != len("chunk 1") {
+		t.Fatalf("first write returned n=%d, err=%v; want %d, nil", write1N, write1Err, len("chunk 1"))
 	}
-
-	// Make HTTP client call
-	req, err := http.NewRequest(http.MethodGet, lbServer.BaseURL(), nil)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
+	if write2Err != nil || write2N != len("chunk 2 terminal usage") {
+		t.Fatalf("second write returned n=%d, err=%v; want %d, nil", write2N, write2Err, len("chunk 2 terminal usage"))
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
+	if mock.writeCalls != 1 {
+		t.Fatalf("underlying write calls = %d, want 1", mock.writeCalls)
 	}
-
-	// Read first chunk
-	select {
-	case <-clientReadFirst:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for first chunk")
-	}
-
-	buf := make([]byte, 7)
-	_, _ = io.ReadFull(resp.Body, buf)
-
-	// Close client response body and connection
-	_ = resp.Body.Close()
-	close(clientClosed)
-
-	// Close loopback server - this must wait for in-flight handler to finish
-	lbServer.Close()
-
-	// Verify handler finished before lbServer.Close() returned
-	select {
-	case <-handlerFinished:
-	default:
-		t.Fatal("lbServer.Close() returned before handler finished")
-	}
-
-	if !handlerSawUncanceled {
-		t.Fatal("handler saw cancelled context after client disconnected")
-	}
-	if !handlerSawSecondWriteOK {
-		t.Fatal("handler saw error on write after client disconnected")
+	if mock.flushCalls != 0 {
+		t.Fatalf("underlying flush calls = %d, want 0", mock.flushCalls)
 	}
 }
 
-func TestStartLoopbackServerCancelsWhenParentContextCancels(t *testing.T) {
+func TestLoopbackServerCloseWaitsForInFlightHandler(t *testing.T) {
 	handlerEntered := make(chan struct{})
-	handlerCanceled := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	handlerExited := make(chan struct{})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(handlerEntered)
-		<-r.Context().Done()
-		close(handlerCanceled)
+		<-releaseHandler
+		close(handlerExited)
 	})
 
-	parentCtx, parentCancel := context.WithCancel(context.Background())
-	lbServer, err := startLoopbackServer(parentCtx, handler)
+	lbServer, err := startLoopbackServer(context.Background(), handler)
 	if err != nil {
 		t.Fatalf("startLoopbackServer failed: %v", err)
 	}
-	defer lbServer.Close()
 
+	reqDone := make(chan struct{})
 	go func() {
+		defer close(reqDone)
 		req, _ := http.NewRequest(http.MethodGet, lbServer.BaseURL(), nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
@@ -181,20 +250,34 @@ func TestStartLoopbackServerCancelsWhenParentContextCancels(t *testing.T) {
 		}
 	}()
 
-	select {
-	case <-handlerEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler not entered")
+	<-handlerEntered
+
+	closeDone := make(chan struct{})
+	go func() {
+		lbServer.Close()
+		close(closeDone)
+	}()
+
+	// Confirm that s.listener.Close() has executed by checking that new connection attempts fail.
+	for {
+		conn, dialErr := net.DialTimeout("tcp", lbServer.listener.Addr().String(), 50*time.Millisecond)
+		if dialErr != nil {
+			break
+		}
+		_ = conn.Close()
 	}
 
-	// Cancel parent context
-	parentCancel()
-
+	// Close() must still be blocked in inFlight.Wait() because handler has not exited.
 	select {
-	case <-handlerCanceled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler context was not cancelled when parent context cancelled")
+	case <-closeDone:
+		t.Fatal("lbServer.Close returned while handler was still blocked in-flight")
+	default:
 	}
+
+	close(releaseHandler)
+	<-handlerExited
+	<-closeDone
+	<-reqDone
 }
 
 // TestFingerprintDetectSendsChallengesThroughLoopback needs reference data: set LMFPD_TEST_DATA to a local
