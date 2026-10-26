@@ -181,6 +181,10 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if errDecode := helps.DecodeHTTPResponseBody(httpResp); errDecode != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDecode)
+		return resp, errDecode
+	}
 
 	data, errRead := io.ReadAll(httpResp.Body)
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)

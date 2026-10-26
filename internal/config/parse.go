@@ -33,6 +33,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.WebsocketAuth = true
+	// Downstream default: compress Codex request bodies like the official client.
+	cfg.Codex.UpstreamRequestCompression = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.Discovery.Enabled = false

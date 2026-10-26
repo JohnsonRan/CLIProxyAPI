@@ -537,3 +537,57 @@ func TestCodexUpstreamCompression_DirectImagePayloadRewrite(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexUpstreamCompression_ConfiguredEncodings(t *testing.T) {
+	target := "https://chatgpt.com/backend-api/codex/responses"
+	for _, encoding := range []string{"gzip", "br"} {
+		t.Run(encoding, func(t *testing.T) {
+			cfg := codexCompressionConfig()
+			cfg.Codex.UpstreamRequestCompressionEncoding = encoding
+			executor := NewCodexExecutor(cfg)
+			payload := codexCompressionPayload()
+			req, upstreamBody, errCache := executor.cacheHelper(t.Context(), sdktranslator.FormatOpenAIResponse, target, cliproxyexecutor.Request{Payload: payload}, payload, codexCompressionAuth())
+			if errCache != nil {
+				t.Fatal(errCache)
+			}
+			wire := readCodexCompressionBody(t, req.Body)
+			if got := req.Header.Get("Content-Encoding"); got != encoding || len(wire) >= len(upstreamBody) {
+				t.Fatalf("Content-Encoding=%q wire=%d plaintext=%d", got, len(wire), len(upstreamBody))
+			}
+			var reader io.Reader = brotli.NewReader(bytes.NewReader(wire))
+			if encoding == "gzip" {
+				gz, errGzip := gzip.NewReader(bytes.NewReader(wire))
+				if errGzip != nil {
+					t.Fatal(errGzip)
+				}
+				reader = gz
+			}
+			decoded, errRead := io.ReadAll(reader)
+			if errRead != nil || !bytes.Equal(decoded, upstreamBody) {
+				t.Fatalf("%s round trip mismatch: %v", encoding, errRead)
+			}
+			// The rejected-compression retry must treat every configured coding as ours.
+			req.Body = io.NopCloser(bytes.NewReader(wire))
+			req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(wire)), nil }
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Header.Get("Content-Encoding") != "" {
+					w.WriteHeader(http.StatusUnsupportedMediaType)
+					return
+				}
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+			req.URL, _ = url.Parse(server.URL)
+			resp, errDo := doCodexRequest(server.Client(), req, upstreamBody, func(*http.Request) {}, nil)
+			if errDo != nil {
+				t.Fatal(errDo)
+			}
+			_ = resp.Body.Close()
+			if calls != 2 || resp.StatusCode != http.StatusOK {
+				t.Fatalf("calls=%d status=%d, want an uncompressed retry", calls, resp.StatusCode)
+			}
+		})
+	}
+}
