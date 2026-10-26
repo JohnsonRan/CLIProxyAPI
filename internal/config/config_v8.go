@@ -871,7 +871,7 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 	return nil
 }
 
-// foldClientKeysIntoAPIKeys writes names and model rules back onto their api-keys entries.
+// foldClientKeysIntoAPIKeys writes names, disabled flags and model rules back onto their api-keys entries.
 // flattenV8 splits mapping entries of access.api-keys into plain api-keys plus an
 // internal client-keys list; without folding, every struct-based save would drop
 // the per-key rules and silently lift those keys' model restrictions or drop their names.
@@ -895,7 +895,7 @@ func foldClientKeysIntoAPIKeys(root *yaml.Node) {
 			continue
 		}
 		key := strings.TrimSpace(parsed.APIKey)
-		if key == "" || (strings.TrimSpace(parsed.Name) == "" && len(parsed.AllowedModelList()) == 0 && len(parsed.ExcludedModels) == 0) {
+		if key == "" || (strings.TrimSpace(parsed.Name) == "" && !parsed.Disabled && len(parsed.AllowedModelList()) == 0 && len(parsed.ExcludedModels) == 0) {
 			continue
 		}
 		rules[key] = entry
