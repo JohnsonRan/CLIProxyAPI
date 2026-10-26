@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +67,50 @@ func TestFingerprintDetectReportsDataLoadFailureAndRetries(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("load calls = %d, want a retry after a failed load", calls)
+	}
+}
+
+func TestFingerprintProgressStreamsDistinctSampleChanges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	p := &fingerprintProgress{w: c.Writer, last: map[int]string{}}
+	if p.finish(gin.H{"type": "error"}) {
+		t.Fatal("finish before any sample must leave the answer to plain JSON")
+	}
+	p.onSample(0, lmfpd.Sample{State: "queued", ExpectedCount: 40})
+	p.onSample(0, lmfpd.Sample{State: "streaming", Count: 3, ExpectedCount: 40})
+	p.onSample(0, lmfpd.Sample{State: "streaming", Count: 3, ExpectedCount: 40, RawText: "more text"})
+	p.onSample(1, lmfpd.Sample{State: "queued", ExpectedCount: 40})
+	p.onSample(0, lmfpd.Sample{State: "complete", Count: 40, ExpectedCount: 40})
+	if !p.finish(gin.H{"type": "result", "result": gin.H{"built_at": "x"}}) {
+		t.Fatal("finish after samples must write the result line")
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/x-ndjson") {
+		t.Fatalf("content type = %q", ct)
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(rec.Body.String()), "\n") {
+		var event struct {
+			Type   string `json:"type"`
+			Index  int    `json:"index"`
+			Sample struct {
+				State string `json:"state"`
+				Count int    `json:"count"`
+			} `json:"sample"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		if event.Type == "sample" {
+			got = append(got, strconv.Itoa(event.Index)+":"+event.Sample.State+"/"+strconv.Itoa(event.Sample.Count))
+		} else {
+			got = append(got, event.Type)
+		}
+	}
+	want := "0:queued/0 0:streaming/3 1:queued/0 0:complete/40 result"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("events = %v, want %s", got, want)
 	}
 }
 
@@ -281,14 +326,19 @@ func TestLoopbackServerCloseWaitsForInFlightHandler(t *testing.T) {
 }
 
 // TestFingerprintDetectSendsChallengesThroughLoopback needs reference data: set LMFPD_TEST_DATA to a local
-// lm-detector data directory, or to "online" to download the published data.
+// lm-detector data directory, to "online" to download the published data, or to "cache" to reuse the SDK's
+// default cache file.
 func TestFingerprintDetectSendsChallengesThroughLoopback(t *testing.T) {
 	source := os.Getenv("LMFPD_TEST_DATA")
 	if source == "" {
 		t.Skip("LMFPD_TEST_DATA not set")
 	}
 	opts := lmfpd.LoadOptions{Cache: t.TempDir() + "/data.bin"}
-	if source != "online" {
+	switch source {
+	case "online":
+	case "cache":
+		opts.Cache = ""
+	default:
 		opts.Sources = []string{source}
 	}
 	swapFingerprintLoad(t, func(ctx context.Context) (*lmfpd.Detector, error) { return lmfpd.Load(ctx, opts) })
@@ -336,5 +386,24 @@ func TestFingerprintDetectSendsChallengesThroughLoopback(t *testing.T) {
 		if s != "/v1/chat/completions Bearer client-key gpt-5" {
 			t.Fatalf("loopback request = %q", s)
 		}
+	}
+
+	rec = runFingerprintDetect(t, h, api, `{"model":"gpt-5","api":"chat_completions","no_stream":true,"progress":true}`)
+	lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n")
+	if rec.Code != http.StatusOK || len(lines) < 4 {
+		t.Fatalf("progress status = %d lines = %d: %s", rec.Code, len(lines), rec.Body.String())
+	}
+	var last struct {
+		Type   string `json:"type"`
+		Result struct {
+			BuiltAt string         `json:"built_at"`
+			Samples []lmfpd.Sample `json:"samples"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
+		t.Fatalf("decode last line: %v", err)
+	}
+	if last.Type != "result" || last.Result.BuiltAt == "" || len(last.Result.Samples) != 3 {
+		t.Fatalf("last line = %s", lines[len(lines)-1])
 	}
 }
