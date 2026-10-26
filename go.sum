@@ -1,7 +1,7 @@
 cloud.google.com/go/compute/metadata v0.3.0 h1:Tz+eQXMEqDIKRsmY3cHTL6FVaynIjX2QxYC4trgAKZc=
 cloud.google.com/go/compute/metadata v0.3.0/go.mod h1:zFmK7XCadkQkj6TtorcaGlCW1hT1fIilQDwofLpJ20k=
-github.com/Ikaleio/lm-detector/sdk/go v0.1.0 h1:We5AbXJUvRiwZxaDblvCPMwvP04HwXHff51GlnmOXHk=
-github.com/Ikaleio/lm-detector/sdk/go v0.1.0/go.mod h1:D0K9qKdAasfIkdNhz2bpJYyNdkDy7EOrHvG8aLNo1GA=
+github.com/Ikaleio/lm-detector/sdk/go v0.2.0 h1:Jh/VNLdF1ksUEvJqI+3McIu6ce2M4XVr3UIAKFyO0tQ=
+github.com/Ikaleio/lm-detector/sdk/go v0.2.0/go.mod h1:D0K9qKdAasfIkdNhz2bpJYyNdkDy7EOrHvG8aLNo1GA=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/ProtonMail/go-crypto v1.4.1 h1:9RfcZHqEQUvP8RzecWEUafnZVtEvrBVL9BiF67IQOfM=
