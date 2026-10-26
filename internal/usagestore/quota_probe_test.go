@@ -116,3 +116,79 @@ func TestAntigravityQuotaValue(t *testing.T) {
 		t.Fatalf("models must be fitted per pool: %+v", value.Models)
 	}
 }
+
+func TestClaudeFableQuotaValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	pricer := testPricer(t)
+	pricer.Configure(config.UsagePricingConfig{Overrides: []config.UsagePriceOverride{
+		{Model: "claude-fable-5-1", Input: 1, Output: 10}, // $2 per event
+		{Model: "claude-opus-5", Input: 0.5, Output: 5},   // $1 per event
+		{Model: "claude-sonnet-5", Input: 0.5, Output: 5},
+	}})
+	s, err := Open(path, 30, pricer)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	T0 := int64(1_800_000_000)
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	for _, e := range []struct {
+		auth   string
+		at     int64
+		model  string
+		served string
+	}{
+		{"c1", 100, "claude-fable-5-1", ""},
+		{"c1", 200, "claude-sonnet-5", ""},
+		{"c1", 300, "claude-fable-5-1", "claude-opus-5"}, // Opus fallback: shared windows, Opus price
+		{"c1", 500, "claude-fable-5-1", ""},              // Fable window exhausted: usage credits
+		{"c1", 600, "claude-sonnet-5", ""},
+		{"c2", 100, "claude-fable-5-1", ""}, // plan without Fable: always credits
+		{"c2", 200, "claude-sonnet-5", ""},
+	} {
+		s.Enqueue(Event{Timestamp: (T0 + e.at) * 1000, Provider: "claude", Model: e.model, AuthIndex: e.auth, Tokens: tok,
+			ResponseModel: e.served, Substituted: e.served != ""})
+	}
+	s.Close()
+	s, err = Open(path, 30, pricer)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	reset := T0 + 604800
+	for _, sm := range []struct {
+		auth, window string
+		used         float64
+		at           int64
+	}{
+		{"c1", "7d_oi", 50, 150}, {"c1", "7d_oi", 100, 400}, {"c1", "7d", 10, 250}, {"c1", "7d", 20, 700},
+		{"c2", "7d_oi", 102, 300}, {"c2", "7d", 5, 400},
+	} {
+		if _, errExec := s.db.Exec(`INSERT INTO quota_samples (auth_index, provider, window, period_s, reset_at, used, observed_at)
+			VALUES (?, 'claude', ?, 604800, ?, ?, ?)`, sm.auth, sm.window, reset, sm.used, (T0+sm.at)*1000); errExec != nil {
+			t.Fatalf("insert sample: %v", errExec)
+		}
+	}
+
+	value, err := s.QuotaValue(context.Background(), time.Unix(T0-1000, 0), time.Unix(T0+10000, 0), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	got := map[string]QuotaWindowValue{}
+	for _, w := range value.Windows {
+		got[w.AuthIndex+"/"+w.Window] = w
+	}
+	if w := got["c1/7d_oi"]; w.Pool != "fable" || w.Usage.Requests != 1 {
+		t.Fatalf("c1 fable window = %+v, want only the Fable-served request before exhaustion", w)
+	} else {
+		approx(t, "c1 fable cost", w.Usage.Cost, 2)
+	}
+	if w := got["c1/7d"]; w.Pool != "" || w.Usage.Requests != 4 {
+		t.Fatalf("c1 7d window = %+v, want every request but the credit-paid Fable one", w)
+	} else {
+		approx(t, "c1 7d cost", w.Usage.Cost, 2+1+1+1)
+	}
+	if w := got["c2/7d"]; w.Usage.Requests != 1 {
+		t.Fatalf("c2 7d window = %+v, want the Sonnet request only", w)
+	}
+}

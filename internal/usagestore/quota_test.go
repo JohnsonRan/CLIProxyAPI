@@ -35,10 +35,12 @@ func TestParseQuotaWindows(t *testing.T) {
 		"Anthropic-Ratelimit-Unified-7d_oi-Utilization": "1.02",
 		"Anthropic-Ratelimit-Unified-7d_oi-Reset":       "1800200000",
 	}, now)
-	if len(claude) != 1 || claude[0].ID != "5h" || claude[0].Period != 18000 || claude[0].ResetAt != 1800010000 {
+	if len(claude) != 2 || claude[0].ID != "5h" || claude[0].Period != 18000 || claude[0].ResetAt != 1800010000 ||
+		claude[1].ID != "7d_oi" || claude[1].Period != 604800 || claude[1].ResetAt != 1800200000 {
 		t.Fatalf("claude windows = %+v", claude)
 	}
 	approx(t, "claude used", claude[0].Used, 23)
+	approx(t, "claude fable used", claude[1].Used, 102)
 	rfc := parseQuotaWindows("claude", map[string]string{
 		"Anthropic-Ratelimit-Unified-7d-Utilization": "0.5",
 		"Anthropic-Ratelimit-Unified-7d-Reset":       time.Unix(1800200000, 0).UTC().Format(time.RFC3339),
