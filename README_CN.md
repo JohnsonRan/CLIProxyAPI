@@ -4,6 +4,47 @@
 
 > **下游 Fork**：本仓库每天基于 [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) 重建 `main`，并在其上叠加相互独立的补丁。详见下方的[本 Fork 特性](#本-fork-特性)，补丁分支、合入顺序与维护规则见 [`MAINTAIN.md`](MAINTAIN.md)。
 
+## 本 Fork 特性
+
+包含上游的全部功能，另外提供以下特性。每项特性都维护在独立的 `patch/*` 分支上；其范围、配置项、已知限制与相关上游工作见 [`MAINTAIN.md`](MAINTAIN.md)。
+
+**管理与可观测性**
+
+- 默认提供本 Fork 的管理面板 [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)（仍可通过 `remote-management.panel-github-repository` 指定其它面板），可在面板中按需更新。该面板以同样的方式跟随上游面板，并为本 Fork 的特性提供界面：使用量与模型指纹页面、客户端 Key 的模型规则与提供商范围、认证文件 `allowed_models`、按 Key 共享额度与上游额度、Command Code 登录，以及 embeddings/rerank/System One 模型标记。
+- 内置使用量统计，持久化到 SQLite（`observability.usage.store`），无需外部采集器：基于 models.dev 或自定义价格计算费用，延迟/首字时间/输出速度分析，实时进行中请求，客户端 IP 归属地，Codex 与 Claude 订阅的额度价值估算，上游风控事件，CSV/JSON 导出与数据库优化。`observability.usage.exclude-embeddings` 可将 embedding 请求排除在统计之外。
+- 管理密钥验证结果会缓存，不再每次管理请求都执行 bcrypt。
+- 模型指纹检测（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)），检查某个模型名背后实际作答的模型。
+- 客户端额度接口 `GET /v1/usage`：客户端 API Key 可读取分配给它的 OAuth 凭据（Codex、Claude、Antigravity、xAI、Command Code）的额度，包括经由级联代理的凭据。
+
+**访问控制**
+
+- 全局及按客户端 Key 的模型白名单/黑名单、Key 显示名称，以及在不删除的情况下禁用 Key。
+- 限制客户端 Key 可使用的提供商（`client.key-scopes`）。
+- 认证文件支持 `allowed_models`，按凭据设置模型白名单。
+
+**接口与提供商**
+
+- 面向 OpenAI 兼容与 Gemini 提供商的 `/v1/embeddings` 与 `/v1/rerank`。
+- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）与 TypeSafe System One（`/v1/systemone`）。
+- Command Code（commandcode.ai）OAuth 登录。
+- `openai-compatibility` 提供商支持 `auto-discover-models` 与 `excluded-models`。
+- `/v1/models` 列出模态、上下文长度、最大输出 token 与推理支持（OpenRouter 格式）。
+
+**传输与可靠性**
+
+- HTTP、SSE 与 WebSocket 的端到端 `gzip`/`br`/`zstd`/`deflate` 压缩，覆盖客户端与上游两侧。
+- HTTP 增量 Responses，以及面向 Codex 上游的 HTTP 转 WebSocket 桥接。
+- ChatGPT uTLS 与经代理上游的连接复用；可取消的 SOCKS5 拨号。
+- 官方 Anthropic API Key 保持原生请求格式（默认不伪装），余额不足时返回仅影响该凭据的 `402`。
+- 启动后首次加载模型完成前到达的请求不再返回 `model_not_found`。
+- 限制长期占用的内存：空闲的 WebSocket 工具调用重放会话一小时后过期，保留的 Codex 输出条目上限为 16 MiB。
+- Codex OAuth 刷新容错（`401 Your IP is not authorized` 改为可重试的 `503`，不再强制刷新令牌）、凭据切换后的 Claude 网页搜索恢复、所有凭据额度耗尽时快速失败（`X-Should-Retry: false`）、Codex 应用长时间静默流的保活，以及 Responses WebSocket 修复。
+
+**性能与分发**
+
+- PGO 构建的二进制、Docker 镜像中的 `GOGC=200`，以及热点请求路径上更少的内存分配。
+- 多架构（`linux/amd64`、`linux/arm64`）镜像：`ghcr.io/johnsonran/cli-proxy-api`。
+
 如果您想在您的桌面使用 CLIProxyAPI，我们推荐您使用我们的 [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) 桌面客户端，该客户端提供了图形化的配置界面、自动更新、系统托盘集成、一键启动/关闭 CLIProxyAPI 服务等功能。
 
 CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API 接口的代理服务器。
@@ -46,47 +87,6 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
     </tr>
 </tbody>
 </table>
-
-## 本 Fork 特性
-
-包含上游的全部功能，另外提供以下特性。每项特性都维护在独立的 `patch/*` 分支上；其范围、配置项、已知限制与相关上游工作见 [`MAINTAIN.md`](MAINTAIN.md)。
-
-**管理与可观测性**
-
-- 默认提供本 Fork 的管理面板 [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)（仍可通过 `remote-management.panel-github-repository` 指定其它面板），可在面板中按需更新。该面板以同样的方式跟随上游面板，并为本 Fork 的特性提供界面：使用量与模型指纹页面、客户端 Key 的模型规则与提供商范围、认证文件 `allowed_models`、按 Key 共享额度与上游额度、Command Code 登录，以及 embeddings/rerank/System One 模型标记。
-- 内置使用量统计，持久化到 SQLite（`observability.usage.store`），无需外部采集器：基于 models.dev 或自定义价格计算费用，延迟/首字时间/输出速度分析，实时进行中请求，客户端 IP 归属地，Codex 与 Claude 订阅的额度价值估算，上游风控事件，CSV/JSON 导出与数据库优化。`observability.usage.exclude-embeddings` 可将 embedding 请求排除在统计之外。
-- 管理密钥验证结果会缓存，不再每次管理请求都执行 bcrypt。
-- 模型指纹检测（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)），检查某个模型名背后实际作答的模型。
-- 客户端额度接口 `GET /v1/usage`：客户端 API Key 可读取分配给它的 OAuth 凭据（Codex、Claude、Antigravity、xAI、Command Code）的额度，包括经由级联代理的凭据。
-
-**访问控制**
-
-- 全局及按客户端 Key 的模型白名单/黑名单、Key 显示名称，以及在不删除的情况下禁用 Key。
-- 限制客户端 Key 可使用的提供商（`client.key-scopes`）。
-- 认证文件支持 `allowed_models`，按凭据设置模型白名单。
-
-**接口与提供商**
-
-- 面向 OpenAI 兼容与 Gemini 提供商的 `/v1/embeddings` 与 `/v1/rerank`。
-- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）与 TypeSafe System One（`/v1/systemone`）。
-- Command Code（commandcode.ai）OAuth 登录。
-- `openai-compatibility` 提供商支持 `auto-discover-models` 与 `excluded-models`。
-- `/v1/models` 列出模态、上下文长度、最大输出 token 与推理支持（OpenRouter 格式）。
-
-**传输与可靠性**
-
-- HTTP、SSE 与 WebSocket 的端到端 `gzip`/`br`/`zstd`/`deflate` 压缩，覆盖客户端与上游两侧。
-- HTTP 增量 Responses，以及面向 Codex 上游的 HTTP 转 WebSocket 桥接。
-- ChatGPT uTLS 与经代理上游的连接复用；可取消的 SOCKS5 拨号。
-- 官方 Anthropic API Key 保持原生请求格式（默认不伪装），余额不足时返回仅影响该凭据的 `402`。
-- 启动后首次加载模型完成前到达的请求不再返回 `model_not_found`。
-- 限制长期占用的内存：空闲的 WebSocket 工具调用重放会话一小时后过期，保留的 Codex 输出条目上限为 16 MiB。
-- Codex OAuth 刷新容错（`401 Your IP is not authorized` 改为可重试的 `503`，不再强制刷新令牌）、凭据切换后的 Claude 网页搜索恢复、所有凭据额度耗尽时快速失败（`X-Should-Retry: false`）、Codex 应用长时间静默流的保活，以及 Responses WebSocket 修复。
-
-**性能与分发**
-
-- PGO 构建的二进制、Docker 镜像中的 `GOGC=200`，以及热点请求路径上更少的内存分配。
-- 多架构（`linux/amd64`、`linux/arm64`）镜像：`ghcr.io/johnsonran/cli-proxy-api`。
 
 ## 功能特性
 

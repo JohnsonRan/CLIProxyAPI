@@ -4,6 +4,47 @@
 
 > **ダウンストリーム Fork**：このリポジトリは [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) から毎日 `main` を再構築し、その上に独立したパッチを重ねています。下記の[この Fork の機能](#この-fork-の機能)と、パッチブランチ・統合順序・メンテナンス規則については [`MAINTAIN.md`](MAINTAIN.md) を参照してください。
 
+## この Fork の機能
+
+上流のすべての機能に加えて、以下を提供します。各機能はそれぞれ独立した `patch/*` ブランチで管理されており、範囲、設定キー、既知の制限、関連する上流の作業は [`MAINTAIN.md`](MAINTAIN.md) に記載しています。
+
+**管理と可観測性**
+
+- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、Command Code ログイン、embeddings/rerank/System One のモデルフラグ。
+- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。`observability.usage.exclude-embeddings` で embedding リクエストを統計から除外できます。
+- 管理キーの検証結果をキャッシュし、管理リクエストごとに bcrypt を実行しません。
+- モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
+- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI、Command Code）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
+
+**アクセス制御**
+
+- グローバルおよびクライアントキーごとのモデル許可/除外リスト、キーの表示名、削除せずにキーを無効化する機能。
+- クライアントキーが使えるプロバイダーの制限（`client.key-scopes`）。
+- 認証ファイルの `allowed_models` による認証情報ごとのモデル許可リスト。
+
+**エンドポイントとプロバイダー**
+
+- OpenAI 互換および Gemini プロバイダー向けの `/v1/embeddings` と `/v1/rerank`。
+- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）、TypeSafe System One（`/v1/systemone`）。
+- Command Code（commandcode.ai）の OAuth ログイン。
+- `openai-compatibility` プロバイダーの `auto-discover-models` と `excluded-models`。
+- `/v1/models` でモダリティ、コンテキスト長、最大出力トークン数、推論サポートを提供（OpenRouter 形式）。
+
+**通信と信頼性**
+
+- HTTP、SSE、WebSocket のエンドツーエンド `gzip`/`br`/`zstd`/`deflate` 圧縮（クライアント側と上流側の両方）。
+- HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
+- ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
+- 公式 Anthropic API キーはネイティブのリクエスト形式を維持し（デフォルトで偽装しない）、残高不足はその認証情報だけに影響する `402` になります。
+- 起動後、最初のモデル読み込みが終わる前に届いたリクエストが `model_not_found` になりません。
+- 長期的なメモリ使用量の上限：アイドル状態の WebSocket ツール呼び出しリプレイセッションは 1 時間で期限切れになり、保持する Codex 出力アイテムは 16 MiB までです。
+- Codex OAuth リフレッシュの耐障害性（`401 Your IP is not authorized` は強制リフレッシュせず再試行可能な `503` に変換）、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
+
+**パフォーマンスと配布**
+
+- PGO でビルドされたバイナリ、Docker イメージでの `GOGC=200`、ホットなリクエストパスでのメモリ割り当て削減。
+- マルチアーキテクチャ（`linux/amd64`、`linux/arm64`）イメージ：`ghcr.io/johnsonran/cli-proxy-api`。
+
 デスクトップで CLIProxyAPI を利用したい場合は、[EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) デスクトップクライアントをおすすめします。グラフィカルな設定画面、自動更新、システムトレイ連携、CLIProxyAPI サービスのワンクリック起動/停止などの機能を提供します。
 
 CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインターフェースを提供するプロキシサーバーです。
@@ -46,47 +87,6 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
 </tbody>
 </table>
-
-## この Fork の機能
-
-上流のすべての機能に加えて、以下を提供します。各機能はそれぞれ独立した `patch/*` ブランチで管理されており、範囲、設定キー、既知の制限、関連する上流の作業は [`MAINTAIN.md`](MAINTAIN.md) に記載しています。
-
-**管理と可観測性**
-
-- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、Command Code ログイン、embeddings/rerank/System One のモデルフラグ。
-- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。`observability.usage.exclude-embeddings` で embedding リクエストを統計から除外できます。
-- 管理キーの検証結果をキャッシュし、管理リクエストごとに bcrypt を実行しません。
-- モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
-- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI、Command Code）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
-
-**アクセス制御**
-
-- グローバルおよびクライアントキーごとのモデル許可/除外リスト、キーの表示名、削除せずにキーを無効化する機能。
-- クライアントキーが使えるプロバイダーの制限（`client.key-scopes`）。
-- 認証ファイルの `allowed_models` による認証情報ごとのモデル許可リスト。
-
-**エンドポイントとプロバイダー**
-
-- OpenAI 互換および Gemini プロバイダー向けの `/v1/embeddings` と `/v1/rerank`。
-- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）、TypeSafe System One（`/v1/systemone`）。
-- Command Code（commandcode.ai）の OAuth ログイン。
-- `openai-compatibility` プロバイダーの `auto-discover-models` と `excluded-models`。
-- `/v1/models` でモダリティ、コンテキスト長、最大出力トークン数、推論サポートを提供（OpenRouter 形式）。
-
-**通信と信頼性**
-
-- HTTP、SSE、WebSocket のエンドツーエンド `gzip`/`br`/`zstd`/`deflate` 圧縮（クライアント側と上流側の両方）。
-- HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
-- ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
-- 公式 Anthropic API キーはネイティブのリクエスト形式を維持し（デフォルトで偽装しない）、残高不足はその認証情報だけに影響する `402` になります。
-- 起動後、最初のモデル読み込みが終わる前に届いたリクエストが `model_not_found` になりません。
-- 長期的なメモリ使用量の上限：アイドル状態の WebSocket ツール呼び出しリプレイセッションは 1 時間で期限切れになり、保持する Codex 出力アイテムは 16 MiB までです。
-- Codex OAuth リフレッシュの耐障害性（`401 Your IP is not authorized` は強制リフレッシュせず再試行可能な `503` に変換）、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
-
-**パフォーマンスと配布**
-
-- PGO でビルドされたバイナリ、Docker イメージでの `GOGC=200`、ホットなリクエストパスでのメモリ割り当て削減。
-- マルチアーキテクチャ（`linux/amd64`、`linux/arm64`）イメージ：`ghcr.io/johnsonran/cli-proxy-api`。
 
 ## 概要
 
