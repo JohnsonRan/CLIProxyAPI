@@ -53,8 +53,9 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
 
 **管理と可観測性**
 
-- この Fork の[管理パネル](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)をデフォルトで提供し、パネルからオンデマンドで更新できます。
-- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。
+- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、Command Code ログイン、embeddings/rerank/System One のモデルフラグ。
+- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。`observability.usage.exclude-embeddings` で embedding リクエストを統計から除外できます。
+- 管理キーの検証結果をキャッシュし、管理リクエストごとに bcrypt を実行しません。
 - モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
 - クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI、Command Code）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
 
@@ -77,7 +78,10 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
 - HTTP、SSE、WebSocket のエンドツーエンド `gzip`/`br`/`zstd`/`deflate` 圧縮（クライアント側と上流側の両方）。
 - HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
 - ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
-- Codex OAuth リフレッシュの耐障害性、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
+- 公式 Anthropic API キーはネイティブのリクエスト形式を維持し（デフォルトで偽装しない）、残高不足はその認証情報だけに影響する `402` になります。
+- 起動後、最初のモデル読み込みが終わる前に届いたリクエストが `model_not_found` になりません。
+- 長期的なメモリ使用量の上限：アイドル状態の WebSocket ツール呼び出しリプレイセッションは 1 時間で期限切れになり、保持する Codex 出力アイテムは 16 MiB までです。
+- Codex OAuth リフレッシュの耐障害性（`401 Your IP is not authorized` は強制リフレッシュせず再試行可能な `503` に変換）、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
 
 **パフォーマンスと配布**
 

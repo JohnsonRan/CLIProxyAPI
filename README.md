@@ -54,8 +54,9 @@ Everything upstream offers, plus the following. Each feature lives on its own `p
 
 **Management and observability**
 
-- This fork's [management panel](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) is served by default and can be updated on demand from the panel.
-- Built-in usage statistics persisted to SQLite (`observability.usage.store`), with no external collector: costs from models.dev or custom prices, latency/TTFT/output-speed analysis, live in-flight requests, client IP location, quota value estimates for Codex and Claude subscriptions, upstream risk-control events, CSV/JSON export and database optimization.
+- This fork's management panel, [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center), is served by default (`remote-management.panel-github-repository` still selects another one) and can be updated on demand from the panel. It tracks the upstream panel the same way and adds the UI for this fork's features: the usage and fingerprint pages, client key model rules and provider scopes, auth file `allowed_models`, per-key quota sharing and upstream quota, Command Code login, and embeddings/rerank/System One model flags.
+- Built-in usage statistics persisted to SQLite (`observability.usage.store`), with no external collector: costs from models.dev or custom prices, latency/TTFT/output-speed analysis, live in-flight requests, client IP location, quota value estimates for Codex and Claude subscriptions, upstream risk-control events, CSV/JSON export and database optimization. `observability.usage.exclude-embeddings` keeps embedding requests out of the statistics.
+- Management key checks are cached instead of running bcrypt on every management request.
 - Model fingerprint detection ([LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)) to check which model really answers behind a served model name.
 - Client quota endpoint `GET /v1/usage`: a client API key reads the quota of the OAuth credentials (Codex, Claude, Antigravity, xAI, Command Code) assigned to it, including those behind chained proxies.
 
@@ -78,7 +79,10 @@ Everything upstream offers, plus the following. Each feature lives on its own `p
 - End-to-end `gzip`/`br`/`zstd`/`deflate` compression for HTTP, SSE and WebSocket, on both client and upstream legs.
 - HTTP incremental Responses and an HTTP-to-WebSocket bridge for Codex upstreams.
 - Connection reuse for ChatGPT uTLS and proxied upstreams; cancellable SOCKS5 dials.
-- Codex OAuth refresh resilience, Claude web search recovery after credential failover, fail-fast when every credential is out of quota (`X-Should-Retry: false`), keepalives for long silent Codex app streams, and Responses WebSocket fixes.
+- Official Anthropic API keys keep their native wire format (no cloaking by default), and a too-low credit balance becomes a `402` for that credential only.
+- Requests that arrive at startup before the first model load no longer get `model_not_found`.
+- Bounded long-lived memory: idle WebSocket tool-call replay sessions expire after an hour, and retained Codex output items are capped at 16 MiB.
+- Codex OAuth refresh resilience (a `401 Your IP is not authorized` becomes a retryable `503` instead of forcing a refresh), Claude web search recovery after credential failover, fail-fast when every credential is out of quota (`X-Should-Retry: false`), keepalives for long silent Codex app streams, and Responses WebSocket fixes.
 
 **Performance and distribution**
 
