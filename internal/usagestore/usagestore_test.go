@@ -726,3 +726,66 @@ func TestRealtime(t *testing.T) {
 	approx(t, "rpm_1m none", rtNone.Current.RPM1m, 0.0)
 	approx(t, "rpm_5m none", rtNone.Current.RPM5m, 0.0)
 }
+
+func TestCacheableInputExcludesModelsWithoutCacheReads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now()
+	cached := Tokens{InputUncached: 20, CacheRead: 80, Total: 100}
+	plain := Tokens{InputUncached: 100, Total: 100}
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "claude", Model: "claude-y", Tokens: cached})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "claude", Model: "claude-y", Tokens: plain}) // a miss still counts
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "kimi", Model: "no-cache", Tokens: plain})
+	// The same model name through a provider that never reported cache reads stays out.
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "openai-compatible-acme", Model: "claude-y", Tokens: plain})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t)) // the cache-capable set reloads from the hourly rollups
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	stats, err := s.Stats(ctx, now.Add(-time.Hour), now.Add(time.Hour), "hour", 0, StatsFilter{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if got := stats.Totals.CacheableInput; got != 200 {
+		t.Fatalf("totals cacheable input = %d, want 200 (claude-y on claude only)", got)
+	}
+	var seriesCacheable int64
+	for _, p := range stats.Series {
+		seriesCacheable += p.CacheableInput
+	}
+	if seriesCacheable != 200 {
+		t.Fatalf("series cacheable input = %d, want 200", seriesCacheable)
+	}
+	for _, m := range stats.Models {
+		want := int64(0)
+		if m.Provider == "claude" {
+			want = 200
+		}
+		if m.CacheableInput != want {
+			t.Fatalf("model %s/%s cacheable input = %d, want %d", m.Provider, m.Model, m.CacheableInput, want)
+		}
+	}
+	events, err := s.Events(ctx, EventFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, e := range events {
+		if want := e.Provider == "claude"; e.Cacheable != want {
+			t.Fatalf("event %s/%s cacheable = %v, want %v", e.Provider, e.Model, e.Cacheable, want)
+		}
+	}
+
+	// A model's first cache read marks it at once, without a restart.
+	if errWrite := s.write([]Event{{Timestamp: now.UnixMilli(), Provider: "kimi", Model: "no-cache", Tokens: cached}}); errWrite != nil {
+		t.Fatalf("write: %v", errWrite)
+	}
+	if !s.isCacheCapable("kimi", "no-cache") {
+		t.Fatal("first cache read must mark the model cache-capable")
+	}
+}

@@ -225,6 +225,9 @@ type Event struct {
 	Priced          bool    `json:"priced"`
 	ResponseModel   string  `json:"response_model"`
 	Substituted     bool    `json:"substituted"`
+	// Cacheable is true when the provider's model has ever served a cache read; a hit rate of
+	// requests to models without prompt caching means nothing.
+	Cacheable bool `json:"cacheable"`
 	// OutputTPS is output tokens per second after the first token; 0 when not measurable.
 	OutputTPS float64 `json:"output_tps"`
 	// Transport is the downstream transport: "ws", "sse" or "http" ("" for rows recorded before it existed).
@@ -259,6 +262,8 @@ type Store struct {
 	resolver sync.Once
 	// quotaActive holds auth indexes that served requests since their last active quota probe.
 	quotaActive sync.Map
+	// cacheCapable holds cacheKey(provider, model) of every model that has ever reported cache reads.
+	cacheCapable sync.Map
 	// maint carries optimize requests to the writer goroutine (keep days, 0 = retention only).
 	maint    chan int
 	optMu    sync.Mutex
@@ -318,9 +323,40 @@ func Open(path string, retentionDays int, pricer *Pricer) (*Store, error) {
 			log.Warnf("usage store: backfill credentials: %v", errBackfill)
 		}
 	}
+	s.loadCacheCapable()
 	s.SetRetentionDays(retentionDays)
 	go s.run()
 	return s, nil
+}
+
+func cacheKey(provider, model string) string { return provider + "\x00" + model }
+
+// loadCacheCapable seeds the cache-capable models from the hourly rollups, which are kept forever.
+func (s *Store) loadCacheCapable() {
+	rows, err := s.db.Query(`SELECT DISTINCT provider, model FROM hourly WHERE cache_read > 0`)
+	if err != nil {
+		log.Warnf("usage store: load cache-capable models: %v", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var provider, model string
+		if errScan := rows.Scan(&provider, &model); errScan != nil {
+			log.Warnf("usage store: load cache-capable models: %v", errScan)
+			return
+		}
+		s.cacheCapable.Store(cacheKey(provider, model), struct{}{})
+	}
+	if errRows := rows.Err(); errRows != nil {
+		log.Warnf("usage store: load cache-capable models: %v", errRows)
+	}
+}
+
+// isCacheCapable reports whether a model has ever served a cache read, so models without prompt
+// caching do not dilute cache hit rates.
+func (s *Store) isCacheCapable(provider, model string) bool {
+	_, ok := s.cacheCapable.Load(cacheKey(provider, model))
+	return ok
 }
 
 // SetRetentionDays updates event retention; 0 means the default of 30 days.
@@ -524,6 +560,11 @@ func (s *Store) write(batch []Event) error {
 	}
 	if errCommit := tx.Commit(); errCommit != nil {
 		return errCommit
+	}
+	for i := range batch {
+		if batch[i].Tokens.CacheRead > 0 {
+			s.cacheCapable.Store(cacheKey(batch[i].Provider, batch[i].Model), struct{}{})
+		}
 	}
 	if newPublicIP && s.geo != nil {
 		s.geo.Kick()
