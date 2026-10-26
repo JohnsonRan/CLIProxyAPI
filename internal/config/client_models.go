@@ -12,6 +12,9 @@ type ClientKeyConfig struct {
 	// Name is an optional display name for management clients. It does not affect access.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
+	// Disabled rejects requests authenticated with this key while keeping it in the config.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// Models lists visible and usable model IDs or patterns (e.g. "gpt-4o", "claude-*").
 	// When non-empty, only matching models are visible and usable for this API key.
 	Models []string `yaml:"models,omitempty" json:"models,omitempty"`

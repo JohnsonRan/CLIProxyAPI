@@ -22,25 +22,40 @@ func Register(cfg *sdkconfig.SDKConfig) {
 		return
 	}
 
+	// Disabled keys stay registered so that disabling every key keeps rejecting
+	// requests instead of leaving the server without a provider (open access).
+	var disabled []string
+	for i := range cfg.ClientKeys {
+		if cfg.ClientKeys[i].Disabled {
+			disabled = append(disabled, strings.TrimSpace(cfg.ClientKeys[i].APIKey))
+		}
+	}
+
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keys, disabled...),
 	)
 }
 
 type provider struct {
 	name string
-	keys map[string]struct{}
+	// keys maps each configured key to whether it is enabled.
+	keys map[string]bool
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keys []string, disabled ...string) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	keySet := make(map[string]struct{}, len(keys))
+	keySet := make(map[string]bool, len(keys))
 	for _, key := range keys {
-		keySet[key] = struct{}{}
+		keySet[key] = true
+	}
+	for _, key := range disabled {
+		if _, ok := keySet[key]; ok {
+			keySet[key] = false
+		}
 	}
 	return &provider{name: providerName, keys: keySet}
 }
@@ -89,7 +104,8 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		// A disabled key fails like an unknown one.
+		if p.keys[candidate.value] {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
