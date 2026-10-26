@@ -59,6 +59,7 @@ env:
     tmp/patch/usage-store-exclude-embeddings
     patch/thinking-delete-missing-nocopy
     patch/responses-ws-deferred-request-release
+    patch/fingerprint-detector
   # Compatibility patches applied as base..tip deltas (see MAINTAIN.md,
   # "Combination Conflicts"): <branch>=<base commit>. The base merges the
   # patch tips the compatibility patch was written against.
