@@ -184,22 +184,28 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	return httpReq, rawJSON, nil
 }
 
-var (
-	codexZstdRequestEncoderOnce sync.Once
-	codexZstdRequestEncoder     *zstd.Encoder
-	codexZstdRequestEncoderErr  error
-)
-
-// compressCodexRequestBody zstd-encodes a request body; one shared encoder serves every
-// request because EncodeAll is safe for concurrent use and creating encoders is costly.
-func compressCodexRequestBody(body []byte) ([]byte, error) {
-	codexZstdRequestEncoderOnce.Do(func() {
-		codexZstdRequestEncoder, codexZstdRequestEncoderErr = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
-	})
-	if codexZstdRequestEncoderErr != nil {
-		return nil, codexZstdRequestEncoderErr
+// codexZstdRequestEncoders reuses single-slot encoders: creating one per request costs about
+// 20 MB of allocations, one shared encoder serializes concurrent requests, and a shared
+// multi-slot encoder keeps every slot's memory forever. The pool scales with concurrency and
+// lets the GC reclaim idle encoders.
+var codexZstdRequestEncoders = sync.Pool{New: func() any {
+	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1), zstd.WithLowerEncoderMem(true))
+	if errNewWriter != nil {
+		return errNewWriter
 	}
-	return codexZstdRequestEncoder.EncodeAll(body, nil), nil
+	return encoder
+}}
+
+// compressCodexRequestBody zstd-encodes a request body with a pooled encoder.
+func compressCodexRequestBody(body []byte) ([]byte, error) {
+	switch pooled := codexZstdRequestEncoders.Get().(type) {
+	case *zstd.Encoder:
+		defer codexZstdRequestEncoders.Put(pooled)
+		return pooled.EncodeAll(body, nil), nil
+	case error:
+		return nil, pooled
+	}
+	return nil, fmt.Errorf("codex executor: no zstd request encoder")
 }
 
 // alignCodexContentEncoding inspects a replay copy without consuming the live request body.
