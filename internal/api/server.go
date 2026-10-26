@@ -257,6 +257,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	redisqueue.SetEnabled(hasManagementSecret || (cfg != nil && cfg.Home.Enabled))
 	if authManager != nil {
 		usagestore.SetAuthLister(authManager.List)
+		usagestore.SetQuotaProbe(s.mgmt.AntigravityQuotaReport)
 	}
 	usagestore.Apply(cfg)
 	if hasManagementSecret {

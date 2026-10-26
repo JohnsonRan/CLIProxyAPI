@@ -172,6 +172,13 @@ type quotaLast struct {
 	observed int64
 }
 
+// quotaObservation is the parsed windows of one credential's quota report at one instant.
+type quotaObservation struct {
+	authIndex, provider string
+	windows             []quotaWindow
+	observed            int64 // unix ms
+}
+
 // startQuotaSampler runs the snapshot sampler until the store closes.
 func (s *Store) startQuotaSampler() {
 	s.lookups.Add(1)
@@ -199,13 +206,7 @@ func (s *Store) sampleQuota(last map[string]quotaLast) {
 	if list == nil {
 		return
 	}
-	type row struct {
-		authIndex, provider string
-		w                   quotaWindow
-		observed            int64
-	}
-	var rows []row
-	stagedLast := make(map[string]quotaLast)
+	var obs []quotaObservation
 	for _, auth := range (*list)() {
 		// API keys have no subscription quota; windows relayed by an upstream belong to its pool, not the key.
 		if auth == nil || auth.Disabled || auth.Quota.ObservedAt.IsZero() || auth.AuthKind() == coreauth.AuthKindAPIKey {
@@ -215,8 +216,25 @@ func (s *Store) sampleQuota(last map[string]quotaLast) {
 		if authIndex == "" {
 			continue
 		}
-		observed := auth.Quota.ObservedAt.UnixMilli()
-		for _, w := range parseQuotaWindows(auth.Provider, auth.Quota.Signals, auth.Quota.ObservedAt) {
+		obs = append(obs, quotaObservation{authIndex, auth.Provider,
+			parseQuotaWindows(auth.Provider, auth.Quota.Signals, auth.Quota.ObservedAt), auth.Quota.ObservedAt.UnixMilli()})
+	}
+	s.recordQuota(last, obs)
+}
+
+// recordQuota stores the windows whose reset or percentage changed since last; last is owned
+// by the calling sampler goroutine.
+func (s *Store) recordQuota(last map[string]quotaLast, obs []quotaObservation) {
+	type row struct {
+		authIndex, provider string
+		w                   quotaWindow
+		observed            int64
+	}
+	var rows []row
+	stagedLast := make(map[string]quotaLast)
+	for _, o := range obs {
+		authIndex, observed := o.authIndex, o.observed
+		for _, w := range o.windows {
 			key := authIndex + "\x00" + w.ID
 			prev, seen := last[key]
 			if seen && observed <= prev.observed {
@@ -237,7 +255,7 @@ func (s *Store) sampleQuota(last map[string]quotaLast) {
 				}
 			}
 			stagedLast[key] = quotaLast{resetAt: w.ResetAt, used: w.Used, observed: observed}
-			rows = append(rows, row{authIndex, auth.Provider, w, observed})
+			rows = append(rows, row{authIndex, o.provider, w, observed})
 		}
 	}
 	if len(rows) == 0 {
@@ -277,8 +295,11 @@ func absInt64(v int64) int64 {
 
 // QuotaWindowValue is one quota window instance of a credential with its API-equivalent usage.
 type QuotaWindowValue struct {
-	AuthIndex     string `json:"auth_index"`
-	Provider      string `json:"provider"`
+	AuthIndex string `json:"auth_index"`
+	Provider  string `json:"provider"`
+	// Pool names the model family a window covers when a credential has separate quotas per
+	// family (Antigravity "gemini" and "claude-gpt"); empty when the window covers all traffic.
+	Pool          string `json:"pool"`
 	Window        string `json:"window"`
 	PeriodSeconds int64  `json:"period_seconds"`
 	// StartAt is the nominal window start (ResetAt - PeriodSeconds). The accounting bounds start
@@ -354,6 +375,7 @@ func groupQuotaSamples(samples []quotaSample) []QuotaWindowValue {
 			out = append(out, QuotaWindowValue{
 				AuthIndex:     sm.authIndex,
 				Provider:      sm.provider,
+				Pool:          quotaPool(sm.provider, sm.window),
 				Window:        sm.window,
 				PeriodSeconds: sm.period,
 				ResetAt:       sm.resetAt,
@@ -492,7 +514,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 			}
 		}
 
-		segs, extPercent, extChecked, errUsage := s.windowUsage(ctx, prices, w.AuthIndex, i, fromMs, toMs, resetIsBinding, incSamples, &w.Usage)
+		segs, extPercent, extChecked, errUsage := s.windowUsage(ctx, prices, w.AuthIndex, w.Pool, i, fromMs, toMs, resetIsBinding, incSamples, &w.Usage)
 		if errUsage != nil {
 			return nil, errUsage
 		}
@@ -511,9 +533,10 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 		}
 	}
 
-	// Fit models per (auth_index, period_seconds)
+	// Fit models per (auth_index, pool, period_seconds)
 	type fitUnitKey struct {
 		authIndex     string
+		pool          string
 		periodSeconds int64
 	}
 	unitWindows := make(map[fitUnitKey][]int)
@@ -521,7 +544,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 	for i := range windows {
 		w := &windows[i]
 		if w.inFitRange {
-			k := fitUnitKey{w.AuthIndex, w.PeriodSeconds}
+			k := fitUnitKey{w.AuthIndex, w.Pool, w.PeriodSeconds}
 			unitWindows[k] = append(unitWindows[k], i)
 			unitProviders[k] = w.Provider
 		}
@@ -529,7 +552,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 	for i := range windows {
 		w := &windows[i]
 		if w.inRange {
-			k := fitUnitKey{w.AuthIndex, w.PeriodSeconds}
+			k := fitUnitKey{w.AuthIndex, w.Pool, w.PeriodSeconds}
 			if _, ok := unitWindows[k]; !ok {
 				unitWindows[k] = nil
 				unitProviders[k] = w.Provider
@@ -541,7 +564,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 	for unit, winIndices := range unitWindows {
 		hasInRange := false
 		for i := range windows {
-			if windows[i].inRange && windows[i].AuthIndex == unit.authIndex && windows[i].PeriodSeconds == unit.periodSeconds {
+			if windows[i].inRange && windows[i].AuthIndex == unit.authIndex && windows[i].Pool == unit.pool && windows[i].PeriodSeconds == unit.periodSeconds {
 				hasInRange = true
 				break
 			}
@@ -570,6 +593,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 		qm := QuotaModel{
 			AuthIndex:        unit.authIndex,
 			Provider:         unitProviders[unit],
+			Pool:             unit.pool,
 			PeriodSeconds:    unit.periodSeconds,
 			Status:           res1.status,
 			Windows:          res1.windowsCount,
@@ -595,7 +619,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 			// Recompute external deduction using model k for windows in this unit
 			for i := range windows {
 				w := &windows[i]
-				if w.AuthIndex == unit.authIndex && w.PeriodSeconds == unit.periodSeconds {
+				if w.AuthIndex == unit.authIndex && w.Pool == unit.pool && w.PeriodSeconds == unit.periodSeconds {
 					segs := winSegs[i].segments
 					if len(segs) > 0 {
 						extPercent := 0.0
@@ -639,6 +663,9 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 	sort.Slice(models, func(i, j int) bool {
 		if models[i].AuthIndex != models[j].AuthIndex {
 			return models[i].AuthIndex < models[j].AuthIndex
+		}
+		if models[i].Pool != models[j].Pool {
+			return models[i].Pool < models[j].Pool
 		}
 		return models[i].PeriodSeconds < models[j].PeriodSeconds
 	})
@@ -726,13 +753,14 @@ func sanitizeFinitePtr(p *float64) *float64 {
 	return p
 }
 
-// windowUsage sums one credential's events in [fromMs, toMs] into a, priced per model and tier,
+// windowUsage sums one credential's events of a pool in [fromMs, toMs] into a, priced per model and tier,
 // collects per-interval segments, and evaluates fallback passive external usage over the quota samples.
-func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex string, windowIdx int, fromMs, toMs int64, resetIsBinding bool, samples []samplePoint, a *Aggregate) ([]quotaSegment, float64, bool, error) {
+func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex, pool string, windowIdx int, fromMs, toMs int64, resetIsBinding bool, samples []samplePoint, a *Aggregate) ([]quotaSegment, float64, bool, error) {
 	op := "<="
 	if resetIsBinding {
 		op = "<"
 	}
+	poolSQL := quotaPoolModelSQL(pool)
 
 	numSamples := len(samples)
 	var caseSQL string
@@ -753,8 +781,8 @@ func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex 
 		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
 		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0),
 		SUM(`+genOutputSQL+`), SUM(`+genMsSQL+`)
-		FROM events WHERE auth_index = ? AND ts >= ? AND ts %s ?
-		GROUP BY model, service_tier, band, interval_idx`, op)
+		FROM events WHERE auth_index = ? AND ts >= ? AND ts %s ?%s
+		GROUP BY model, service_tier, band, interval_idx`, op, poolSQL)
 
 	rows, err := s.db.QueryContext(ctx, query, authIndex, fromMs, toMs)
 	if err != nil {
