@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	lmfpd "github.com/Ikaleio/lm-detector/sdk/go"
 	"github.com/gin-gonic/gin"
@@ -18,14 +20,10 @@ import (
 
 func swapFingerprintLoad(t *testing.T, load func(context.Context) (*lmfpd.Detector, error)) {
 	t.Helper()
-	fingerprintDetectorMu.Lock()
-	prevLoad, prevDetector := fingerprintLoad, fingerprintDetector
-	fingerprintLoad, fingerprintDetector = load, nil
-	fingerprintDetectorMu.Unlock()
+	prevLoad := fingerprintLoad
+	fingerprintLoad = load
 	t.Cleanup(func() {
-		fingerprintDetectorMu.Lock()
-		fingerprintLoad, fingerprintDetector = prevLoad, prevDetector
-		fingerprintDetectorMu.Unlock()
+		fingerprintLoad = prevLoad
 	})
 }
 
@@ -67,6 +65,135 @@ func TestFingerprintDetectReportsDataLoadFailureAndRetries(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("load calls = %d, want a retry after a failed load", calls)
+	}
+}
+
+func TestStartLoopbackServerHandlesClientDisconnectAndDrains(t *testing.T) {
+	clientReadFirst := make(chan struct{})
+	clientClosed := make(chan struct{})
+	handlerFinished := make(chan struct{})
+
+	var handlerSawUncanceled bool
+	var handlerSawSecondWriteOK bool
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerFinished)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter must implement http.Flusher")
+		}
+
+		// Send initial chunk
+		_, err := w.Write([]byte("chunk 1\n"))
+		if err != nil {
+			t.Errorf("first write failed: %v", err)
+		}
+		flusher.Flush()
+		close(clientReadFirst)
+
+		// Wait until client has closed connection
+		select {
+		case <-clientClosed:
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for client to close connection")
+			return
+		}
+
+		// Context must NOT be cancelled by client disconnect
+		handlerSawUncanceled = (r.Context().Err() == nil)
+
+		// Second write after client disconnect should not error (swallowed by drainResponseWriter)
+		_, err2 := w.Write([]byte("chunk 2 terminal usage\n"))
+		flusher.Flush()
+		handlerSawSecondWriteOK = (err2 == nil)
+	})
+
+	parentCtx := context.Background()
+	lbServer, err := startLoopbackServer(parentCtx, handler)
+	if err != nil {
+		t.Fatalf("startLoopbackServer failed: %v", err)
+	}
+
+	// Make HTTP client call
+	req, err := http.NewRequest(http.MethodGet, lbServer.BaseURL(), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+
+	// Read first chunk
+	select {
+	case <-clientReadFirst:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first chunk")
+	}
+
+	buf := make([]byte, 7)
+	_, _ = io.ReadFull(resp.Body, buf)
+
+	// Close client response body and connection
+	_ = resp.Body.Close()
+	close(clientClosed)
+
+	// Close loopback server - this must wait for in-flight handler to finish
+	lbServer.Close()
+
+	// Verify handler finished before lbServer.Close() returned
+	select {
+	case <-handlerFinished:
+	default:
+		t.Fatal("lbServer.Close() returned before handler finished")
+	}
+
+	if !handlerSawUncanceled {
+		t.Fatal("handler saw cancelled context after client disconnected")
+	}
+	if !handlerSawSecondWriteOK {
+		t.Fatal("handler saw error on write after client disconnected")
+	}
+}
+
+func TestStartLoopbackServerCancelsWhenParentContextCancels(t *testing.T) {
+	handlerEntered := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handlerEntered)
+		<-r.Context().Done()
+		close(handlerCanceled)
+	})
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	lbServer, err := startLoopbackServer(parentCtx, handler)
+	if err != nil {
+		t.Fatalf("startLoopbackServer failed: %v", err)
+	}
+	defer lbServer.Close()
+
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, lbServer.BaseURL(), nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-handlerEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler not entered")
+	}
+
+	// Cancel parent context
+	parentCancel()
+
+	select {
+	case <-handlerCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler context was not cancelled when parent context cancelled")
 	}
 }
 
