@@ -14,8 +14,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// maxSDKTimeout is the maximum timeout value accepted by lmfpd SDK (request.go ~2147483.647 s).
-// The SDK has no off switch for timeout; cancellation comes from the management request context.
+// shortcut: lmfpd v0.1.0 cannot disable its timer, so this is its maximum (~24.9 days); switch to the SDK's off value once an SDK release supports it.
+// Cancellation in practice comes from the management request context.
 const maxSDKTimeout = 2147483647 * time.Millisecond
 
 // fingerprintDetectRequest selects the model and API format used for one detection round.
