@@ -27,12 +27,16 @@ type Aggregate struct {
 	AvgTTFTMs        float64 `json:"avg_ttft_ms"`
 	// OutputTPS is output tokens per second of decode time over the streamed successful requests
 	// with a measurable decode phase (token-weighted, so long answers count more); 0 when none.
-	OutputTPS  float64 `json:"output_tps"`
-	latencySum int64
-	ttftSum    int64
-	ttftCount  int64
-	genOutput  int64
-	genMs      int64
+	OutputTPS float64 `json:"output_tps"`
+	// CacheableInput is the input (uncached + cache read + cache write) of models that have ever
+	// served a cache read: the denominator of a cache hit rate that models without prompt caching
+	// do not dilute.
+	CacheableInput int64 `json:"cacheable_input"`
+	latencySum     int64
+	ttftSum        int64
+	ttftCount      int64
+	genOutput      int64
+	genMs          int64
 }
 
 func (a *Aggregate) add(o *Aggregate) {
@@ -40,6 +44,7 @@ func (a *Aggregate) add(o *Aggregate) {
 	a.Failed += o.Failed
 	a.Substituted += o.Substituted
 	a.Tokens.add(o.Tokens)
+	a.CacheableInput += o.CacheableInput
 	a.Cost += o.Cost
 	a.UnpricedRequests += o.UnpricedRequests
 	a.latencySum += o.latencySum
@@ -240,6 +245,9 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 			return nil, errScan
 		}
 		source := prices.apply(&a, model, tier, prices.bandInput(band))
+		if s.isCacheCapable(provider, model) {
+			a.CacheableInput = t.InputUncached + t.CacheRead + t.CacheWrite
+		}
 
 		out.Totals.add(&a)
 		if series[b] == nil {
@@ -430,6 +438,7 @@ func (s *Store) eachEvent(ctx context.Context, f EventFilter, limit int, fn func
 		}
 		e.ClientGeo = clientGeo(e.ClientIP, row)
 		e.OutputTPS = tokensPerSecond(e.generation())
+		e.Cacheable = s.isCacheCapable(e.Provider, e.Model)
 		var a Aggregate
 		a.Requests, a.Tokens = 1, e.Tokens
 		input := e.Tokens.InputUncached + e.Tokens.CacheRead + e.Tokens.CacheWrite + e.Tokens.Unclassified
