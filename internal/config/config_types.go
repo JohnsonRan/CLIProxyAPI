@@ -311,19 +311,23 @@ func (c *CodexConfig) RequestCompressionMinBytes() int {
 	return c.UpstreamRequestCompressionMinBytes
 }
 
-// normalizeLegacyCodexRequestCompression accepts the string form of
-// codex.upstream-request-compression that earlier downstream builds wrote ("zstd", "gzip",
-// "br", "auto", "off"): "off" and its synonyms disable it, any coding enables zstd.
+// normalizeLegacyCodexRequestCompression rewrites legacy coding names that earlier downstream
+// builds wrote as strings into booleans. Standard YAML boolean spellings (including yes/no/on/off/true/false)
+// and invalid values are left untouched for yaml.v3 to decode natively.
 func normalizeLegacyCodexRequestCompression(root *yaml.Node) {
 	node := yamlPath(root, "codex.upstream-request-compression")
-	if node == nil || node.Kind != yaml.ScalarNode || node.Tag == "!!bool" {
+	if node == nil || node.Kind != yaml.ScalarNode {
 		return
 	}
 	value := strings.ToLower(strings.TrimSpace(node.Value))
-	enabled := true
+	var enabled bool
 	switch value {
-	case "off", "none", "false", "identity", "disabled":
+	case "zstd", "zstandard", "gzip", "x-gzip", "br", "brotli", "auto":
+		enabled = true
+	case "none", "identity", "disabled":
 		enabled = false
+	default:
+		return
 	}
 	node.Tag, node.Style, node.Value = "!!bool", 0, strconv.FormatBool(enabled)
 }
