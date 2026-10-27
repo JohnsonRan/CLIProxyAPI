@@ -24,7 +24,19 @@ const (
 	quotaSampleEvery = time.Minute
 	// shortcut: covers streams up to 30 min whose quota observation is stamped at completion; upgrade when observation time is stamped at header receipt
 	quotaStartPadSeconds = 30 * 60
+	// shortcut: an early reset within 15 min of a window's start is not detected, since relative resets of
+	// streams stamped at completion run that late; upgrade when observation time is stamped at header receipt
+	quotaEarlyResetShiftSeconds = 15 * 60
+	quotaEarlyResetDrop         = 5
 )
+
+// quotaEarlyReset reports whether a sample starts a new window instance before the previous one's
+// nominal reset. A promotional or manual reset zeroes the percentage and restarts the period, so the
+// new reset can lie less than half a period after the old one and would otherwise merge with it.
+// A late stale snapshot lowers the percentage only slightly, so the drop must also halve it.
+func quotaEarlyReset(prevReset int64, prevUsed float64, reset int64, used float64) bool {
+	return reset-prevReset > quotaEarlyResetShiftSeconds && prevUsed-used >= quotaEarlyResetDrop && used <= prevUsed/2
+}
 
 const quotaSchema = `
 CREATE TABLE IF NOT EXISTS quota_samples (
@@ -249,7 +261,7 @@ func (s *Store) recordQuota(last map[string]quotaLast, obs []quotaObservation) {
 			if tol <= 0 {
 				tol = 5 * 60
 			}
-			sameWindow := seen && absInt64(w.ResetAt-prev.resetAt) <= tol
+			sameWindow := seen && absInt64(w.ResetAt-prev.resetAt) <= tol && !quotaEarlyReset(prev.resetAt, prev.used, w.ResetAt, w.Used)
 			if sameWindow {
 				if prev.resetAt < w.ResetAt {
 					w.ResetAt = prev.resetAt
@@ -354,8 +366,9 @@ type quotaSample struct {
 	inFitRange                  bool
 }
 
-// groupQuotaSamples groups samples into window instances by matching each sample against any
-// existing instance of the same credential and window whose ResetAt is within period/2.
+// groupQuotaSamples groups samples into window instances by matching each sample against the
+// existing instance of the same credential and window whose ResetAt is closest and within period/2,
+// unless the sample marks an early reset of that instance (quotaEarlyReset).
 // The minimum ResetAt seen in the instance is kept. Within an instance the highest percentage
 // wins and keeps its first observation time, so a stale lower snapshot that arrives late
 // (out-of-order responses) does not shrink the window.
@@ -371,9 +384,15 @@ func groupQuotaSamples(samples []quotaSample) []QuotaWindowValue {
 			tol = 5 * 60
 		}
 		for _, idx := range indices {
-			if absInt64(sm.resetAt-out[idx].ResetAt) <= tol {
+			d := absInt64(sm.resetAt - out[idx].ResetAt)
+			if d <= tol && (targetIdx == -1 || d < absInt64(sm.resetAt-out[targetIdx].ResetAt)) {
 				targetIdx = idx
-				break
+			}
+		}
+		if targetIdx != -1 {
+			t := &out[targetIdx]
+			if quotaEarlyReset(t.ResetAt, t.samplesList[len(t.samplesList)-1].usedPercent, sm.resetAt, sm.used) {
+				targetIdx = -1
 			}
 		}
 		if targetIdx == -1 {
@@ -477,6 +496,13 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 		}
 		return windows[i].ResetAt < windows[j].ResetAt
 	})
+	// An early reset ends an instance where its successor starts, before its nominal reset.
+	for i := 1; i < len(windows); i++ {
+		prev, w := &windows[i-1], &windows[i]
+		if prev.AuthIndex == w.AuthIndex && prev.Window == w.Window && prev.ResetAt-w.StartAt > quotaEarlyResetShiftSeconds {
+			prev.ResetAt = w.StartAt
+		}
+	}
 
 	type winSegmentsData struct {
 		segments []quotaSegment
