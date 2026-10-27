@@ -593,6 +593,102 @@ func TestQuotaValueEarlyResetExhaustedWindow(t *testing.T) {
 	}
 }
 
+func TestSplitLegacyEarlyResets(t *testing.T) {
+	const week, r = 604800, 2_000_000
+	start := int64(r - week)
+	at := func(days float64) int64 { return (start + int64(days*86400)) * 1000 }
+	sample := func(used, days float64) quotaSample {
+		return quotaSample{authIndex: "a", window: "7d", period: week, resetAt: r, used: used, observed: at(days)}
+	}
+	group := func(samples []quotaSample) []QuotaWindowValue {
+		splitLegacyEarlyResets(samples)
+		return groupQuotaSamples(samples)
+	}
+
+	// A legacy early reset two days in: the new samples kept the old reset.
+	got := group([]quotaSample{sample(30, 1), sample(40, 2), sample(0, 2.5), sample(10, 3)})
+	if len(got) != 2 || got[0].ResetAt != r || got[0].UsedPercent != 40 ||
+		got[1].StartAt != start+2*86400 || got[1].ResetAt != start+2*86400+week || got[1].UsedPercent != 10 {
+		t.Fatalf("single reset: %+v", got)
+	}
+
+	// Several resets under one stored reset (repeated promotional resets).
+	got = group([]quotaSample{sample(40, 1), sample(0, 2), sample(20, 3), sample(2, 4), sample(5, 5)})
+	if len(got) != 3 || got[0].UsedPercent != 40 || got[1].UsedPercent != 20 || got[2].UsedPercent != 5 ||
+		got[1].StartAt != start+86400 || got[2].StartAt != start+3*86400 {
+		t.Fatalf("repeated resets: %+v", got)
+	}
+
+	// A stale snapshot under an absolute reset, and an unconfirmed trailing drop, stay merged.
+	for name, samples := range map[string][]quotaSample{
+		"stale snapshot": {sample(40, 1), sample(15, 2), sample(42, 3)},
+		"trailing drop":  {sample(40, 1), sample(0, 2)},
+	} {
+		if got := group(samples); len(got) != 1 || got[0].ResetAt != r {
+			t.Fatalf("%s: %+v", name, got)
+		}
+	}
+}
+
+func TestQuotaValueLegacyEarlyReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	// Each event costs $2.
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	for _, ago := range []time.Duration{50 * time.Hour, 30 * time.Hour, 20 * time.Hour, 2 * time.Hour} {
+		s.Enqueue(Event{Timestamp: now.Add(-ago).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	}
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	// Rows as the old sampler stored them: the weekly window started 3 days ago and was reset early
+	// about a day ago, but the new window's samples kept the old reset.
+	oldReset := now.Add(4 * 24 * time.Hour).Unix()
+	for _, row := range []struct {
+		ago  time.Duration
+		used float64
+	}{{48 * time.Hour, 20}, {26 * time.Hour, 40}, {23 * time.Hour, 2}, {time.Hour, 10}} {
+		if _, err = s.db.Exec(`INSERT INTO quota_samples (auth_index, provider, window, period_s, reset_at, used, observed_at)
+			VALUES (?,?,?,?,?,?,?)`, "a1", "codex", "secondary", 604800, oldReset, row.used, now.Add(-row.ago).UnixMilli()); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-7*24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	if len(value.Windows) != 2 {
+		t.Fatalf("windows = %+v", value.Windows)
+	}
+	newer, older := value.Windows[0], value.Windows[1]
+	// The reset is estimated at the last old-window sample, so the old window ends there and the
+	// new one counts the later events.
+	estimated := now.Add(-26 * time.Hour).Unix()
+	if older.ResetAt != estimated || older.UsedPercent != 40 || older.Usage.Requests != 2 {
+		t.Fatalf("older = %+v", older)
+	}
+	if newer.StartAt != estimated || newer.ResetAt != estimated+604800 || newer.UsedPercent != 10 || newer.Usage.Requests != 2 {
+		t.Fatalf("newer = %+v", newer)
+	}
+	approx(t, "older cost", older.Usage.Cost, 4)
+	approx(t, "newer cost", newer.Usage.Cost, 4)
+
+	// Reading does not rewrite the stored rows.
+	var rewritten int
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM quota_samples WHERE reset_at != ?`, oldReset).Scan(&rewritten); err != nil || rewritten != 0 {
+		t.Fatalf("rows with another reset = %d (%v), want 0", rewritten, err)
+	}
+}
+
 func TestGroupQuotaSamplesOutOfOrderRollover(t *testing.T) {
 	// (a) A,B,A,B grouping yields 2 instances with correct maxima
 	got := groupQuotaSamples([]quotaSample{
