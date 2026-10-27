@@ -161,7 +161,7 @@ func TestGroupQuotaSamplesEarlyReset(t *testing.T) {
 	sample := func(reset int64, used float64, observed int64) quotaSample {
 		return quotaSample{authIndex: "a", window: "7d", period: week, resetAt: reset, used: used, observed: observed}
 	}
-	// Reset 5 days into the window: the new reset is 2 days after the old one, within period/2.
+	// Reset 2 days into the window: the new reset is 2 days after the old one, within period/2.
 	got := groupQuotaSamples([]quotaSample{
 		sample(r, 30, 1),
 		sample(r, 40, 2),
@@ -256,6 +256,329 @@ func TestQuotaValueEarlyReset(t *testing.T) {
 	}
 	approx(t, "older cost", older.Usage.Cost, 4)
 	approx(t, "newer cost", newer.Usage.Cost, 4)
+}
+
+func TestQuotaEarlyResetBoundaries(t *testing.T) {
+	const r = 1_000_000
+	for _, tc := range []struct {
+		name      string
+		prevReset int64
+		prevUsed  float64
+		reset     int64
+		used      float64
+		want      bool
+	}{
+		// Shift boundary: must be > 900s (15 min)
+		{"shift exactly 900s", r, 20, r + 900, 10, false},
+		{"shift 901s", r, 20, r + 901, 10, true},
+		// Drop boundary: prevUsed - used must be >= 5
+		{"drop 4.9 points", r, 10, r + 1000, 5.1, false},
+		{"drop exactly 5 points", r, 10, r + 1000, 5.0, true},
+		// Ratio boundary: used must be <= prevUsed / 2
+		{"used half", r, 20, r + 1000, 10.0, true},
+		{"used just above half", r, 20, r + 1000, 10.1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := quotaEarlyReset(tc.prevReset, tc.prevUsed, tc.reset, tc.used); got != tc.want {
+				t.Errorf("quotaEarlyReset(%d, %v, %d, %v) = %v, want %v", tc.prevReset, tc.prevUsed, tc.reset, tc.used, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGroupQuotaSamplesStaleLongStreamDoesNotSplit(t *testing.T) {
+	const r = 1_000_000
+	// 5h window (18000s). Stream A started early in the window and completed at start+1260s.
+	// Its relative reset shifted by 1200s and reported 1% used against earlier 20%.
+	// A fresh stream at start+1300s reports reset r and 22%.
+	// The stale completion must NOT split the window into two.
+	got := groupQuotaSamples([]quotaSample{
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r, used: 20, observed: 1},
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r + 1200, used: 1, observed: 2},
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r, used: 22, observed: 3},
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 window instance, got %d: %+v", len(got), got)
+	}
+	if got[0].ResetAt != r || got[0].UsedPercent != 22 || got[0].Samples != 3 {
+		t.Fatalf("instance = %+v", got[0])
+	}
+}
+
+func TestQuotaValueStaleLongStreamEndToEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	for _, ago := range []time.Duration{80 * time.Minute, 40 * time.Minute, 5 * time.Minute} {
+		s.Enqueue(Event{Timestamp: now.Add(-ago).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	}
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	primaryReset := now.Add(3 * time.Hour).Unix() // 5h window started 2h ago
+	last := map[string]quotaLast{}
+	for _, step := range []struct {
+		ago        time.Duration
+		used       int
+		resetAfter int64
+	}{
+		// Normal stream: reset is primaryReset
+		{60 * time.Minute, 20, primaryReset - now.Add(-60*time.Minute).Unix()},
+		// Stale long stream completes: reset-after was 17940s from start+60s, so inferred reset shifts 1200s forward
+		{30 * time.Minute, 1, (primaryReset + 1200) - now.Add(-30*time.Minute).Unix()},
+		// Fresh stream: reset is primaryReset
+		{10 * time.Minute, 25, primaryReset - now.Add(-10*time.Minute).Unix()},
+	} {
+		obs := now.Add(-step.ago)
+		auths := []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+			ObservedAt: obs,
+			Signals: map[string]string{
+				"X-Codex-Primary-Used-Percent":        strconv.Itoa(step.used),
+				"X-Codex-Primary-Window-Minutes":      "300",
+				"X-Codex-Primary-Reset-After-Seconds": strconv.FormatInt(step.resetAfter, 10),
+			},
+		}}}
+		SetAuthLister(func() []*coreauth.Auth { return auths })
+		s.sampleQuota(last)
+	}
+	SetAuthLister(nil)
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	if len(value.Windows) != 1 {
+		t.Fatalf("expected 1 window, got %d: %+v", len(value.Windows), value.Windows)
+	}
+	w := value.Windows[0]
+	if w.Window != "primary" || w.ResetAt != primaryReset || w.UsedPercent != 25 {
+		t.Fatalf("window = %+v", w)
+	}
+	// Events at -80m and -40m fall inside [start, 25% first seen]; -5m is after.
+	if w.Usage.Requests != 2 {
+		t.Fatalf("requests = %d, want 2", w.Usage.Requests)
+	}
+}
+
+func TestQuotaValueSamplerStaleAfterEarlyReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	s.Enqueue(Event{Timestamp: now.Add(-48 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	s.Enqueue(Event{Timestamp: now.Add(-10 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	// Sequence: (R,40), (R',0), (R',25), (R,41), (R',30), (R',35)
+	oldReset := now.Add(4 * 24 * time.Hour).Unix()
+	earlyReset := now.Add(-36 * time.Hour)
+	newReset := earlyReset.Add(7 * 24 * time.Hour).Unix()
+	last := map[string]quotaLast{}
+	for _, step := range []struct {
+		ago   time.Duration
+		reset int64
+		used  int
+	}{
+		{48 * time.Hour, oldReset, 40},
+		{36 * time.Hour, newReset, 0},
+		{30 * time.Hour, newReset, 25},
+		{25 * time.Hour, oldReset, 41}, // late stale snapshot of old window
+		{20 * time.Hour, newReset, 30}, // new window progress: must NOT be rewritten to oldReset
+		{5 * time.Hour, newReset, 35},
+	} {
+		auths := []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+			ObservedAt: now.Add(-step.ago),
+			Signals: map[string]string{
+				"X-Codex-Secondary-Used-Percent":   strconv.Itoa(step.used),
+				"X-Codex-Secondary-Window-Minutes": "10080",
+				"X-Codex-Secondary-Reset-At":       strconv.FormatInt(step.reset, 10),
+			},
+		}}}
+		SetAuthLister(func() []*coreauth.Auth { return auths })
+		s.sampleQuota(last)
+	}
+	SetAuthLister(nil)
+
+	// All 4 new-window samples must be stored with newReset, none rewritten to oldReset.
+	var storedNew int
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM quota_samples WHERE reset_at = ?`, newReset).Scan(&storedNew); err != nil || storedNew != 4 {
+		t.Fatalf("samples stored with new reset = %d (%v), want 4", storedNew, err)
+	}
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-7*24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	if len(value.Windows) != 2 {
+		t.Fatalf("windows = %+v", value.Windows)
+	}
+	newer, older := value.Windows[0], value.Windows[1]
+	if older.ResetAt != earlyReset.Unix() || older.UsedPercent != 41 {
+		t.Fatalf("older = %+v, want ResetAt=%d UsedPercent=41", older, earlyReset.Unix())
+	}
+	if newer.ResetAt != newReset || newer.UsedPercent != 35 {
+		t.Fatalf("newer = %+v, want ResetAt=%d UsedPercent=35", newer, newReset)
+	}
+}
+
+func TestQuotaValueEarlyResetSecondHalf(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	// Event 1: in Window 1 (4 days ago)
+	s.Enqueue(Event{Timestamp: now.Add(-4 * 24 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	// Event 2: after early reset (24h ago), before old nominal reset (which was now + 12h)!
+	s.Enqueue(Event{Timestamp: now.Add(-24 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	// Event 3: also after early reset (3h ago, before peak observed at 2h ago and old nominal reset)
+	s.Enqueue(Event{Timestamp: now.Add(-3 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	// Window 1 started 6 days ago, nominal reset is now + 12h.
+	// Reset happens 5 days in (now - 36h), so it is in the SECOND half (elapsed 5d > period/2 = 3.5d).
+	// New reset is now - 36h + 7d = now + 5.5d.
+	// Shift is 5 days > period/2, so grouping already places them into separate instances.
+	// ResetAt trimming must trim Window 1 to now - 36h so Window 2 counts Event 2!
+	oldReset := now.Add(12 * time.Hour).Unix()
+	earlyReset := now.Add(-36 * time.Hour)
+	newReset := earlyReset.Add(7 * 24 * time.Hour).Unix()
+	last := map[string]quotaLast{}
+	for _, step := range []struct {
+		ago   time.Duration
+		reset int64
+		used  int
+	}{
+		{5 * 24 * time.Hour, oldReset, 20},
+		{40 * time.Hour, oldReset, 50},
+		{30 * time.Hour, newReset, 5},
+		{2 * time.Hour, newReset, 20},
+	} {
+		auths := []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+			ObservedAt: now.Add(-step.ago),
+			Signals: map[string]string{
+				"X-Codex-Secondary-Used-Percent":   strconv.Itoa(step.used),
+				"X-Codex-Secondary-Window-Minutes": "10080",
+				"X-Codex-Secondary-Reset-At":       strconv.FormatInt(step.reset, 10),
+			},
+		}}}
+		SetAuthLister(func() []*coreauth.Auth { return auths })
+		s.sampleQuota(last)
+	}
+	SetAuthLister(nil)
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-7*24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	if len(value.Windows) != 2 {
+		t.Fatalf("windows = %+v", value.Windows)
+	}
+	newer, older := value.Windows[0], value.Windows[1]
+	if older.ResetAt != earlyReset.Unix() || older.Usage.Requests != 1 {
+		t.Fatalf("older = %+v, want ResetAt=%d Requests=1", older, earlyReset.Unix())
+	}
+	// Newer window must count Event 2 (between earlyReset and oldReset) AND Event 3!
+	if newer.ResetAt != newReset || newer.StartAt != earlyReset.Unix() || newer.Usage.Requests != 2 {
+		t.Fatalf("newer = %+v, want ResetAt=%d StartAt=%d Requests=2", newer, newReset, earlyReset.Unix())
+	}
+}
+
+func TestQuotaValueEarlyResetExhaustedWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	// Event 1: while primary was 100% (now - 2h). Secondary should exclude it.
+	s.Enqueue(Event{Timestamp: now.Add(-2 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	// Event 2: after primary was early-reset (now - 30m), but BEFORE old nominal reset (now + 1h)!
+	// Secondary must count this event because primary is no longer exhausted.
+	s.Enqueue(Event{Timestamp: now.Add(-30 * time.Minute).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	primaryOldReset := now.Add(time.Hour).Unix()
+	primaryEarlyReset := now.Add(-45 * time.Minute)
+	primaryNewReset := primaryEarlyReset.Add(5 * time.Hour).Unix()
+	secondaryReset := now.Add(5 * 24 * time.Hour).Unix()
+
+	last := map[string]quotaLast{}
+	for _, step := range []struct {
+		ago                time.Duration
+		pReset             int64
+		primary, secondary int
+	}{
+		// Primary hits 100% (exhausted) 3h ago
+		{3 * time.Hour, primaryOldReset, 100, 10},
+		// Primary is early-reset 45m ago to 0%, now at 5% 40m ago
+		{40 * time.Minute, primaryNewReset, 5, 12},
+		// Fresh sample of new primary window 20m ago
+		{20 * time.Minute, primaryNewReset, 10, 15},
+	} {
+		auths := []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+			ObservedAt: now.Add(-step.ago),
+			Signals: map[string]string{
+				"X-Codex-Primary-Used-Percent":     strconv.Itoa(step.primary),
+				"X-Codex-Primary-Window-Minutes":   "300",
+				"X-Codex-Primary-Reset-At":         strconv.FormatInt(step.pReset, 10),
+				"X-Codex-Secondary-Used-Percent":   strconv.Itoa(step.secondary),
+				"X-Codex-Secondary-Window-Minutes": "10080",
+				"X-Codex-Secondary-Reset-At":       strconv.FormatInt(secondaryReset, 10),
+			},
+		}}}
+		SetAuthLister(func() []*coreauth.Auth { return auths })
+		s.sampleQuota(last)
+	}
+	SetAuthLister(nil)
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	var secondaryWin *QuotaWindowValue
+	for i := range value.Windows {
+		if value.Windows[i].Window == "secondary" {
+			secondaryWin = &value.Windows[i]
+			break
+		}
+	}
+	if secondaryWin == nil {
+		t.Fatalf("secondary window not found in %+v", value.Windows)
+	}
+	// Secondary must exclude Event 1 (during exhausted span) and count Event 2 (after early reset)
+	if secondaryWin.Usage.Requests != 1 {
+		t.Fatalf("secondary requests = %d, want 1 (event after early reset)", secondaryWin.Usage.Requests)
+	}
 }
 
 func TestGroupQuotaSamplesOutOfOrderRollover(t *testing.T) {
