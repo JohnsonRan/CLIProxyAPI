@@ -54,17 +54,15 @@ env:
     patch/pluginhost-hooks-noalloc
     patch/responses-ws-previous-response-400
     patch/auth-file-allowed-models
-    patch/codex-client-gin-ctx-race
     patch/usage-store
     tmp/patch/usage-store-exclude-embeddings
-    patch/thinking-delete-missing-nocopy
     patch/responses-ws-deferred-request-release
     patch/fingerprint-detector
   # Compatibility patches applied as base..tip deltas (see MAINTAIN.md,
   # "Combination Conflicts"): <branch>=<base commit>. The base merges the
   # patch tips the compatibility patch was written against.
   COMPAT_BASES: >-
-    tmp/patch/usage-store-exclude-embeddings=1b7f73860ed6d254d5e34d2c4dd6e5da33bdfc13
+    tmp/patch/usage-store-exclude-embeddings=a186defe76f0d57314f2f46c4997172a467fc9ae
 
 jobs:
   sync-main-with-squash-branches:
