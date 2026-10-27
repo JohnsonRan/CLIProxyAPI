@@ -369,6 +369,47 @@ type quotaSample struct {
 	inFitRange                  bool
 }
 
+// splitLegacyEarlyResets restores early resets in samples stored before the sampler kept large reset
+// shifts (2026-10-27): it rewrote the new window's reset to the old one, so such a reset shows only as
+// a sharp drop (quotaEarlyResetDrop points, to at most half of the running maximum) under the same
+// stored reset, confirmed when the next sample with that reset is still below the maximum. Samples
+// from the drop on get an estimated reset, the previous sample's observation plus the period, which
+// groupQuotaSamples then splits like a reported early reset. samples must be sorted by credential,
+// window and observation. Works in place on the query result; the database is not changed.
+// shortcut: a late stale snapshot of the old window after a restored reset joins the new window, and
+// two consecutive stale snapshots under an absolute reset can fake one; acceptable for the legacy rows.
+func splitLegacyEarlyResets(samples []quotaSample) {
+	for i := 0; i < len(samples); {
+		j := i + 1
+		for j < len(samples) && samples[j].authIndex == samples[i].authIndex && samples[j].window == samples[i].window {
+			j++
+		}
+		run := samples[i:j]
+		var stored, assigned int64 // assigned is 0 until a reset is restored under stored
+		var maxUsed float64
+		for k := range run {
+			sm := &run[k]
+			if k == 0 || absInt64(sm.resetAt-stored) > quotaEarlyResetShiftSeconds {
+				// A different stored reset (natural rollover or a reset shift kept as reported) starts over.
+				stored, assigned, maxUsed = sm.resetAt, 0, sm.used
+				continue
+			}
+			if maxUsed-sm.used >= quotaEarlyResetDrop && sm.used <= maxUsed/2 && k+1 < len(run) &&
+				absInt64(run[k+1].resetAt-stored) <= quotaEarlyResetShiftSeconds && run[k+1].used < maxUsed {
+				assigned = (run[k-1].observed+999)/1000 + sm.period
+				maxUsed = sm.used
+			}
+			if sm.used > maxUsed {
+				maxUsed = sm.used
+			}
+			if assigned != 0 {
+				sm.resetAt = assigned
+			}
+		}
+		i = j
+	}
+}
+
 // groupQuotaSamples groups samples into window instances by matching each sample against the
 // existing instance of the same credential and window whose ResetAt is closest and within period/2,
 // unless the sample marks an early reset confirmed by a subsequent sample (quotaEarlyReset).
@@ -495,6 +536,7 @@ func (s *Store) QuotaValue(ctx context.Context, from, to time.Time, authIndex []
 		return nil, errRows
 	}
 
+	splitLegacyEarlyResets(samples)
 	windows := groupQuotaSamples(samples)
 	prices := s.priceCache()
 	retentionStart := int64(math.MinInt64)
