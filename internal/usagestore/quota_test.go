@@ -156,6 +156,108 @@ func TestGroupQuotaSamplesSplitsOnReset(t *testing.T) {
 	}
 }
 
+func TestGroupQuotaSamplesEarlyReset(t *testing.T) {
+	const week, r = 604800, 1_000_000
+	sample := func(reset int64, used float64, observed int64) quotaSample {
+		return quotaSample{authIndex: "a", window: "7d", period: week, resetAt: reset, used: used, observed: observed}
+	}
+	// Reset 5 days into the window: the new reset is 2 days after the old one, within period/2.
+	got := groupQuotaSamples([]quotaSample{
+		sample(r, 30, 1),
+		sample(r, 40, 2),
+		sample(r+2*86400, 0, 3),
+		sample(r, 41, 4), // late stale snapshot of the old window
+		sample(r+2*86400, 10, 5),
+	})
+	if len(got) != 2 || got[0].ResetAt != r || got[0].UsedPercent != 41 || got[0].Samples != 3 ||
+		got[1].ResetAt != r+2*86400 || got[1].UsedPercent != 10 || got[1].Samples != 2 {
+		t.Fatalf("groups = %+v", got)
+	}
+
+	// A stale snapshot that lowers the percentage only slightly, or a reset that moved only a few
+	// minutes, stays in the same instance.
+	for name, samples := range map[string][]quotaSample{
+		"small drop":  {sample(r, 40, 1), sample(r+20*60, 35, 2)},
+		"small shift": {sample(r, 10, 1), sample(r+5*60, 0, 2)},
+	} {
+		if got := groupQuotaSamples(samples); len(got) != 1 {
+			t.Fatalf("%s: groups = %+v", name, got)
+		}
+	}
+}
+
+func TestQuotaValueEarlyReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	// Each event costs $2.
+	tok := Tokens{InputUncached: 1_000_000, Output: 100_000, Total: 1_100_000}
+	for _, ago := range []time.Duration{50 * time.Hour, 30 * time.Hour, 20 * time.Hour, 2 * time.Hour} {
+		s.Enqueue(Event{Timestamp: now.Add(-ago).UnixMilli(), Provider: "codex", Model: "gpt-x", AuthIndex: "a1", Tokens: tok})
+	}
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	// The weekly window started 3 days ago and was reset early 1 day ago.
+	oldReset := now.Add(4 * 24 * time.Hour).Unix()
+	earlyReset := now.Add(-24 * time.Hour)
+	newReset := earlyReset.Add(7 * 24 * time.Hour).Unix()
+	last := map[string]quotaLast{}
+	for _, step := range []struct {
+		ago   time.Duration
+		reset int64
+		used  int
+	}{
+		{48 * time.Hour, oldReset, 20},
+		{26 * time.Hour, oldReset, 40},
+		{23 * time.Hour, newReset, 2},
+		{time.Hour, newReset, 10},
+	} {
+		auths := []*coreauth.Auth{{ID: "a1", Index: "a1", Provider: "codex", Quota: coreauth.QuotaState{
+			ObservedAt: now.Add(-step.ago),
+			Signals: map[string]string{
+				"X-Codex-Secondary-Used-Percent":   strconv.Itoa(step.used),
+				"X-Codex-Secondary-Window-Minutes": "10080",
+				"X-Codex-Secondary-Reset-At":       strconv.FormatInt(step.reset, 10),
+			},
+		}}}
+		SetAuthLister(func() []*coreauth.Auth { return auths })
+		s.sampleQuota(last)
+	}
+	SetAuthLister(nil)
+
+	var storedNew int
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM quota_samples WHERE reset_at = ?`, newReset).Scan(&storedNew); err != nil || storedNew != 2 {
+		t.Fatalf("samples stored with the new reset = %d (%v), want 2", storedNew, err)
+	}
+
+	value, err := s.QuotaValue(context.Background(), now.Add(-7*24*time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("quota value: %v", err)
+	}
+	if len(value.Windows) != 2 {
+		t.Fatalf("windows = %+v", value.Windows)
+	}
+	newer, older := value.Windows[0], value.Windows[1]
+	// The old instance ends at the early reset; the new one counts usage from there, including
+	// events before the old nominal reset.
+	if older.ResetAt != earlyReset.Unix() || older.UsedPercent != 40 || older.Usage.Requests != 2 {
+		t.Fatalf("older = %+v", older)
+	}
+	if newer.ResetAt != newReset || newer.StartAt != earlyReset.Unix() || newer.UsedPercent != 10 || newer.Usage.Requests != 2 {
+		t.Fatalf("newer = %+v", newer)
+	}
+	approx(t, "older cost", older.Usage.Cost, 4)
+	approx(t, "newer cost", newer.Usage.Cost, 4)
+}
+
 func TestGroupQuotaSamplesOutOfOrderRollover(t *testing.T) {
 	// (a) A,B,A,B grouping yields 2 instances with correct maxima
 	got := groupQuotaSamples([]quotaSample{
