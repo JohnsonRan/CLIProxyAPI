@@ -146,6 +146,22 @@ const minGenerationMs = 100
 // generationCond selects events with a measurable decode phase; it mirrors Event.generation.
 var generationCond = fmt.Sprintf("stream = 1 AND failed = 0 AND ttft_ms > 0 AND output > 0 AND latency_ms - ttft_ms >= %d", minGenerationMs)
 
+// firstTokenCond selects events whose time to first token means one: successful streamed
+// requests. A non-streamed response arrives whole (its first byte is close to the full latency),
+// embeddings and rerank never stream, and a failed request's first byte is the error.
+const firstTokenCond = "stream = 1 AND failed = 0 AND ttft_ms > 0"
+
+// firstTokenSQL is an events row's time to first token, 0 when firstTokenCond does not hold.
+const firstTokenSQL = "(CASE WHEN " + firstTokenCond + " THEN ttft_ms ELSE 0 END)"
+
+// firstTokenMs mirrors firstTokenSQL for an event about to be written.
+func (e *Event) firstTokenMs() int64 {
+	if !e.Stream || e.Failed || e.TTFTMs <= 0 {
+		return 0
+	}
+	return e.TTFTMs
+}
+
 // genOutputSQL and genMsSQL are the output tokens and decode milliseconds of an events row (0 when
 // it has no measurable decode phase).
 var (
@@ -413,8 +429,40 @@ func migrateSchema(db *sql.DB) error {
 			return fmt.Errorf("migrate %s.%s: %w", col.table, col.name, errExec)
 		}
 	}
+
+	var version int
+	if errVersion := db.QueryRow(`PRAGMA user_version`).Scan(&version); errVersion != nil {
+		return fmt.Errorf("read schema version: %w", errVersion)
+	}
+	if version < 1 {
+		tx, errBegin := db.Begin()
+		if errBegin != nil {
+			return errBegin
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, errExec := tx.Exec(recomputeHourlyFirstTokenSQL); errExec != nil {
+			return fmt.Errorf("migrate hourly time to first token: %w", errExec)
+		}
+		if _, errExec := tx.Exec(`PRAGMA user_version = 1`); errExec != nil {
+			return fmt.Errorf("write schema version: %w", errExec)
+		}
+		if errCommit := tx.Commit(); errCommit != nil {
+			return errCommit
+		}
+	}
 	return nil
 }
+
+// recomputeHourlyFirstTokenSQL rebuilds the time-to-first-token sums of hourly rollups written
+// before firstTokenCond from the events still kept. The hour of the oldest kept event may have
+// lost part of its events to retention, so only later hours are rebuilt; older ones keep their sums.
+const recomputeHourlyFirstTokenSQL = `UPDATE hourly SET ttft_ms = e.ttft_ms, ttft_count = e.ttft_count
+FROM (SELECT ts / 1000 / 3600 * 3600 AS hour, provider, model, api_key_id, auth_index, service_tier,
+		SUM(` + firstTokenSQL + `) AS ttft_ms, SUM(` + firstTokenSQL + ` > 0) AS ttft_count
+	FROM events WHERE ts >= (SELECT (MIN(ts) / 1000 / 3600 + 1) * 3600 * 1000 FROM events)
+	GROUP BY 1, 2, 3, 4, 5, 6) AS e
+WHERE hourly.hour = e.hour AND hourly.provider = e.provider AND hourly.model = e.model
+	AND hourly.api_key_id = e.api_key_id AND hourly.auth_index = e.auth_index AND hourly.service_tier = e.service_tier`
 
 // Enqueue hands an event to the writer without blocking; it drops the event when the buffer is full.
 func (s *Store) Enqueue(e Event) {
@@ -536,15 +584,16 @@ func (s *Store) write(batch []Event) error {
 			return errExec
 		}
 		s.markQuotaActive(e.Provider, e.AuthIndex)
+		ttft := e.firstTokenMs()
 		ttftCount := 0
-		if e.TTFTMs > 0 {
+		if ttft > 0 {
 			ttftCount = 1
 		}
 		hour := e.Timestamp / 1000 / 3600 * 3600
 		genOutput, genMs := e.generation()
 		if _, errExec := upHourly.Exec(hour, e.Provider, e.Model, e.APIKeyID, e.AuthIndex, e.ServiceTier, e.APIKey,
 			e.Failed, subInt, t.InputUncached, t.CacheRead, t.CacheWrite, t.Output, t.Reasoning, t.Unclassified, t.Total,
-			e.LatencyMs, e.TTFTMs, ttftCount, genOutput, genMs); errExec != nil {
+			e.LatencyMs, ttft, ttftCount, genOutput, genMs); errExec != nil {
 			return errExec
 		}
 		if e.AuthIndex != "" {
