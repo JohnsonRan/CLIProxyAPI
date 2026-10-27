@@ -32,7 +32,7 @@
 
 **传输与可靠性**
 
-- HTTP、SSE 与 WebSocket 的端到端 `gzip`/`br`/`zstd`/`deflate` 压缩，覆盖客户端与上游两侧。
+- 端到端压缩：请求体与上游响应可解 `gzip`/`br`/`zstd`/`deflate`，返回客户端的响应使用 `zstd` 或 `gzip`，WebSocket 协商 permessage-deflate，Codex 请求体以 `zstd` 发往上游。
 - HTTP 增量 Responses，以及面向 Codex 上游的 HTTP 转 WebSocket 桥接。
 - ChatGPT uTLS 与经代理上游的连接复用；可取消的 SOCKS5 拨号。
 - 官方 Anthropic API Key 保持原生请求格式（默认不伪装），余额不足时返回仅影响该凭据的 `402`。

@@ -32,7 +32,7 @@
 
 **通信と信頼性**
 
-- HTTP、SSE、WebSocket のエンドツーエンド `gzip`/`br`/`zstd`/`deflate` 圧縮（クライアント側と上流側の両方）。
+- エンドツーエンド圧縮：リクエストボディと上流レスポンスは `gzip`/`br`/`zstd`/`deflate` を展開し、クライアントへのレスポンスは `zstd` または `gzip`、WebSocket は permessage-deflate をネゴシエートし、Codex のリクエストボディは `zstd` で上流へ送信。
 - HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
 - ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
 - 公式 Anthropic API キーはネイティブのリクエスト形式を維持し（デフォルトで偽装しない）、残高不足はその認証情報だけに影響する `402` になります。

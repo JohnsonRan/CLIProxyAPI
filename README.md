@@ -32,7 +32,7 @@ Everything upstream offers, plus the following. Each feature lives on its own `p
 
 **Transport and reliability**
 
-- End-to-end `gzip`/`br`/`zstd`/`deflate` compression for HTTP, SSE and WebSocket, on both client and upstream legs.
+- End-to-end compression: `gzip`/`br`/`zstd`/`deflate` request bodies and upstream responses are decoded, client responses use `zstd` or `gzip`, WebSockets negotiate permessage-deflate, and Codex request bodies go upstream as `zstd`.
 - HTTP incremental Responses and an HTTP-to-WebSocket bridge for Codex upstreams.
 - Connection reuse for ChatGPT uTLS and proxied upstreams; cancellable SOCKS5 dials.
 - Official Anthropic API keys keep their native wire format (no cloaking by default), and a too-low credit balance becomes a `402` for that credential only.
