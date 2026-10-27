@@ -173,7 +173,7 @@ func (s *Store) Stats(ctx context.Context, from, to time.Time, bucket string, tz
 		query = `SELECT ` + bucketExpr + ` AS b, provider, model, api_key_id, MAX(api_key), auth_index, service_tier,
 		` + contextBandSQL(prices.thresholds) + ` AS band,
 		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
-		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0),
+		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(` + firstTokenSQL + `), SUM(` + firstTokenSQL + ` > 0),
 		SUM(` + genOutputSQL + `), SUM(` + genMsSQL + `)
 		FROM events WHERE ts >= ? AND ts < ?`
 		args = append(args, from.UnixMilli(), to.UnixMilli())

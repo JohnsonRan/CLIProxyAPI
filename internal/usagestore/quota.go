@@ -837,7 +837,7 @@ func (s *Store) windowUsage(ctx context.Context, prices *queryPrices, authIndex,
 	query := fmt.Sprintf(`SELECT model, `+quotaServedModelSQL+` AS served, service_tier, `+contextBandSQL(prices.thresholds)+` AS band,
 		`+caseSQL+`,
 		COUNT(*), SUM(failed), SUM(substituted), SUM(input_uncached), SUM(cache_read), SUM(cache_write), SUM(output),
-		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(ttft_ms), SUM(ttft_ms > 0),
+		SUM(reasoning), SUM(unclassified), SUM(total), SUM(latency_ms), SUM(`+firstTokenSQL+`), SUM(`+firstTokenSQL+` > 0),
 		SUM(`+genOutputSQL+`), SUM(`+genMsSQL+`)
 		FROM events WHERE auth_index = ? AND ts >= ? AND ts %s ?%s
 		GROUP BY model, served, service_tier, band, interval_idx`, op, poolSQL)

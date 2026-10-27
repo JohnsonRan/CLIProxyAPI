@@ -150,7 +150,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	day := time.Now().UTC().Truncate(24 * time.Hour).Add(-5 * 24 * time.Hour)
 	tok := Tokens{InputUncached: 1e6, Output: 1e6, Total: 2e6}
-	s.Enqueue(Event{Timestamp: day.Add(1 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", APIKeyID: "k1", APIKey: "sk-a", AuthIndex: "a1", Tokens: tok, LatencyMs: 100, TTFTMs: 50})
+	s.Enqueue(Event{Timestamp: day.Add(1 * time.Hour).UnixMilli(), Provider: "codex", Model: "gpt-x", APIKeyID: "k1", APIKey: "sk-a", AuthIndex: "a1", Tokens: tok, LatencyMs: 100, TTFTMs: 50, Stream: true})
 	s.Enqueue(Event{Timestamp: day.Add(1*time.Hour + time.Minute).UnixMilli(), Provider: "codex", Model: "gpt-x", APIKeyID: "k1", APIKey: "sk-a", AuthIndex: "a1", ServiceTier: "priority", Tokens: tok, LatencyMs: 300, Failed: true, StatusCode: 500})
 	s.Enqueue(Event{Timestamp: day.Add(26 * time.Hour).UnixMilli(), Provider: "x", Model: "mystery", APIKeyID: "k2", AuthIndex: "a2", Tokens: tok})
 	// Older than retention: kept in rollups, purged from events by the startup purge.
@@ -265,7 +265,7 @@ func TestAnalysis(t *testing.T) {
 	}
 	ts := base.Add(23*time.Hour + 30*time.Minute)
 	for i := 1; i <= 100; i++ {
-		s.Enqueue(Event{Timestamp: ts.UnixMilli(), Provider: "codex", Model: "gpt-x", LatencyMs: int64(i * 100),
+		s.Enqueue(Event{Timestamp: ts.UnixMilli(), Provider: "codex", Model: "gpt-x", LatencyMs: int64(i * 100), Stream: true,
 			TTFTMs: int64(i), Tokens: Tokens{InputUncached: 10, Total: 10}})
 	}
 	s.Enqueue(Event{Timestamp: ts.UnixMilli(), Provider: "codex", Model: "gpt-x", Failed: true, LatencyMs: 999_999})
@@ -787,5 +787,113 @@ func TestCacheableInputExcludesModelsWithoutCacheReads(t *testing.T) {
 	}
 	if !s.isCacheCapable("kimi", "no-cache") {
 		t.Fatal("first cache read must mark the model cache-capable")
+	}
+}
+
+func TestFirstTokenOnlyCountsSuccessfulStreams(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now()
+	out := Tokens{InputUncached: 100, Output: 1000, Total: 1100}
+	// The streamed chat is the only request whose first byte is a first token.
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "codex", Model: "m", Stream: true, LatencyMs: 2500, TTFTMs: 500, Tokens: out})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "codex", Model: "m", LatencyMs: 8000, TTFTMs: 7990, Tokens: out})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "codex", Model: "m", Stream: true, Failed: true, LatencyMs: 40, TTFTMs: 30})
+	s.Enqueue(Event{Timestamp: now.UnixMilli(), Provider: "openai-compatibility", Model: "emb", LatencyMs: 80, TTFTMs: 75, Tokens: Tokens{InputUncached: 500, Total: 500}})
+	s.Close()
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	// Hourly rollups (default) and per-request events (a result filter forces them) agree.
+	for _, filter := range []StatsFilter{{}, {Failed: new(bool)}} {
+		stats, errStats := s.Stats(ctx, from, to, "hour", 0, filter)
+		if errStats != nil {
+			t.Fatalf("stats: %v", errStats)
+		}
+		approx(t, "avg ttft", stats.Totals.AvgTTFTMs, 500)
+		approx(t, "output tps", stats.Totals.OutputTPS, 500)
+		for _, m := range stats.Models {
+			if m.Model == "emb" && (m.AvgTTFTMs != 0 || m.OutputTPS != 0) {
+				t.Fatalf("embedding model has first-token or speed figures: %+v", m)
+			}
+		}
+	}
+	// Stats reads events inside retention, so check the hourly rollups the writer keeps directly.
+	var hourlyMs, hourlyCount int64
+	if err = s.db.QueryRow(`SELECT SUM(ttft_ms), SUM(ttft_count) FROM hourly`).Scan(&hourlyMs, &hourlyCount); err != nil {
+		t.Fatalf("hourly: %v", err)
+	}
+	if hourlyMs != 500 || hourlyCount != 1 {
+		t.Fatalf("hourly ttft = %d ms over %d, want 500 over 1", hourlyMs, hourlyCount)
+	}
+	analysis, err := s.Analysis(ctx, from, to, 0, StatsFilter{})
+	if err != nil {
+		t.Fatalf("analysis: %v", err)
+	}
+	if analysis.TTFT.Count != 1 || analysis.TTFT.Max != 500 {
+		t.Fatalf("analysis ttft = %+v, want only the streamed request", analysis.TTFT)
+	}
+}
+
+func TestMigrationRecomputesHourlyFirstToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	hour := time.Now().Truncate(time.Hour).Add(-2 * time.Hour)
+	// The oldest kept event sits in an earlier hour, which may be partial and keeps its sums.
+	s.Enqueue(Event{Timestamp: hour.Add(-time.Hour).UnixMilli(), Provider: "codex", Model: "m", LatencyMs: 900, TTFTMs: 900})
+	s.Enqueue(Event{Timestamp: hour.Add(time.Minute).UnixMilli(), Provider: "codex", Model: "m", Stream: true, LatencyMs: 2500, TTFTMs: 500})
+	s.Enqueue(Event{Timestamp: hour.Add(2 * time.Minute).UnixMilli(), Provider: "codex", Model: "m", LatencyMs: 8000, TTFTMs: 7990})
+	s.Close()
+	// Simulate rollups written before the change: every positive ttft counted.
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err = db.Exec(`UPDATE hourly SET ttft_ms = ttft_ms + CASE WHEN hour = ? THEN 7990 ELSE 900 END,
+		ttft_count = ttft_count + 1`, hour.Unix()); err != nil {
+		t.Fatalf("seed old sums: %v", err)
+	}
+	if _, err = db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatalf("reset version: %v", err)
+	}
+	_ = db.Close()
+
+	s, err = Open(path, 30, testPricer(t))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	sums := map[int64][2]int64{}
+	rows, err := s.db.Query(`SELECT hour, ttft_ms, ttft_count FROM hourly`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rows.Next() {
+		var h, ms, count int64
+		if errScan := rows.Scan(&h, &ms, &count); errScan != nil {
+			t.Fatalf("scan: %v", errScan)
+		}
+		sums[h] = [2]int64{ms, count}
+	}
+	_ = rows.Close()
+	if got := sums[hour.Unix()]; got != [2]int64{500, 1} {
+		t.Fatalf("rebuilt hour = %v, want [500 1]", got)
+	}
+	if got := sums[hour.Add(-time.Hour).Unix()]; got != [2]int64{900, 1} {
+		t.Fatalf("oldest hour = %v, want its old sums [900 1] kept", got)
+	}
+	var version int
+	if err = s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("user_version = %d, %v", version, err)
 	}
 }
