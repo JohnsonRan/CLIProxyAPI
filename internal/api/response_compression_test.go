@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
@@ -48,14 +46,6 @@ func compressionTestBody(t *testing.T, encoding string, body []byte) []byte {
 		}
 		defer decoder.Close()
 		reader = decoder
-	case "br":
-		reader = brotli.NewReader(reader)
-	case "deflate":
-		decoder, errNewReader := zlib.NewReader(reader)
-		if errNewReader != nil {
-			t.Fatal(errNewReader)
-		}
-		reader = decoder
 	}
 	decoded, errReadAll := io.ReadAll(reader)
 	if errReadAll != nil {
@@ -81,9 +71,7 @@ func TestResponseCompression(t *testing.T) {
 	}{
 		{name: "zstd", accept: "zstd", encoding: "zstd"},
 		{name: "gzip", accept: "gzip", encoding: "gzip"},
-		{name: "br", accept: "br", encoding: "br"},
-		{name: "deflate", accept: "deflate", encoding: "deflate"},
-		{name: "preference_order", accept: "deflate, gzip, br", encoding: "br"},
+		{name: "unsupported_codings", accept: "br, deflate"},
 		{name: "large_known_length", accept: "gzip", encoding: "gzip", contentLength: true},
 		{name: "no_accept"},
 		{name: "identity", accept: "identity"},
@@ -96,8 +84,8 @@ func TestResponseCompression(t *testing.T) {
 		{name: "small_identity_overrides_wildcard", accept: "gzip, *;q=0, identity;q=1", body: "{}"},
 		{name: "identity_refused_no_encoding", accept: "identity;q=0,*;q=0", body: "{}"},
 		{name: "wildcard", accept: "*;q=0.5", encoding: "zstd"},
-		{name: "wildcard_explicit_exclusion", accept: "*;q=1,zstd;q=0", encoding: "br"},
-		{name: "all_excluded", accept: "*;q=1,zstd;q=0,br;q=0,gzip;q=0,deflate;q=0"},
+		{name: "wildcard_explicit_exclusion", accept: "*;q=1,zstd;q=0", encoding: "gzip"},
+		{name: "all_excluded", accept: "*;q=1,zstd;q=0,gzip;q=0"},
 		{name: "invalid_quality", accept: "zstd;q=invalid,gzip;q=2"},
 		{name: "small", accept: "zstd", body: "{}"},
 		{name: "small_known_length", accept: "gzip", body: "{}", contentLength: true},

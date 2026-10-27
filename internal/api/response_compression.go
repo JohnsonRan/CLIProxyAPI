@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -176,12 +174,11 @@ type responseCompressorPool interface {
 }
 
 // responseCompressionEncodings is the server preference for equal client quality.
-var responseCompressionEncodings = []string{"zstd", "br", "gzip", "deflate"}
+var responseCompressionEncodings = []string{"zstd", "gzip"}
 
 // responseCompressorPools reuse encoders across responses. The default zstd encoder keeps an
-// 8 MiB window and its buffers (about 18 MB per stream) and the default brotli window (4 MiB)
-// several MiB; 1 MiB and 256 KiB windows with lower encoder memory lose little ratio on API
-// responses, which are far smaller than the window.
+// 8 MiB window and its buffers (about 18 MB per stream); a 1 MiB window with lower encoder
+// memory loses little ratio on API responses, which are far smaller than the window.
 var responseCompressorPools = map[string]responseCompressorPool{
 	"zstd": &sync.Pool{New: func() any {
 		encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(1<<20), zstd.WithLowerEncoderMem(true))
@@ -191,9 +188,7 @@ var responseCompressorPools = map[string]responseCompressorPool{
 		}
 		return encoder
 	}},
-	"br":      &sync.Pool{New: func() any { return brotli.NewWriterOptions(io.Discard, brotli.WriterOptions{Quality: 5, LGWin: 18}) }},
-	"gzip":    &sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }},
-	"deflate": &sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}, // HTTP deflate is the zlib format
+	"gzip": &sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }},
 }
 
 // newResponseCompressor takes a pooled encoder writing to dst, or nil when none can be created.
