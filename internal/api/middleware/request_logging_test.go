@@ -785,7 +785,8 @@ func TestCaptureRequestInfoBoundsZstdExpansionWithoutAConfiguredLimit(t *testing
 // window is past the bound, so the raw bytes are logged and nothing large is allocated.
 func TestCaptureRequestInfoDoesNotDecodeASingleSegmentBomb(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	// Pin the window: klauspost/compress v1.18 encodes best compression with an 8 MiB window, which the bound accepts.
+	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression), zstd.WithWindowSize(32<<20))
 	if errNewWriter != nil {
 		t.Fatal(errNewWriter)
 	}
