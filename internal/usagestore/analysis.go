@@ -105,7 +105,7 @@ func (s *Store) Analysis(ctx context.Context, from, to time.Time, tzOffsetMinute
 		step = (total + maxLatencySamples - 1) / maxLatencySamples
 		out.Sampled = true
 	}
-	dataQuery := "SELECT model, latency_ms, ttft_ms, " + genOutputSQL + ", " + genMsSQL + " FROM events WHERE " + whereEvents + " AND (id - ?) % ? = 0"
+	dataQuery := "SELECT model, latency_ms, " + firstTokenSQL + ", " + genOutputSQL + ", " + genMsSQL + " FROM events WHERE " + whereEvents + " AND (id - ?) % ? = 0"
 	dataArgs := append(append([]any(nil), argsEvents...), minID, step)
 	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
