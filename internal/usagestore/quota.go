@@ -395,19 +395,17 @@ func groupQuotaSamples(samples []quotaSample) []QuotaWindowValue {
 		if targetIdx != -1 {
 			t := &out[targetIdx]
 			if quotaEarlyReset(t.ResetAt, t.samplesList[len(t.samplesList)-1].usedPercent, sm.resetAt, sm.used) {
-				// A later sample of this window confirms the reset when its reset is closer to the
-				// candidate's than to the instance's; stale snapshots in between are skipped. Samples
-				// are sorted by credential, window and observation, so the scan stops at the next key.
+				// A later sample of this instance's span confirms the reset when its reset is closer to
+				// the candidate's than to the instance's; stale snapshots in between are skipped. A sample
+				// past the span (the next natural window) confirms nothing. Samples are sorted by
+				// credential, window and observation, so the scan stops at the next key.
 				for _, next := range samples[smIdx+1:] {
-					if next.authIndex != sm.authIndex || next.window != sm.window {
+					dTarget := absInt64(next.resetAt - t.ResetAt)
+					if next.authIndex != sm.authIndex || next.window != sm.window || dTarget > tol {
 						break
 					}
-					dTarget := absInt64(next.resetAt - t.ResetAt)
 					if absInt64(next.resetAt-sm.resetAt) < dTarget {
 						targetIdx = -1
-						break
-					}
-					if dTarget > tol {
 						break
 					}
 				}
