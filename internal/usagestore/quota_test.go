@@ -273,6 +273,7 @@ func TestQuotaEarlyResetBoundaries(t *testing.T) {
 		{"shift 901s", r, 20, r + 901, 10, true},
 		// Drop boundary: prevUsed - used must be >= 5
 		{"drop 4.9 points", r, 10, r + 1000, 5.1, false},
+		{"drop 4.9 points to below half", r, 8, r + 1000, 3.1, false},
 		{"drop exactly 5 points", r, 10, r + 1000, 5.0, true},
 		// Ratio boundary: used must be <= prevUsed / 2
 		{"used half", r, 20, r + 1000, 10.0, true},
@@ -303,6 +304,17 @@ func TestGroupQuotaSamplesStaleLongStreamDoesNotSplit(t *testing.T) {
 	if got[0].ResetAt != r || got[0].UsedPercent != 22 || got[0].Samples != 3 {
 		t.Fatalf("instance = %+v", got[0])
 	}
+
+	// The next natural window must not confirm the stale snapshot as an early reset afterwards.
+	got = groupQuotaSamples([]quotaSample{
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r, used: 20, observed: 1},
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r + 1200, used: 1, observed: 2},
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r, used: 22, observed: 3},
+		{authIndex: "a", window: "5h", period: 18000, resetAt: r + 18000, used: 2, observed: 4},
+	})
+	if len(got) != 2 || got[0].ResetAt != r || got[0].Samples != 3 || got[1].ResetAt != r+18000 {
+		t.Fatalf("after natural rollover: %+v", got)
+	}
 }
 
 func TestQuotaValueStaleLongStreamEndToEnd(t *testing.T) {
@@ -332,7 +344,7 @@ func TestQuotaValueStaleLongStreamEndToEnd(t *testing.T) {
 	}{
 		// Normal stream: reset is primaryReset
 		{60 * time.Minute, 20, primaryReset - now.Add(-60*time.Minute).Unix()},
-		// Stale long stream completes: reset-after was 17940s from start+60s, so inferred reset shifts 1200s forward
+		// Stale long stream completes: its headers were read 20 min before completion, so the inferred reset shifts 1200s forward
 		{30 * time.Minute, 1, (primaryReset + 1200) - now.Add(-30*time.Minute).Unix()},
 		// Fresh stream: reset is primaryReset
 		{10 * time.Minute, 25, primaryReset - now.Add(-10*time.Minute).Unix()},
@@ -458,7 +470,7 @@ func TestQuotaValueEarlyResetSecondHalf(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Window 1 started 6 days ago, nominal reset is now + 12h.
+	// Window 1 started 6.5 days ago, nominal reset is now + 12h.
 	// Reset happens 5 days in (now - 36h), so it is in the SECOND half (elapsed 5d > period/2 = 3.5d).
 	// New reset is now - 36h + 7d = now + 5.5d.
 	// Shift is 5 days > period/2, so grouping already places them into separate instances.
