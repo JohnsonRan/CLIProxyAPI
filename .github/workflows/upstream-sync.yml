@@ -64,7 +64,7 @@ env:
   # "Combination Conflicts"): <branch>=<base commit>. The base merges the
   # patch tips the compatibility patch was written against.
   COMPAT_BASES: >-
-    tmp/patch/usage-store-exclude-embeddings=e0875e464bd54f43929edfb5a5ac5e8063cc9ea8
+    tmp/patch/usage-store-exclude-embeddings=1b7f73860ed6d254d5e34d2c4dd6e5da33bdfc13
 
 jobs:
   sync-main-with-squash-branches:
