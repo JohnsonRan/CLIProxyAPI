@@ -30,10 +30,11 @@ const (
 	quotaEarlyResetDrop         = 5
 )
 
-// quotaEarlyReset reports whether a sample starts a new window instance before the previous one's
-// nominal reset. A promotional or manual reset zeroes the percentage and restarts the period, so the
-// new reset can lie less than half a period after the old one and would otherwise merge with it.
-// A late stale snapshot lowers the percentage only slightly, so the drop must also halve it.
+// quotaEarlyReset reports whether a sample appears to restart a window instance before its nominal
+// reset. A promotional or manual reset zeroes the percentage and restarts the period, so the new
+// reset can lie less than half a period after the old one. To distinguish an early reset from completion-
+// delayed relative reset jitter, the reset must move more than 15 minutes later and the percentage must
+// drop by at least 5 points to at most half. groupQuotaSamples splits only when confirmed by a subsequent sample.
 func quotaEarlyReset(prevReset int64, prevUsed float64, reset int64, used float64) bool {
 	return reset-prevReset > quotaEarlyResetShiftSeconds && prevUsed-used >= quotaEarlyResetDrop && used <= prevUsed/2
 }
@@ -261,12 +262,12 @@ func (s *Store) recordQuota(last map[string]quotaLast, obs []quotaObservation) {
 			if tol <= 0 {
 				tol = 5 * 60
 			}
-			sameWindow := seen && absInt64(w.ResetAt-prev.resetAt) <= tol && !quotaEarlyReset(prev.resetAt, prev.used, w.ResetAt, w.Used)
+			sameWindow := seen && absInt64(w.ResetAt-prev.resetAt) <= tol
 			if sameWindow {
-				if prev.resetAt < w.ResetAt {
+				if prev.resetAt < w.ResetAt && w.ResetAt-prev.resetAt <= quotaEarlyResetShiftSeconds {
 					w.ResetAt = prev.resetAt
 				}
-				if w.Used == prev.used {
+				if w.Used == prev.used && absInt64(w.ResetAt-prev.resetAt) <= quotaEarlyResetShiftSeconds {
 					stagedLast[key] = quotaLast{resetAt: prev.resetAt, used: prev.used, observed: observed}
 					continue
 				}
@@ -319,11 +320,13 @@ type QuotaWindowValue struct {
 	Pool          string `json:"pool"`
 	Window        string `json:"window"`
 	PeriodSeconds int64  `json:"period_seconds"`
-	// StartAt is the nominal window start (ResetAt - PeriodSeconds). The accounting bounds start
+	// StartAt is the nominal window start (ResetAt - PeriodSeconds at creation). The accounting bounds start
 	// up to 30 minutes earlier (StartAt - 30m, not before the previous instance's reset) to cover
 	// streams whose quota headers are observed upon completion, and end at the first observation
 	// of the highest percentage, exclusive of ResetAt.
 	StartAt int64 `json:"start_at"` // unix seconds
+	// ResetAt is the effective window end (unix seconds). When a window is reset early, ResetAt is
+	// trimmed to the successor instance's StartAt, so ResetAt - PeriodSeconds need not equal StartAt.
 	ResetAt int64 `json:"reset_at"` // unix seconds
 	// UsedPercent is the highest percentage seen in the window; ObservedAt (unix ms) is when it was first seen.
 	UsedPercent float64 `json:"used_percent"`
@@ -368,14 +371,14 @@ type quotaSample struct {
 
 // groupQuotaSamples groups samples into window instances by matching each sample against the
 // existing instance of the same credential and window whose ResetAt is closest and within period/2,
-// unless the sample marks an early reset of that instance (quotaEarlyReset).
+// unless the sample marks an early reset confirmed by a subsequent sample (quotaEarlyReset).
 // The minimum ResetAt seen in the instance is kept. Within an instance the highest percentage
 // wins and keeps its first observation time, so a stale lower snapshot that arrives late
 // (out-of-order responses) does not shrink the window.
 func groupQuotaSamples(samples []quotaSample) []QuotaWindowValue {
 	byKey := make(map[string][]int)
 	var out []QuotaWindowValue
-	for _, sm := range samples {
+	for smIdx, sm := range samples {
 		key := sm.authIndex + "\x00" + sm.window
 		indices := byKey[key]
 		var targetIdx = -1
@@ -392,7 +395,22 @@ func groupQuotaSamples(samples []quotaSample) []QuotaWindowValue {
 		if targetIdx != -1 {
 			t := &out[targetIdx]
 			if quotaEarlyReset(t.ResetAt, t.samplesList[len(t.samplesList)-1].usedPercent, sm.resetAt, sm.used) {
-				targetIdx = -1
+				// A later sample of this window confirms the reset when its reset is closer to the
+				// candidate's than to the instance's; stale snapshots in between are skipped. Samples
+				// are sorted by credential, window and observation, so the scan stops at the next key.
+				for _, next := range samples[smIdx+1:] {
+					if next.authIndex != sm.authIndex || next.window != sm.window {
+						break
+					}
+					dTarget := absInt64(next.resetAt - t.ResetAt)
+					if absInt64(next.resetAt-sm.resetAt) < dTarget {
+						targetIdx = -1
+						break
+					}
+					if dTarget > tol {
+						break
+					}
+				}
 			}
 		}
 		if targetIdx == -1 {
