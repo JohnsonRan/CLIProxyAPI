@@ -48,7 +48,6 @@ env:
     patch/session-claude-identity-once
     patch/claude-request-nocopy-reads
     patch/antigravity-replay-signature-guard
-    patch/responses-ws-interrupt-window
     patch/thinking-validate-once
     patch/openai-compat-stream-validate-once
     patch/pluginhost-hooks-noalloc
