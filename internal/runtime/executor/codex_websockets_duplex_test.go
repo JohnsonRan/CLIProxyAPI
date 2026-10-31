@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -566,6 +567,134 @@ func TestCodexDuplexQueuedCreateDoesNotBlockSubsequentSteer(t *testing.T) {
 			cancel()
 			break
 		}
+	}
+
+	select {
+	case <-serverDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not finish")
+	}
+}
+
+type duplexPayloadCapturePlugin struct {
+	payloads chan []byte
+}
+
+func (p *duplexPayloadCapturePlugin) HandleUsage(ctx context.Context, _ coreusage.Record) {
+	select {
+	case p.payloads <- coreusage.RequestPayloadFromContext(ctx):
+	default:
+	}
+}
+
+func TestCodexDuplexMultipleCreatesAttachesOwnRequestPayloadToUsage(t *testing.T) {
+	coreusage.SetRequestPayloadCapture(true)
+	defer coreusage.SetRequestPayloadCapture(false)
+
+	capture := &duplexPayloadCapturePlugin{payloads: make(chan []byte, 4)}
+	pluginName := t.Name() + "-plugin"
+	coreusage.RegisterNamedPlugin(pluginName, capture)
+	t.Cleanup(func() {
+		coreusage.RegisterNamedPlugin(pluginName, noopClaudeUsagePlugin{})
+	})
+
+	serverDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverDone)
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+		// 1. Read first create
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read first create: %v", err)
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp-1","output":[]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexTrustedAccessMetadataEvent))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-1","usage":{"input_tokens":1,"output_tokens":1}}}`))
+
+		// 2. Read second create
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read second create: %v", err)
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp-2","output":[]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexTrustedAccessMetadataEvent))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-2","usage":{"input_tokens":2,"output_tokens":2}}}`))
+
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	input := make(chan core.WebsocketInput, 4)
+	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	auth := &cliproxyauth.Auth{ID: "payload-test-auth", Provider: "codex", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL, "websockets": "true"}}
+	firstPayload := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":"first prompt"}]}`)
+	req := core.Request{
+		Model:   "gpt-6-astra",
+		Payload: firstPayload,
+	}
+	opts := core.Options{
+		SourceFormat:    sdktranslator.FromString("codex"),
+		OriginalRequest: firstPayload,
+		Metadata:        map[string]any{core.ExecutionSessionMetadataKey: "payload-test"},
+	}
+
+	result, err := exec.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondPayload := []byte(`{"type":"response.create","model":"gpt-6-astra","input":[{"role":"user","content":"second prompt"}]}`)
+
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+		eventType := gjson.GetBytes(chunk.Payload, "type").String()
+		eventID := gjson.GetBytes(chunk.Payload, "response.id").String()
+		if eventType == "response.completed" && eventID == "resp-1" {
+			input <- core.WebsocketInput{Payload: secondPayload}
+		}
+		if eventType == "response.completed" && eventID == "resp-2" {
+			cancel()
+			break
+		}
+	}
+
+	var p1, p2 []byte
+	select {
+	case p1 = <-capture.payloads:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for first create usage payload")
+	}
+	select {
+	case p2 = <-capture.payloads:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for second create usage payload")
+	}
+
+	if !bytes.Contains(p1, []byte("first prompt")) {
+		t.Fatalf("first payload must contain 'first prompt', got %q", p1)
+	}
+	if !bytes.Contains(p2, []byte("second prompt")) {
+		t.Fatalf("second payload must contain 'second prompt', got %q", p2)
+	}
+	if bytes.Contains(p2, []byte("first prompt")) {
+		t.Fatalf("second payload must not contain 'first prompt', got %q", p2)
 	}
 
 	select {
