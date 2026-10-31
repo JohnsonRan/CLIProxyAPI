@@ -200,8 +200,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 	var param any
-	outputItemsByIndex := make(map[int64][]byte)
-	var outputItemsFallback [][]byte
+	outputItems := newCodexOutputItemPatchBuffer()
 
 	var bufferedChunks [][]byte
 	var initialChunks [][]byte
@@ -270,7 +269,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if helps.HasMeaningfulCodexOutputDelta(data) {
 					sawOutputDelta = true
 				}
-				if helps.IsCodexTerminalEmptyIncomplete(data, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
+				if helps.IsCodexTerminalEmptyIncomplete(data, outputItems.count(), sawOutputDelta) {
 					closeBootstrapBody()
 					streamErr := newCodexEmptyIncompleteStreamError()
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
@@ -288,19 +287,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch eventType {
 				case "response.output_item.done":
-					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+					outputItems.collect(data)
 				case "response.completed", "response.incomplete", "response.done":
 					terminalSuccess = true
 					immediateIncomplete = eventType == "response.incomplete"
 					data = normalizeCodexWebsocketCompletion(data)
-					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, outputItemsByIndex, outputItemsFallback); ok {
+					usageItemsByIndex, usageItemsFallback := outputItems.usageItems()
+					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, usageItemsByIndex, usageItemsFallback); ok {
 						reporter.Publish(ctx, detail)
 					} else {
 						reporter.EnsurePublished(ctx)
 					}
-					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, outputItemsByIndex, outputItemsFallback)
+					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, usageItemsByIndex, usageItemsFallback)
 					if !preserveNativeOutput {
-						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+						data = outputItems.patch(data)
 					}
 					if eventType == "response.completed" || eventType == "response.done" {
 						cacheCodexReasoningReplayFromCompleted(replayScope, data)
@@ -463,7 +463,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if helps.HasMeaningfulCodexOutputDelta(data) {
 					sawOutputDelta = true
 				}
-				if helps.IsCodexTerminalEmptyIncomplete(data, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
+				if helps.IsCodexTerminalEmptyIncomplete(data, outputItems.count(), sawOutputDelta) {
 					streamErr := newCodexEmptyIncompleteStreamError()
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
@@ -475,19 +475,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch eventType {
 				case "response.output_item.done":
-					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+					outputItems.collect(data)
 				case "response.completed", "response.incomplete", "response.done":
 					terminalSuccess = true
 					isIncompleteEvent = eventType == "response.incomplete"
 					data = normalizeCodexWebsocketCompletion(data)
-					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, outputItemsByIndex, outputItemsFallback); ok {
+					usageItemsByIndex, usageItemsFallback := outputItems.usageItems()
+					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, usageItemsByIndex, usageItemsFallback); ok {
 						reporter.Publish(ctx, detail)
 					} else {
 						reporter.EnsurePublished(ctx)
 					}
-					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, outputItemsByIndex, outputItemsFallback)
+					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, usageItemsByIndex, usageItemsFallback)
 					if !preserveNativeOutput {
-						data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+						data = outputItems.patch(data)
 					}
 					if eventType == "response.completed" || eventType == "response.done" {
 						cacheCodexReasoningReplayFromCompleted(replayScope, data)
