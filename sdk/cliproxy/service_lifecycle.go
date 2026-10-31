@@ -135,11 +135,12 @@ func (s *Service) Run(ctx context.Context) error {
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
-	if homeEnabled {
-		s.configRuntimeMu.Lock()
-		s.syncPluginModelRuntime(ctx)
-		s.configRuntimeMu.Unlock()
-	}
+	// Register models for the auths loaded above before the listener
+	// opens; otherwise requests that arrive before the watcher's first load
+	// fail with model_not_found.
+	s.configRuntimeMu.Lock()
+	s.syncPluginModelRuntime(ctx)
+	s.configRuntimeMu.Unlock()
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
