@@ -292,12 +292,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					terminalSuccess = true
 					immediateIncomplete = eventType == "response.incomplete"
 					data = normalizeCodexWebsocketCompletion(data)
-					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, outputItemsByIndex, outputItemsFallback); ok {
+					usageItemsByIndex, usageItemsFallback := outputItems.usageItems()
+					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, usageItemsByIndex, usageItemsFallback); ok {
 						reporter.Publish(ctx, detail)
 					} else {
 						reporter.EnsurePublished(ctx)
 					}
-					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, outputItemsByIndex, outputItemsFallback)
+					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, usageItemsByIndex, usageItemsFallback)
 					if !preserveNativeOutput {
 						data = outputItems.patch(data)
 					}
@@ -479,12 +480,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					terminalSuccess = true
 					isIncompleteEvent = eventType == "response.incomplete"
 					data = normalizeCodexWebsocketCompletion(data)
-					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, outputItemsByIndex, outputItemsFallback); ok {
+					usageItemsByIndex, usageItemsFallback := outputItems.usageItems()
+					if detail, ok := helps.ParseCodexUsageWithOutputItems(data, usageItemsByIndex, usageItemsFallback); ok {
 						reporter.Publish(ctx, detail)
 					} else {
 						reporter.EnsurePublished(ctx)
 					}
-					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, outputItemsByIndex, outputItemsFallback)
+					publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, data, usageItemsByIndex, usageItemsFallback)
 					if !preserveNativeOutput {
 						data = outputItems.patch(data)
 					}

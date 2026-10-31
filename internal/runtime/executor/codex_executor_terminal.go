@@ -77,6 +77,9 @@ type codexOutputItemPatchBuffer struct {
 	// evicted to stay under the limit.
 	skipImages bool
 	dropped    bool
+	// imageStubs keeps evicted or skipped image_generation_call items without
+	// their base64 result, so usage still counts the generated images.
+	imageStubs [][]byte
 }
 
 func newCodexOutputItemPatchBuffer() *codexOutputItemPatchBuffer {
@@ -89,7 +92,11 @@ func (b *codexOutputItemPatchBuffer) collect(eventData []byte) {
 		return
 	}
 	b.seen++
-	if b.dropped || (b.skipImages && isCodexImageOutputItem([]byte(item.Raw))) {
+	if b.skipImages && isCodexImageOutputItem([]byte(item.Raw)) {
+		b.imageStubs = append(b.imageStubs, codexImageUsageStub([]byte(item.Raw)))
+		return
+	}
+	if b.dropped {
 		return
 	}
 	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
@@ -122,6 +129,7 @@ func (b *codexOutputItemPatchBuffer) evictImages() {
 	for index, item := range b.byIndex {
 		if isCodexImageOutputItem(item) {
 			b.retained -= len(item)
+			b.imageStubs = append(b.imageStubs, codexImageUsageStub(item))
 			delete(b.byIndex, index)
 		}
 	}
@@ -129,11 +137,32 @@ func (b *codexOutputItemPatchBuffer) evictImages() {
 	for _, item := range b.fallback {
 		if isCodexImageOutputItem(item) {
 			b.retained -= len(item)
+			b.imageStubs = append(b.imageStubs, codexImageUsageStub(item))
 			continue
 		}
 		kept = append(kept, item)
 	}
 	b.fallback = kept
+}
+
+// codexImageUsageStub drops the base64 image; usage parsing reads only metadata.
+func codexImageUsageStub(item []byte) []byte {
+	if stub, err := sjson.DeleteBytes(item, "result"); err == nil {
+		return stub
+	}
+	return item
+}
+
+// usageItems returns the observed output items for usage parsing: the retained
+// items plus stubs of evicted images.
+// shortcut: non-image items dropped past the retain limit are not counted, upgrade if such outputs need exact tool usage.
+func (b *codexOutputItemPatchBuffer) usageItems() (map[int64][]byte, [][]byte) {
+	if len(b.imageStubs) == 0 {
+		return b.byIndex, b.fallback
+	}
+	fallback := make([][]byte, 0, len(b.fallback)+len(b.imageStubs))
+	fallback = append(append(fallback, b.fallback...), b.imageStubs...)
+	return b.byIndex, fallback
 }
 
 func isCodexImageOutputItem(item []byte) bool {

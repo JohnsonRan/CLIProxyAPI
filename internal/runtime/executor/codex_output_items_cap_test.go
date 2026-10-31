@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 )
 
@@ -98,5 +99,28 @@ func TestCodexOutputItemPatchBufferEvictsImagesBeforeDroppingAll(t *testing.T) {
 	}
 	if buf.count() != 5 {
 		t.Fatalf("count() = %d, want 5 observed items", buf.count())
+	}
+}
+
+func TestCodexOutputItemPatchBufferUsageCountsEvictedImages(t *testing.T) {
+	buf := newCodexOutputItemPatchBuffer()
+	image := `{"type":"response.output_item.done","output_index":%d,"item":{"type":"image_generation_call","id":"ig%d","status":"completed","size":"1024x1024","result":"` + strings.Repeat("A", codexOutputItemsRetainLimit/2) + `"}}`
+	for i := 0; i < 3; i++ {
+		buf.collect([]byte(fmt.Sprintf(image, i, i)))
+	}
+	byIndex, fallback := buf.usageItems()
+	if len(byIndex) != 0 || len(fallback) != 3 {
+		t.Fatalf("usage items byIndex=%d fallback=%d, want 0 and 3 image stubs", len(byIndex), len(fallback))
+	}
+	for _, item := range fallback {
+		if gjson.GetBytes(item, "result").Exists() {
+			t.Fatal("usage stub should not keep the base64 result")
+		}
+	}
+
+	completed := []byte(`{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	detail, ok := helps.ParseCodexUsageWithOutputItems(completed, byIndex, fallback)
+	if !ok || detail.ToolUsageDetails == nil || detail.ToolUsageDetails.ImageGenerationCalls == nil || *detail.ToolUsageDetails.ImageGenerationCalls != 3 {
+		t.Fatalf("image generation calls = %+v, want 3", detail.ToolUsageDetails)
 	}
 }
