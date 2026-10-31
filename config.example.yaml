@@ -117,11 +117,35 @@ management:
 
 # Client authentication for the proxy API. These are not upstream provider keys.
 access:
-  # API keys for authentication
+  # Optional: default visible and usable models for all client API keys.
+  # When set, only matching models are visible (/v1/models) and usable.
+  # Supports wildcard '*' matching (e.g., "gpt-4o*", "claude-*").
+  # Leave empty or omitted to allow all models by default.
+  # models:
+  #   - "gpt-4o*"
+  #   - "claude-3-5-sonnet*"
+  # Optional: default excluded models for all client API keys.
+  # excluded-models:
+  #   - "*-preview"
+
+  # API keys for authentication. Entries can be a simple string (inherits global access.models)
+  # or an object with per-key model restrictions.
   api-keys:
     - "your-api-key-1"
     - "your-api-key-2"
     - "your-api-key-3"
+    # Example: per-client API key with a display name and custom model restrictions
+    # - api-key: "client-key-custom"
+    #   name: "Alice" # optional, shown by the management panel; does not affect access
+    #   disabled: false # optional, true rejects requests with this key while keeping it configured
+    #   models: # only these models are visible and usable for this key
+    #     - "gpt-4o"
+    #     - "gpt-4o-mini"
+    #   excluded-models: # optional exclusions for this key
+    #     - "*-preview"
+    # - api-key: "client-key-admin"
+    #   models:
+    #     - "*" # allows all models even if global access.models is set
 
 # Optional credential concurrency and observation contracts.
 

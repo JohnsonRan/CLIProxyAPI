@@ -55,7 +55,11 @@ var v8SharedPaths = []configPath{
 	{"oauth.providers.xai.inject-x-search", "upstream.xai.inject-x-search"},
 }
 
-var v8Aliases = append(append([]configPath(nil), v8ClientPaths...), v8SharedPaths...)
+var v8ClientAccessPaths = []configPath{
+	{"access.allowed-models", "access.models"},
+}
+
+var v8Aliases = append(append(append([]configPath(nil), v8ClientPaths...), v8SharedPaths...), v8ClientAccessPaths...)
 
 var v8SharedStructPaths = []configPath{
 	{"oauth.providers.claude.header-defaults", "upstream.claude.header-defaults"},
@@ -77,6 +81,8 @@ func buildV8Paths() []configPath {
 		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
+		{"client-models", "access.models"},
+		{"client-excluded-models", "access.excluded-models"},
 		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},
 		{"force-model-prefix", "routing.force-model-prefix"},
 		{"request-retry", "routing.retry.request-retry"}, {"max-retry-credentials", "routing.retry.max-retry-credentials"},
@@ -369,6 +375,43 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 			copy := copyYAMLPathValue(root, path.current)
 			deleteYAMLPath(root, path.current)
 			setYAMLPathWithComments(root, path.old, copy)
+		}
+	}
+	if apiKeys := yamlPath(root, "api-keys"); apiKeys != nil && apiKeys.Kind == yaml.SequenceNode {
+		cleanKeys := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		clientKeys := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		hasMapping := false
+
+		for _, item := range apiKeys.Content {
+			if item.Kind == yaml.ScalarNode {
+				cleanKeys.Content = append(cleanKeys.Content, deepCopyNode(item))
+				mapping := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				mapping.Content = append(mapping.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-key"},
+					deepCopyNode(item),
+				)
+				clientKeys.Content = append(clientKeys.Content, mapping)
+			} else if item.Kind == yaml.MappingNode {
+				hasMapping = true
+				clientKeys.Content = append(clientKeys.Content, deepCopyNode(item))
+				var keyVal *yaml.Node
+				for i := 0; i < len(item.Content); i += 2 {
+					if item.Content[i].Value == "api-key" || item.Content[i].Value == "key" {
+						keyVal = deepCopyNode(item.Content[i+1])
+						break
+					}
+				}
+				if keyVal != nil {
+					cleanKeys.Content = append(cleanKeys.Content, keyVal)
+				}
+			}
+		}
+
+		if hasMapping {
+			setYAMLPath(root, "api-keys", cleanKeys)
+		}
+		if len(clientKeys.Content) > 0 && yamlPath(root, "client-keys") == nil {
+			setYAMLPath(root, "client-keys", clientKeys)
 		}
 	}
 	for _, family := range v8KeyFamilies {
@@ -825,8 +868,54 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 		deleteYAMLPath(root, family.old)
 		setYAMLPath(root, "api-keys."+family.current, groups)
 	}
+	foldClientKeysIntoAPIKeys(root)
 	preserveV8Comments(root, layout)
 	return nil
+}
+
+// foldClientKeysIntoAPIKeys writes names, disabled flags and model rules back onto their api-keys entries.
+// flattenV8 splits mapping entries of access.api-keys into plain api-keys plus an
+// internal client-keys list; without folding, every struct-based save would drop
+// the per-key rules and silently lift those keys' model restrictions or drop their names.
+func foldClientKeysIntoAPIKeys(root *yaml.Node) {
+	clientKeys := yamlPath(root, "client-keys")
+	deleteYAMLPath(root, "client-keys")
+	keys := yamlPath(root, "access.api-keys")
+	if keys == nil {
+		keys = yamlPath(root, "api-keys")
+	}
+	if clientKeys == nil || clientKeys.Kind != yaml.SequenceNode || keys == nil || keys.Kind != yaml.SequenceNode {
+		return
+	}
+	rules := make(map[string]*yaml.Node, len(clientKeys.Content))
+	for _, entry := range clientKeys.Content {
+		if entry == nil || entry.Kind != yaml.MappingNode {
+			continue
+		}
+		var parsed ClientKeyConfig
+		if errDecode := entry.Decode(&parsed); errDecode != nil {
+			continue
+		}
+		key := strings.TrimSpace(parsed.APIKey)
+		if key == "" || (strings.TrimSpace(parsed.Name) == "" && !parsed.Disabled && len(parsed.AllowedModelList()) == 0 && len(parsed.ExcludedModels) == 0) {
+			continue
+		}
+		rules[key] = entry
+	}
+	for index, item := range keys.Content {
+		if item == nil || item.Kind != yaml.ScalarNode {
+			continue
+		}
+		entry, ok := rules[strings.TrimSpace(item.Value)]
+		if !ok {
+			continue
+		}
+		folded := deepCopyNode(entry)
+		folded.HeadComment = item.HeadComment
+		folded.LineComment = item.LineComment
+		folded.FootComment = item.FootComment
+		keys.Content[index] = folded
+	}
 }
 
 func preserveV8Comments(dst, src *yaml.Node) {
