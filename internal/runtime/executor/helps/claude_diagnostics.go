@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -453,7 +454,7 @@ func IsClaudeNewPromptTurn(body []byte) bool {
 	if IsClaudeProbeOrHelperRequest(body) {
 		return false
 	}
-	messages := gjson.GetBytes(body, "messages")
+	messages := util.GetGJSONBytesNoCopy(body, "messages")
 	if !messages.IsArray() {
 		return true
 	}
@@ -568,7 +569,7 @@ func isClaudeTitleHelperRequest(body []byte) bool {
 		"Write the title in the predominant language") {
 		return false
 	}
-	props := gjson.GetBytes(body, "output_config.format.schema.properties")
+	props := util.GetGJSONBytesNoCopy(body, "output_config.format.schema.properties")
 	if props.Exists() {
 		if props.Get("title").Exists() && len(props.Map()) == 1 {
 			return isClaudeTitleHelperInstruction(body)
@@ -584,7 +585,7 @@ func isClaudeTitleHelperRequest(body []byte) bool {
 			strings.Contains(t, "Return a short title") ||
 			strings.Contains(t, "Write the title in the predominant language")
 	}
-	system := gjson.GetBytes(body, "system")
+	system := util.GetGJSONBytesNoCopy(body, "system")
 	if system.IsArray() {
 		for _, part := range system.Array() {
 			if matchesSystemTitleInstruction(part.Get("text").String()) {
@@ -595,7 +596,7 @@ func isClaudeTitleHelperRequest(body []byte) bool {
 		return true
 	}
 
-	messages := gjson.GetBytes(body, "messages")
+	messages := util.GetGJSONBytesNoCopy(body, "messages")
 	if messages.IsArray() {
 		for _, msg := range messages.Array() {
 			if msg.Get("role").String() == "system" {

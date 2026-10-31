@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -411,6 +412,16 @@ func checkSystemInstructionsWithSigningModeAt(
 	keepCallerSystemTopLevel bool,
 	turnOrigin ...string,
 ) []byte {
+	system, systemBlocks, isExplicit := claudeCloakSystemBlocks(payload, cchSigning, version, entrypoint, workload, isSubagent, prevReq, promptID, turnOrigin...)
+	if merged, ok := mergedClaudeSystemInstructions(payload, system, systemBlocks, strictMode, currentDate, keepCallerSystemTopLevel, isExplicit); ok {
+		return merged
+	}
+	return sequentialClaudeSystemInstructions(payload, system, systemBlocks, strictMode, currentDate, keepCallerSystemTopLevel, isExplicit)
+}
+
+// claudeCloakSystemBlocks returns the caller's system value and the
+// billing, identity and model-specific blocks that lead the cloaked system.
+func claudeCloakSystemBlocks(payload []byte, cchSigning bool, version, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnOrigin ...string) (gjson.Result, []string, bool) {
 	system := gjson.GetBytes(payload, "system")
 	messageText := claudeBillingFingerprintMessageText(payload)
 
@@ -429,6 +440,15 @@ func checkSystemInstructionsWithSigningModeAt(
 	if isClaudeFable51Model(model) && !helps.IsClaudeProbeOrHelperRequest(payload) {
 		systemBlocks = append(systemBlocks, buildTextBlock(claudeCodeFableReportingOutcomes, nil))
 	}
+	return system, systemBlocks, isExplicit
+}
+
+// sequentialClaudeSystemInstructions rewrites the system array, places the
+// caller's system blocks and stamps the currentDate reminder one step at a
+// time. It handles what mergedClaudeSystemInstructions declines and is the
+// oracle for it in tests.
+func sequentialClaudeSystemInstructions(payload []byte, system gjson.Result, systemBlocks []string, strictMode bool, currentDate string, keepCallerSystemTopLevel, isExplicit bool) []byte {
+	systemBlocks = slices.Clip(systemBlocks)
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte("["+strings.Join(systemBlocks, ",")+"]"))
 	if strictMode {
 		return injectClaudeCodeCurrentDateInternal(payload, currentDate, isExplicit)
@@ -456,6 +476,60 @@ func checkSystemInstructionsWithSigningModeAt(
 		payload = insertClaudeMidConversationSystemBlocks(payload, forwardedSystemBlocks, isExplicit)
 	}
 	return injectClaudeCodeCurrentDateInternal(payload, currentDate, isExplicit)
+}
+
+// mergedClaudeSystemInstructions applies the system rewrite, the optional
+// mid-conversation system messages and the currentDate reminder as one splice
+// of the original payload. The sequential path rewrote the whole conversation
+// once per step. The three edits touch disjoint ranges (the system value, a
+// boundary after the leading user run, the first user message's content) and
+// none of the decisions read system, so splicing them together gives the bytes
+// of the sequential rewrite. It reports false, leaving sequentialClaudeSystemInstructions to
+// run, for the legacy system-reminder models, a request without a system value
+// at a known offset, and a non-compact messages array.
+func mergedClaudeSystemInstructions(payload []byte, system gjson.Result, systemBlocks []string, strictMode bool, currentDate string, keepCallerSystemTopLevel, isExplicit bool) ([]byte, bool) {
+	systemBlocks = slices.Clip(systemBlocks)
+	current := util.GetGJSONBytesNoCopy(payload, "system")
+	start, end := current.Index, current.Index+len(current.Raw)
+	if !current.Exists() || start <= 0 || end > len(payload) || string(payload[start:end]) != current.Raw {
+		return nil, false
+	}
+
+	var insert *claudeMidConversationInsert
+	if !strictMode {
+		forwardedSystemBlocks := collectForwardedClaudeSystemPromptBlocksWithCache(system)
+		if len(forwardedSystemBlocks) > 0 {
+			switch {
+			case claudeHistoryHasAdvisorCallOrResult(payload),
+				!claudeUsesLegacySystemReminder(payload) && keepCallerSystemTopLevel && claudeMidConversationSystemMessagesAtEnd(payload):
+				for _, block := range forwardedSystemBlocks {
+					systemBlocks = append(systemBlocks, buildForwardedSystemBlock(block.Text, block, isExplicit))
+				}
+			case claudeUsesLegacySystemReminder(payload):
+				return nil, false
+			default:
+				plan := planClaudeMidConversationSystemBlocks(payload, forwardedSystemBlocks, isExplicit)
+				insert = &plan
+			}
+		}
+	}
+
+	edits := []claudeRawJSONEdit{{start: start, end: end, replacement: "[" + strings.Join(systemBlocks, ",") + "]"}}
+	if insert != nil && !insert.noop {
+		edit, ok := insert.compactEdit(payload)
+		if !ok {
+			return nil, false
+		}
+		edits = append(edits, edit)
+	}
+	if _, content, replacement, ok := claudeCurrentDateContent(payload, currentDate, isExplicit); ok {
+		cStart, cEnd := content.Index, content.Index+len(content.Raw)
+		if cStart <= 0 || cEnd > len(payload) || string(payload[cStart:cEnd]) != content.Raw {
+			return nil, false
+		}
+		edits = append(edits, claudeRawJSONEdit{start: cStart, end: cEnd, replacement: replacement})
+	}
+	return applyClaudeRawJSONEdits(payload, edits)
 }
 
 // relocateClaudeSystemPromptForCountTokens keeps a cloaked count_tokens request
@@ -812,7 +886,7 @@ func claudeCallerSystemReminder(text string) string {
 // advisor result to the conversation layout; any mid-conversation system splice
 // shifts message indices and causes upstream 400 errors.
 func claudeHistoryHasAdvisorCallOrResult(payload []byte) bool {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}
@@ -881,7 +955,7 @@ func claudeMidConversationSystemMessagesAtEnd(payload []byte) bool {
 		return false
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}
@@ -899,14 +973,36 @@ func insertClaudeMidConversationSystemMessages(payload []byte, texts []string) [
 }
 
 func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedClaudeSystemPromptBlock, isExplicit bool) []byte {
-	firstUserIdx := firstClaudeUserMessageIndex(payload)
-	if firstUserIdx < 0 || len(blocks) == 0 {
+	plan := planClaudeMidConversationSystemBlocks(payload, blocks, isExplicit)
+	if plan.noop {
 		return payload
 	}
+	if edit, ok := plan.compactEdit(payload); ok {
+		updated, _ := applyClaudeRawJSONEdits(payload, []claudeRawJSONEdit{edit})
+		return updated
+	}
+	return rebuildClaudeMessagesWithInserted(payload, plan.messageBlocks, plan.insertAt, plan.systemMessages)
+}
 
-	messages := gjson.GetBytes(payload, "messages")
+// claudeMidConversationInsert is where forwarded system blocks go as
+// mid-conversation system messages.
+type claudeMidConversationInsert struct {
+	noop           bool
+	messages       gjson.Result
+	messageBlocks  []gjson.Result
+	insertAt       int
+	systemMessages []string
+}
+
+func planClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedClaudeSystemPromptBlock, isExplicit bool) claudeMidConversationInsert {
+	firstUserIdx := firstClaudeUserMessageIndex(payload)
+	if firstUserIdx < 0 || len(blocks) == 0 {
+		return claudeMidConversationInsert{noop: true}
+	}
+
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
-		return payload
+		return claudeMidConversationInsert{noop: true}
 	}
 	messageBlocks := messages.Array()
 	insertAt := claudeLeadingUserRunEnd(messageBlocks, firstUserIdx)
@@ -920,7 +1016,7 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 			}
 		}
 		if matches {
-			return payload
+			return claudeMidConversationInsert{noop: true}
 		}
 	}
 
@@ -929,6 +1025,13 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 		content := "[" + buildForwardedSystemBlock(block.Text, block, isExplicit) + "]"
 		systemMessages = append(systemMessages, `{"role":"system","content":`+content+"}")
 	}
+	return claudeMidConversationInsert{messages: messages, messageBlocks: messageBlocks, insertAt: insertAt, systemMessages: systemMessages}
+}
+
+// rebuildClaudeMessagesWithInserted rewrites messages with systemMessages
+// inserted before messageBlocks[insertAt]. It is the fallback for arrays that
+// are not compact and the oracle for the in-place insert in tests.
+func rebuildClaudeMessagesWithInserted(payload []byte, messageBlocks []gjson.Result, insertAt int, systemMessages []string) []byte {
 	rawMessages := make([]string, 0, len(messageBlocks)+len(systemMessages))
 	for idx, message := range messageBlocks {
 		if idx == insertAt {
@@ -941,6 +1044,43 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 	}
 	payload, _ = sjson.SetRawBytes(payload, "messages", []byte("["+strings.Join(rawMessages, ",")+"]"))
 	return payload
+}
+
+// compactEdit inserts the system messages at their offset without touching
+// the rest of the array. Rebuilding the array as "[" + elements joined by ","
+// + "]" and setting it with sjson cost four copies of the conversation; for
+// an array already in that compact form, the insert gives the same bytes.
+// It reports false for any other array.
+func (p claudeMidConversationInsert) compactEdit(payload []byte) (claudeRawJSONEdit, bool) {
+	messageBlocks, at := p.messageBlocks, p.insertAt
+	if p.noop || len(messageBlocks) == 0 || len(p.systemMessages) == 0 || at < 0 || at > len(messageBlocks) {
+		return claudeRawJSONEdit{}, false
+	}
+	start, end := p.messages.Index, p.messages.Index+len(p.messages.Raw)
+	if start <= 0 || end > len(payload) || string(payload[start:end]) != p.messages.Raw {
+		return claudeRawJSONEdit{}, false
+	}
+	// The elements are consecutive substrings of the raw array, so the array
+	// is compact exactly when its length is theirs plus brackets and commas.
+	compactLen, offset := 1, -1
+	for i, message := range messageBlocks {
+		if i > 0 {
+			compactLen++
+		}
+		if i == at {
+			offset = compactLen
+		}
+		compactLen += len(message.Raw)
+	}
+	if compactLen+1 != len(p.messages.Raw) {
+		return claudeRawJSONEdit{}, false
+	}
+	joined := strings.Join(p.systemMessages, ",")
+	if offset < 0 {
+		// After the last element, before ']'.
+		return claudeRawJSONEdit{start: end - 1, end: end - 1, replacement: "," + joined}, true
+	}
+	return claudeRawJSONEdit{start: start + offset, end: start + offset, replacement: joined + ","}, true
 }
 
 func claudeMessageContentText(content gjson.Result) string {
@@ -1022,7 +1162,7 @@ func reconcileClaudeCodeSystemPlacementAfterPayload(payload []byte, state claude
 	if len(state.insertedRaw) == 0 || !claudeUsesLegacySystemReminder(payload) {
 		return payload
 	}
-	messages := gjson.GetBytes(payload, "messages").Array()
+	messages := util.GetGJSONBytesNoCopy(payload, "messages").Array()
 	if state.insertAt < 0 || state.insertAt+len(state.insertedRaw) > len(messages) {
 		return payload
 	}
@@ -1281,7 +1421,7 @@ Today's date is %s.
 }
 
 func firstClaudeUserMessageIndex(payload []byte) int {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return -1
 	}
@@ -1427,13 +1567,25 @@ func injectClaudeCodeCurrentDate(payload []byte, date string) []byte {
 }
 
 func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit bool) []byte {
+	contentPath, _, replacement, ok := claudeCurrentDateContent(payload, date, isExplicit)
+	if !ok {
+		return payload
+	}
+	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(replacement))
+	return payload
+}
+
+// claudeCurrentDateContent returns the first user message's content (read in
+// place, so its Index points into payload) and the content with the
+// currentDate reminder stamped in. ok is false when nothing changes.
+func claudeCurrentDateContent(payload []byte, date string, isExplicit bool) (string, gjson.Result, string, bool) {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
 	if firstUserIdx < 0 {
-		return payload
+		return "", gjson.Result{}, "", false
 	}
 
 	contentPath := fmt.Sprintf("messages.%d.content", firstUserIdx)
-	content := gjson.GetBytes(payload, contentPath)
+	content := util.GetGJSONBytesNoCopy(payload, contentPath)
 	dateText := claudeCodeCurrentDateReminder(date)
 	dateBlock := buildTextBlock(dateText, nil)
 
@@ -1443,12 +1595,10 @@ func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit
 			userCC = nil
 		}
 		userBlock := buildTextBlock(content.String(), userCC)
-		newArray := "[" + dateBlock + "," + userBlock + "]"
-		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(newArray))
-		return payload
+		return contentPath, content, "[" + dateBlock + "," + userBlock + "]", true
 	}
 	if !content.IsArray() {
-		return payload
+		return "", gjson.Result{}, "", false
 	}
 
 	blocks := content.Array()
@@ -1481,8 +1631,7 @@ func injectClaudeCodeCurrentDateInternal(payload []byte, date string, isExplicit
 	rawBlocks = append(rawBlocks, "")
 	copy(rawBlocks[insertAt+1:], rawBlocks[insertAt:])
 	rawBlocks[insertAt] = dateBlock
-	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
-	return payload
+	return contentPath, content, "[" + strings.Join(rawBlocks, ",") + "]", true
 }
 
 // claudeCodeContextManagement is the context_management object Claude Code
@@ -2016,23 +2165,60 @@ func upgradeClaudeCacheControlTTL(payload []byte, ttl string) []byte {
 		return payload
 	}
 
+	// Splice every upgraded block in one pass: rewriting the body once per
+	// cache_control block copied the whole conversation each time.
+	var edits []claudeRawJSONEdit
+	offsetsValid := true
+	forEachClaudeCacheControlBlock(payload, func(_ string, block gjson.Result) {
+		cacheControl, upgraded, ok := upgradedClaudeCacheControl(block, ttl)
+		if !ok || !offsetsValid {
+			return
+		}
+		start, end := cacheControl.Index, cacheControl.Index+len(cacheControl.Raw)
+		if start <= 0 || end > len(payload) || string(payload[start:end]) != cacheControl.Raw {
+			offsetsValid = false
+			return
+		}
+		edits = append(edits, claudeRawJSONEdit{start: start, end: end, replacement: upgraded})
+	})
+	if offsetsValid {
+		if updated, ok := applyClaudeRawJSONEdits(payload, edits); ok {
+			return updated
+		}
+	}
+	return upgradeClaudeCacheControlTTLByPath(payload, ttl)
+}
+
+// upgradedClaudeCacheControl returns the block's cache_control and its
+// upgraded form, or false when the block keeps its cache_control.
+func upgradedClaudeCacheControl(block gjson.Result, ttl string) (gjson.Result, string, bool) {
+	cacheControl := block.Get("cache_control")
+	if !cacheControl.IsObject() || cacheControl.Get("ttl").Exists() {
+		return cacheControl, "", false
+	}
+	blockType := cacheControl.Get("type")
+	if blockType.Type != gjson.String {
+		return cacheControl, "", false
+	}
+	// Rebuild the object so the native {type, ttl, scope} key order survives
+	// instead of appending ttl after a caller-supplied scope.
+	upgraded := `{"type":` + marshalJSONStringWithoutHTMLEscape(blockType.String()) +
+		`,"ttl":` + marshalJSONStringWithoutHTMLEscape(ttl)
+	if scope := cacheControl.Get("scope"); scope.Exists() {
+		upgraded += `,"scope":` + scope.Raw
+	}
+	return cacheControl, upgraded + "}", true
+}
+
+// upgradeClaudeCacheControlTTLByPath rewrites one block at a time. It is the
+// fallback when gjson offsets do not point into payload, and the oracle for
+// the batched path in tests.
+func upgradeClaudeCacheControlTTLByPath(payload []byte, ttl string) []byte {
 	upgrade := func(path string, block gjson.Result) {
-		cacheControl := block.Get("cache_control")
-		if !cacheControl.IsObject() || cacheControl.Get("ttl").Exists() {
+		_, upgraded, ok := upgradedClaudeCacheControl(block, ttl)
+		if !ok {
 			return
 		}
-		blockType := cacheControl.Get("type")
-		if blockType.Type != gjson.String {
-			return
-		}
-		// Rebuild the object so the native {type, ttl, scope} key order survives
-		// instead of appending ttl after a caller-supplied scope.
-		upgraded := `{"type":` + marshalJSONStringWithoutHTMLEscape(blockType.String()) +
-			`,"ttl":` + marshalJSONStringWithoutHTMLEscape(ttl)
-		if scope := cacheControl.Get("scope"); scope.Exists() {
-			upgraded += `,"scope":` + scope.Raw
-		}
-		upgraded += "}"
 		updated, errSet := sjson.SetRawBytes(payload, path+".cache_control", []byte(upgraded))
 		if errSet != nil {
 			return
@@ -2073,19 +2259,19 @@ func stripClaudeCacheControlTTL(payload []byte) []byte {
 // forEachClaudeCacheControlBlock walks every block that can carry cache_control
 // in Anthropic's evaluation order: tools, then system, then messages.
 func forEachClaudeCacheControlBlock(payload []byte, visit func(path string, block gjson.Result)) {
-	if tools := gjson.GetBytes(payload, "tools"); tools.IsArray() {
+	if tools := util.GetGJSONBytesNoCopy(payload, "tools"); tools.IsArray() {
 		tools.ForEach(func(idx, item gjson.Result) bool {
 			visit(fmt.Sprintf("tools.%d", int(idx.Int())), item)
 			return true
 		})
 	}
-	if system := gjson.GetBytes(payload, "system"); system.IsArray() {
+	if system := util.GetGJSONBytesNoCopy(payload, "system"); system.IsArray() {
 		system.ForEach(func(idx, item gjson.Result) bool {
 			visit(fmt.Sprintf("system.%d", int(idx.Int())), item)
 			return true
 		})
 	}
-	if messages := gjson.GetBytes(payload, "messages"); messages.IsArray() {
+	if messages := util.GetGJSONBytesNoCopy(payload, "messages"); messages.IsArray() {
 		messages.ForEach(func(msgIdx, message gjson.Result) bool {
 			content := message.Get("content")
 			if !content.IsArray() {
@@ -2151,7 +2337,7 @@ func countCacheControls(payload []byte) int {
 	count := 0
 
 	// Check system
-	system := gjson.GetBytes(payload, "system")
+	system := util.GetGJSONBytesNoCopy(payload, "system")
 	if system.IsArray() {
 		system.ForEach(func(_, item gjson.Result) bool {
 			if isValidClaudeCacheControl(item.Get("cache_control")) {
@@ -2162,7 +2348,7 @@ func countCacheControls(payload []byte) int {
 	}
 
 	// Check tools
-	tools := gjson.GetBytes(payload, "tools")
+	tools := util.GetGJSONBytesNoCopy(payload, "tools")
 	if tools.IsArray() {
 		tools.ForEach(func(_, item gjson.Result) bool {
 			if isValidClaudeCacheControl(item.Get("cache_control")) {
@@ -2173,7 +2359,7 @@ func countCacheControls(payload []byte) int {
 	}
 
 	// Check messages
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2234,7 +2420,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		modified = true
 	}
 
-	tools := gjson.GetBytes(payload, "tools")
+	tools := util.GetGJSONBytesNoCopy(payload, "tools")
 	if tools.IsArray() {
 		tools.ForEach(func(idx, item gjson.Result) bool {
 			processBlock(fmt.Sprintf("tools.%d", int(idx.Int())), item)
@@ -2242,7 +2428,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		})
 	}
 
-	system := gjson.GetBytes(payload, "system")
+	system := util.GetGJSONBytesNoCopy(payload, "system")
 	if system.IsArray() {
 		system.ForEach(func(idx, item gjson.Result) bool {
 			processBlock(fmt.Sprintf("system.%d", int(idx.Int())), item)
@@ -2250,7 +2436,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		})
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2377,7 +2563,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 		return payload
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			if excess <= 0 {
@@ -2473,7 +2659,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 // stamping the last element of an existing array. Markers on other messages must
 // not suppress this rolling write.
 func injectMessagesCacheControl(payload []byte) []byte {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return payload
 	}
@@ -2504,7 +2690,7 @@ func injectMessagesCacheControl(payload []byte) []byte {
 	}
 
 	contentPath := fmt.Sprintf("messages.%d.content", lastEligibleIndex)
-	content := gjson.GetBytes(payload, contentPath)
+	content := util.GetGJSONBytesNoCopy(payload, contentPath)
 	if messageContentHasCacheControl(content) {
 		return payload
 	}
