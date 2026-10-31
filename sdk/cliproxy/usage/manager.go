@@ -64,6 +64,14 @@ type Record struct {
 	ResponseServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string
+	// UpstreamModel stores the canonical upstream model expected to be served, when an executor maps the requested model.
+	UpstreamModel string
+	// UpstreamRisk names a safety action the upstream response announced, e.g. "refusal_cyber"
+	// (Claude stop_reason refusal) or "trusted_access_for_cyber" (Codex response.metadata).
+	UpstreamRisk string
+	// UpstreamRiskReason is the explanation the upstream gave with UpstreamRisk, e.g. Claude's
+	// stop_details.explanation; empty when none was given.
+	UpstreamRiskReason string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -760,6 +768,14 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m.closed {
 		m.mu.Unlock()
 		return
+	}
+	if record.ResponseHeaders == nil {
+		record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	}
+	if requestPayloadCapture.Load() && canBeRiskRecord(record) {
+		if raw := RequestPayloadFromContext(ctx); len(raw) > 0 {
+			ctx = context.WithValue(ctx, requestPayloadSnapshotKey{}, raw)
+		}
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
