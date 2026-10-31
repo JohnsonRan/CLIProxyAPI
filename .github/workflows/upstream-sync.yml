@@ -55,13 +55,12 @@ env:
     patch/auth-file-allowed-models
     patch/usage-store
     tmp/patch/usage-store-exclude-embeddings
-    patch/responses-ws-deferred-request-release
     patch/fingerprint-detector
   # Compatibility patches applied as base..tip deltas (see MAINTAIN.md,
   # "Combination Conflicts"): <branch>=<base commit>. The base merges the
   # patch tips the compatibility patch was written against.
   COMPAT_BASES: >-
-    tmp/patch/usage-store-exclude-embeddings=8be997274a8590f7d2c287364cca1014a4a85737
+    tmp/patch/usage-store-exclude-embeddings=13d73fc4f41521149be1926dc189ee89226977bb
 
 jobs:
   sync-main-with-squash-branches:
