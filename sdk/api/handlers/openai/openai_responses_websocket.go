@@ -1126,9 +1126,11 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
 	return headers
 }
 
+// responsesWebsocketPreviousResponseNotFoundError uses 400 like OpenAI's own
+// WebSocket mode: clients only replay full input for a 400 invalid_request_error.
 func responsesWebsocketPreviousResponseNotFoundError() *interfaces.ErrorMessage {
 	return &interfaces.ErrorMessage{
-		StatusCode: http.StatusConflict,
+		StatusCode: http.StatusBadRequest,
 		Error: errors.New(
 			`{"error":{"message":"Previous response is not available on this websocket; resend the full conversation input without previous_response_id","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`,
 		),
