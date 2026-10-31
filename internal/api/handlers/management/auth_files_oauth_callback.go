@@ -47,6 +47,24 @@ func isWebUIRequest(c *gin.Context) bool {
 }
 
 func startCallbackForwarder(port int, provider, targetBase string) (*callbackForwarder, error) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := targetBase
+		if raw := r.URL.RawQuery; raw != "" {
+			if strings.Contains(target, "?") {
+				target = target + "&" + raw
+			} else {
+				target = target + "?" + raw
+			}
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, target, http.StatusFound)
+	})
+	return startCallbackServer(port, provider, handler)
+}
+
+// startCallbackServer serves handler on the loopback callback port, replacing any
+// previous callback server registered for the same port.
+func startCallbackServer(port int, provider string, handler http.Handler) (*callbackForwarder, error) {
 	callbackForwardersMu.Lock()
 	prev := callbackForwarders[port]
 	if prev != nil {
@@ -63,19 +81,6 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		target := targetBase
-		if raw := r.URL.RawQuery; raw != "" {
-			if strings.Contains(target, "?") {
-				target = target + "&" + raw
-			} else {
-				target = target + "?" + raw
-			}
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, target, http.StatusFound)
-	})
 
 	srv := &http.Server{
 		Handler:           handler,
