@@ -1086,6 +1086,8 @@ oauth:
   # over these rules for that credential and is not merged with them. Credentials without their own
   # list (missing, empty, or null) inherit the current rules here; changes to these rules
   # take effect for them on config reload.
+  # An auth JSON file may also carry "allowed_models" (same wildcard syntax): when non-empty, the
+  # credential serves only matching models, and exclusions still apply on top of it.
   # excluded-models:
   #   vertex:
   #     - "gemini-3-pro-preview"

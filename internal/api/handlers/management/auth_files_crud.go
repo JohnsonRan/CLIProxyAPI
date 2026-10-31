@@ -534,6 +534,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if _, errExcluded := synthesizer.ExtractExcludedModelsFromMetadata(metadata); errExcluded != nil {
 		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errExcluded)
 	}
+	if _, errAllowed := synthesizer.ExtractAllowedModelsFromMetadata(metadata); errAllowed != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errAllowed)
+	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {
 		provider = "unknown"
