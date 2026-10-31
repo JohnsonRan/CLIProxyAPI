@@ -57,7 +57,9 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 	}
 	// Hint precedence: the quota body reset wins, then the connection-limit
 	// immediate-retry contract, then the generic Retry-After header.
-	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
+	if isCodexTemporaryIPRestriction(status, out) {
+		statusError = newCodexTemporaryIPRestrictionErr(out)
+	} else if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
