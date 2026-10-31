@@ -311,6 +311,27 @@ func (c *CodexConfig) RequestCompressionMinBytes() int {
 	return c.UpstreamRequestCompressionMinBytes
 }
 
+// normalizeLegacyCodexRequestCompression rewrites legacy coding names that earlier downstream
+// builds wrote as strings into booleans. Standard YAML boolean spellings (including yes/no/on/off/true/false)
+// and invalid values are left untouched for yaml.v3 to decode natively.
+func normalizeLegacyCodexRequestCompression(root *yaml.Node) {
+	node := yamlPath(root, "codex.upstream-request-compression")
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return
+	}
+	value := strings.ToLower(strings.TrimSpace(node.Value))
+	var enabled bool
+	switch value {
+	case "zstd", "zstandard", "gzip", "x-gzip", "br", "brotli", "auto":
+		enabled = true
+	case "none", "identity", "disabled":
+		enabled = false
+	default:
+		return
+	}
+	node.Tag, node.Style, node.Value = "!!bool", 0, strconv.FormatBool(enabled)
+}
+
 // DefaultSignInWithChatGPTIdentifier is the default identifier (agent_name_hint and User-Agent prefix)
 // used for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
 const DefaultSignInWithChatGPTIdentifier = "CLIProxyAPI"

@@ -34,8 +34,9 @@ const (
 var (
 	callIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	sidebandUpgrader = websocket.Upgrader{
-		ReadBufferSize:  4096,
-		WriteBufferSize: 4096,
+		ReadBufferSize:    4096,
+		WriteBufferSize:   4096,
+		EnableCompression: true,
 		CheckOrigin: func(*http.Request) bool {
 			return true
 		},
@@ -707,7 +708,10 @@ func proxyURLForAuth(cfg *config.Config, selected *auth.Auth) string {
 }
 
 func newSidebandDialer(proxyURL string) *websocket.Dialer {
-	dialer := &websocket.Dialer{Proxy: http.ProxyFromEnvironment}
+	dialer := &websocket.Dialer{
+		Proxy:             http.ProxyFromEnvironment,
+		EnableCompression: true,
+	}
 	if strings.TrimSpace(proxyURL) == "" {
 		return dialer
 	}
