@@ -28,6 +28,48 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestParseRerankUsage(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		input  int64
+		output int64
+		total  int64
+	}{
+		{
+			name:  "openai usage",
+			body:  `{"usage":{"prompt_tokens":8,"total_tokens":8}}`,
+			input: 8,
+			total: 8,
+		},
+		{
+			name:   "meta tokens",
+			body:   `{"results":[],"meta":{"tokens":{"input_tokens":20,"output_tokens":1},"billed_units":{"input_tokens":99}}}`,
+			input:  20,
+			output: 1,
+			total:  21,
+		},
+		{
+			name:  "billed units",
+			body:  `{"meta":{"billed_units":{"input_tokens":5,"output_tokens":0}}}`,
+			input: 5,
+			total: 5,
+		},
+		{
+			name: "no tokens",
+			body: `{"results":[{"index":0,"relevance_score":0.9}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			detail := ParseRerankUsage([]byte(tt.body))
+			if detail.InputTokens != tt.input || detail.OutputTokens != tt.output || detail.TotalTokens != tt.total {
+				t.Fatalf("usage = %+v, want input %d output %d total %d", detail, tt.input, tt.output, tt.total)
+			}
+		})
+	}
+}
+
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
 	detail := ParseOpenAIUsage(data)

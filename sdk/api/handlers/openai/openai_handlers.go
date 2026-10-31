@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -863,4 +864,130 @@ func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flush
 			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		},
 	})
+}
+
+// Embeddings handles the /v1/embeddings and /v1/embedding endpoints.
+func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
+	rawJSON, err := handlers.ReadRequestBody(c)
+	if err != nil {
+		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	if modelName == "" {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Missing required parameter 'model'",
+				Type:    "invalid_request_error",
+				Code:    "missing_required_parameter",
+			},
+		})
+		return
+	}
+
+	input := gjson.GetBytes(rawJSON, "input")
+	if !input.Exists() {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Missing required parameter 'input'",
+				Type:    "invalid_request_error",
+				Code:    "missing_required_parameter",
+			},
+		})
+		return
+	}
+
+	h.handleEmbeddingsResponse(c, rawJSON, modelName)
+}
+
+func (h *OpenAIAPIHandler) handleEmbeddingsResponse(c *gin.Context, rawJSON []byte, modelName string) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteEmbeddingWithAuthManager(cliCtx, "openai-embedding", modelName, rawJSON, h.GetAlt(c))
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
+		return
+	}
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel()
+}
+
+// Rerank handles the /v1/rerank and /rerank endpoints.
+func (h *OpenAIAPIHandler) Rerank(c *gin.Context) {
+	rawJSON, err := handlers.ReadRequestBody(c)
+	if err != nil {
+		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	if modelName == "" {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Missing required parameter 'model'",
+				Type:    "invalid_request_error",
+				Code:    "missing_required_parameter",
+			},
+		})
+		return
+	}
+
+	query := strings.TrimSpace(gjson.GetBytes(rawJSON, "query").String())
+	if query == "" {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Missing required parameter 'query'",
+				Type:    "invalid_request_error",
+				Code:    "missing_required_parameter",
+			},
+		})
+		return
+	}
+
+	docs := gjson.GetBytes(rawJSON, "documents")
+	if !docs.Exists() || !docs.IsArray() || len(docs.Array()) == 0 {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Missing or invalid required parameter 'documents'",
+				Type:    "invalid_request_error",
+				Code:    "missing_required_parameter",
+			},
+		})
+		return
+	}
+
+	h.handleRerankResponse(c, rawJSON, modelName)
+}
+
+func (h *OpenAIAPIHandler) handleRerankResponse(c *gin.Context, rawJSON []byte, modelName string) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteRerankWithAuthManager(cliCtx, "rerank", modelName, rawJSON, h.GetAlt(c))
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
+		return
+	}
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel()
 }

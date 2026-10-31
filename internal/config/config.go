@@ -88,6 +88,10 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
+	// UsageExcludeEmbeddings leaves embedding requests out of the usage queue.
+	// Request and application logs still record them. Ignored in Home mode.
+	UsageExcludeEmbeddings bool `yaml:"usage-exclude-embeddings" json:"usage-exclude-embeddings"`
+
 	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
