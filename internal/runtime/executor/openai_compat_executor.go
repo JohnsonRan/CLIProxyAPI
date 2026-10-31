@@ -1369,8 +1369,10 @@ func openAICompatChunkHasFinishReason(payload []byte) bool {
 	return false
 }
 
+// openAICompatStreamDataError expects a payload the stream loop has already
+// checked with json.Valid; it does not validate the payload again.
 func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, bool) {
-	if len(payload) == 0 || !json.Valid(payload) {
+	if len(payload) == 0 {
 		return statusErr{}, false
 	}
 	payloadType := gjson.GetBytes(payload, "type").String()
