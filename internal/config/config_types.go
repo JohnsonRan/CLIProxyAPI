@@ -464,6 +464,60 @@ type RemoteManagement struct {
 	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 }
 
+// QuotaAPIConfig controls the client-facing GET /v1/usage quota endpoint.
+type QuotaAPIConfig struct {
+	// Enabled is ignored: visibility is granted per client key through Keys.
+	// It is still accepted so configs written by earlier builds stay valid.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// CacheTTLSeconds controls how long upstream quota results are reused.
+	// Default: 300. Minimum: 30.
+	CacheTTLSeconds int `yaml:"cache-ttl-seconds,omitempty" json:"cache-ttl-seconds,omitempty"`
+
+	// HideNames reports every credential by its provider instead of its note.
+	HideNames bool `yaml:"hide-names,omitempty" json:"hide-names,omitempty"`
+
+	// IncludeRaw adds the redacted upstream responses behind each summary.
+	IncludeRaw bool `yaml:"include-raw,omitempty" json:"include-raw,omitempty"`
+
+	// Keys grants client API keys visibility of selected OAuth credentials.
+	// A key that is not listed sees no credentials.
+	Keys []QuotaAPIKey `yaml:"keys,omitempty" json:"keys,omitempty"`
+}
+
+// QuotaAPIKey lists the credentials one client API key may read: OAuth
+// credentials, and API-key upstreams whose own GET /v1/usage is relayed.
+type QuotaAPIKey struct {
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Credentials are auth IDs (auth file names) or auth indexes visible to the key.
+	Credentials []string `yaml:"credentials,omitempty" json:"credentials,omitempty"`
+}
+
+// VisibleCredentials returns the auth IDs the client API key may read.
+// Entries repeating the same key are merged.
+func (c QuotaAPIConfig) VisibleCredentials(apiKey string) map[string]struct{} {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil
+	}
+	var visible map[string]struct{}
+	for _, entry := range c.Keys {
+		if strings.TrimSpace(entry.APIKey) != apiKey {
+			continue
+		}
+		for _, id := range entry.Credentials {
+			if id = strings.TrimSpace(id); id != "" {
+				if visible == nil {
+					visible = make(map[string]struct{})
+				}
+				visible[id] = struct{}{}
+			}
+		}
+	}
+	return visible
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {
