@@ -75,6 +75,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
+	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = ensureWebSearchToolForHistory(body, opts.Headers)
 	if !useSIWC {
 		body = normalizeCodexInstructions(body, nativeRequest)

@@ -33,6 +33,9 @@ type responsesWebsocketForwardOptions struct {
 	// websocketOwned reports whether this turn runs on an upstream
 	// websocket. While true, no interrupt may claim the local HTTP path.
 	websocketOwned func() bool
+	// onCompleted runs before the terminal event is written, so the turn is
+	// continuable by the time the client observes it.
+	onCompleted func(output []byte, responseID string, pendingToolCallIDs []string)
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
@@ -286,6 +289,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					turnEnded = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
+					if opts.onCompleted != nil {
+						opts.onCompleted(completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs))
+					}
 				} else if eventType == "response.failed" {
 					// A failed response ends the turn without a completion
 					// identity; only its local-interrupt window closes.
