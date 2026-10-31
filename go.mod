@@ -3,6 +3,7 @@ module github.com/router-for-me/CLIProxyAPI/v8
 go 1.26.10
 
 require (
+	github.com/Ikaleio/lm-detector/sdk/go v0.2.0
 	github.com/andybalholm/brotli v1.0.6
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/bubbles v1.0.0
@@ -15,7 +16,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.17.4
+	github.com/klauspost/compress v1.18.4
 	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/miekg/dns v1.1.43
 	github.com/minio/minio-go/v7 v7.0.66
