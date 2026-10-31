@@ -4,6 +4,7 @@ package management
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,15 @@ const attemptCleanupInterval = 1 * time.Hour
 // attemptMaxIdleTime controls how long an IP can be idle before cleanup
 const attemptMaxIdleTime = 2 * time.Hour
 
+// verifiedManagementKey remembers the last key that passed bcrypt against a
+// given secret hash, so the panel's polling does not pay for bcrypt on every
+// request. Only the SHA-256 of the key is kept; a config change to the
+// secret hash invalidates the entry.
+type verifiedManagementKey struct {
+	secretHash string
+	keySum     [sha256.Size]byte
+}
+
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
 	cfg                     *config.Config
@@ -47,6 +58,7 @@ type Handler struct {
 	appliedReloadGeneration uint64
 	attemptsMu              sync.Mutex
 	failedAttempts          map[string]*attemptInfo // keyed by client IP
+	verifiedKey             atomic.Pointer[verifiedManagementKey]
 	authManager             *coreauth.Manager
 	tokenStore              coreauth.Store
 	localPassword           string
@@ -446,7 +458,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return true, 0, ""
 	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+	if secretHash == "" || !h.verifyManagementSecret(secretHash, provided) {
 		fail()
 		return false, http.StatusUnauthorized, "invalid management key"
 	}
@@ -454,6 +466,22 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	reset()
 
 	return true, 0, ""
+}
+
+// verifyManagementSecret checks provided against the bcrypt secretHash,
+// short-circuiting through the last verified key when it still matches.
+func (h *Handler) verifyManagementSecret(secretHash, provided string) bool {
+	keySum := sha256.Sum256([]byte(provided))
+	if cached := h.verifiedKey.Load(); cached != nil &&
+		subtle.ConstantTimeCompare([]byte(cached.secretHash), []byte(secretHash)) == 1 &&
+		subtle.ConstantTimeCompare(cached.keySum[:], keySum[:]) == 1 {
+		return true
+	}
+	if bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+		return false
+	}
+	h.verifiedKey.Store(&verifiedManagementKey{secretHash: secretHash, keySum: keySum})
+	return true
 }
 
 // persistLocked saves the current in-memory config to disk.
