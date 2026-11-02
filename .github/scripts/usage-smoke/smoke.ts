@@ -113,9 +113,17 @@ await cdp('Page.navigate', { url: `${BASE}/management.html` });
 await sleep(3000);
 await ev(`(() => { const el = document.querySelector('input[name="cpa-management-key"]');
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'mgmt-secret');
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 1; })()`);
-await waitFor(async () => !(await ev(`!!document.querySelector('input[name="cpa-management-key"]')`)));
+  el.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+// Submit after React commits the input state; synthetic key events do not submit forms.
+await ev(`document.querySelector('input[name="cpa-management-key"]').form.requestSubmit(); 1`);
+const loggedIn = await waitFor(async () => !(await ev(`!!document.querySelector('input[name="cpa-management-key"]')`)));
+check('panel login', loggedIn);
+if (!loggedIn) {
+  await shot('login.png');
+  ws.close();
+  proc.kill();
+  process.exit(1);
+}
 await ev(`location.hash = '#/usage'; 1`);
 await waitFor(async () => Boolean(await ev(`!!document.getElementById('usage-tab-overview') && document.querySelectorAll('tbody tr').length > 0`)));
 const header = String(await ev(`document.querySelector('main')?.innerText ?? ''`));
