@@ -308,10 +308,10 @@ func TestWriteClaudeErrorResponse_LongQuotaCooldownIsFinalRateLimitError(t *test
 		t.Fatalf("X-Should-Retry = %q, want false", got)
 	}
 	body := recorder.Body.Bytes()
-	if got := gjson.GetBytes(body, "type").String(); got != "error" {
+	if got := ojson.GetBytes(body, "type").String(); got != "error" {
 		t.Fatalf("type = %q, want error; body=%s", got, body)
 	}
-	if got := gjson.GetBytes(body, "error.type").String(); got != "rate_limit_error" {
+	if got := ojson.GetBytes(body, "error.type").String(); got != "rate_limit_error" {
 		t.Fatalf("error.type = %q, want rate_limit_error; body=%s", got, body)
 	}
 }
