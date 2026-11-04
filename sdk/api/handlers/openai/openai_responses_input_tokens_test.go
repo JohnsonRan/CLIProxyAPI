@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 type inputTokensCountExecutor struct {
@@ -101,7 +101,7 @@ func TestResponsesInputTokensNormalizesExecutorCountShapes(t *testing.T) {
 			if executor.sourceFormat != "openai-response" {
 				t.Fatalf("source format = %q, want openai-response", executor.sourceFormat)
 			}
-			if gjson.GetBytes(executor.request, "stream").Exists() {
+			if ojson.GetBytesNoCopy(executor.request, "stream").Exists() {
 				t.Fatalf("stream must be removed before counting: %s", executor.request)
 			}
 		})

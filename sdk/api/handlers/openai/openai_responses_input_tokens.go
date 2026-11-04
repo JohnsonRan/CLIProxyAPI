@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // responsesInputTokenCountPaths lists where the built-in executors report a token
@@ -42,17 +42,20 @@ func (h *OpenAIResponsesAPIHandler) InputTokens(c *gin.Context) {
 		return
 	}
 
-	// Count the payload generation would process.
-	rawJSON = h.prepareCodexMultiAgentV2Tools(c, rawJSON)
-	rawJSON = h.prepareCodexOrphanDelegation(c, rawJSON)
-	if gjson.GetBytes(rawJSON, "stream").Exists() {
-		if updated, errDelete := sjson.DeleteBytes(rawJSON, "stream"); errDelete == nil {
-			rawJSON = updated
-		}
+	doc := ojson.NewDoc(rawJSON)
+	toolsChanged := h.prepareCodexMultiAgentV2ToolsDoc(c, doc)
+	orphanChanged := h.prepareCodexOrphanDelegationDoc(c, doc)
+	streamDeleted := false
+	if doc.Get("stream").Exists() {
+		_ = doc.Delete("stream")
+		streamDeleted = true
+	}
+	if len(rawJSON) > 0 && (toolsChanged || orphanChanged || streamDeleted) {
+		rawJSON = doc.Bytes()
 	}
 
 	c.Header("Content-Type", "application/json")
-	modelName := gjson.GetBytes(rawJSON, "model").String()
+	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, upstreamHeaders, errMsg := h.ExecuteCountWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	if errMsg != nil {
@@ -76,12 +79,12 @@ func (h *OpenAIResponsesAPIHandler) InputTokens(c *gin.Context) {
 }
 
 func responsesInputTokenCount(response []byte) (int64, bool) {
-	if !gjson.ValidBytes(response) {
+	if !ojson.ValidBytes(response) {
 		return 0, false
 	}
 	for _, path := range responsesInputTokenCountPaths {
-		value := gjson.GetBytes(response, path)
-		if value.Type == gjson.Number && value.Int() >= 0 {
+		value := ojson.GetBytesNoCopy(response, path)
+		if value.Type == ojson.Number && value.Int() >= 0 {
 			return value.Int(), true
 		}
 	}
