@@ -414,13 +414,12 @@ func (h *BaseAPIHandler) validateClientModelAccess(ctx context.Context, modelNam
 }
 
 func clientModelNotAllowedError(modelName string) *interfaces.ErrorMessage {
-	body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`
-	body, errSet := sjson.Set(body, "error.message", fmt.Sprintf("model %q is not allowed for this API key", modelName))
-	if errSet != nil {
-		body = `{"error":{"message":"model is not allowed for this API key","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`
+	doc := ojson.NewDocString(`{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`)
+	if errSet := doc.Set("error.message", fmt.Sprintf("model %q is not allowed for this API key", modelName)); errSet != nil {
+		doc = ojson.NewDocString(`{"error":{"message":"model is not allowed for this API key","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`)
 	}
 	return &interfaces.ErrorMessage{
 		StatusCode: http.StatusForbidden,
-		Error:      errors.New(body),
+		Error:      errors.New(doc.String()),
 	}
 }

@@ -6,12 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 // "auto" must not let an exclusion-only key reach an excluded model.
@@ -56,7 +56,7 @@ func TestWriteModelListResponseFiltersInterceptedCatalogForClient(t *testing.T) 
 	c.Set("userApiKey", "client-key")
 	h.WriteModelListResponse(c, "openai", gin.H{"object": "list", "data": []gin.H{{"id": "public-model"}}})
 
-	data := gjson.GetBytes(recorder.Body.Bytes(), "data").Array()
+	data := ojson.GetBytes(recorder.Body.Bytes(), "data").Array()
 	if len(data) != 1 || data[0].Get("id").String() != "public-model" {
 		t.Fatalf("intercepted list = %s, want only public-model", recorder.Body.String())
 	}
