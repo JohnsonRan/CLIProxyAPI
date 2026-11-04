@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	"github.com/tidwall/gjson"
 )
 
 func TestCollectCodexOutputItemDoneReportsRetainedBytes(t *testing.T) {
@@ -75,7 +75,7 @@ func TestCodexOutputItemPatchBufferRepeatedIndexCountsOnce(t *testing.T) {
 	if buf.dropped {
 		t.Fatalf("a replaced index must not be counted twice, retained=%d", buf.retained)
 	}
-	if want := len(gjson.GetBytes(item, "item").Raw); buf.retained != want {
+	if want := len(ojson.GetBytes(item, "item").Raw); buf.retained != want {
 		t.Fatalf("retained = %d, want %d", buf.retained, want)
 	}
 }
@@ -93,9 +93,9 @@ func TestCodexOutputItemPatchBufferEvictsImagesBeforeDroppingAll(t *testing.T) {
 	}
 
 	patched := buf.patch([]byte(`{"type":"response.completed","response":{"output":[]}}`))
-	output := gjson.GetBytes(patched, "response.output").Array()
+	output := ojson.GetBytes(patched, "response.output").Array()
 	if len(output) != 2 || output[0].Get("id").String() != "rs1" || output[1].Get("id").String() != "m1" {
-		t.Fatalf("patched output = %s, want reasoning and message without images", gjson.GetBytes(patched, "response.output").Raw)
+		t.Fatalf("patched output = %s, want reasoning and message without images", ojson.GetBytes(patched, "response.output").Raw)
 	}
 	if buf.count() != 5 {
 		t.Fatalf("count() = %d, want 5 observed items", buf.count())
@@ -113,7 +113,7 @@ func TestCodexOutputItemPatchBufferUsageCountsEvictedImages(t *testing.T) {
 		t.Fatalf("usage items byIndex=%d fallback=%d, want 0 and 3 image stubs", len(byIndex), len(fallback))
 	}
 	for _, item := range fallback {
-		if gjson.GetBytes(item, "result").Exists() {
+		if ojson.GetBytes(item, "result").Exists() {
 			t.Fatal("usage stub should not keep the base64 result")
 		}
 	}

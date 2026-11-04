@@ -87,8 +87,8 @@ func newCodexOutputItemPatchBuffer() *codexOutputItemPatchBuffer {
 }
 
 func (b *codexOutputItemPatchBuffer) collect(eventData []byte) {
-	item := gjson.GetBytes(eventData, "item")
-	if !item.Exists() || item.Type != gjson.JSON {
+	item := ojson.GetBytesNoCopy(eventData, "item")
+	if !item.Exists() || item.Type != ojson.JSON {
 		return
 	}
 	b.seen++
@@ -99,7 +99,7 @@ func (b *codexOutputItemPatchBuffer) collect(eventData []byte) {
 	if b.dropped {
 		return
 	}
-	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
+	if outputIndex := ojson.GetBytesNoCopy(eventData, "output_index"); outputIndex.Exists() {
 		// A repeated index replaces the earlier item, so stop counting its bytes.
 		b.retained -= len(b.byIndex[outputIndex.Int()])
 	}
@@ -147,10 +147,11 @@ func (b *codexOutputItemPatchBuffer) evictImages() {
 
 // codexImageUsageStub drops the base64 image; usage parsing reads only metadata.
 func codexImageUsageStub(item []byte) []byte {
-	if stub, err := sjson.DeleteBytes(item, "result"); err == nil {
-		return stub
+	doc := ojson.NewDoc(item)
+	if err := doc.Delete("result"); err != nil {
+		return item
 	}
-	return item
+	return doc.Bytes()
 }
 
 // usageItems returns the observed output items for usage parsing: the retained
@@ -166,7 +167,7 @@ func (b *codexOutputItemPatchBuffer) usageItems() (map[int64][]byte, [][]byte) {
 }
 
 func isCodexImageOutputItem(item []byte) bool {
-	return gjson.GetBytes(item, "type").String() == "image_generation_call"
+	return ojson.GetBytesNoCopy(item, "type").String() == "image_generation_call"
 }
 
 // count reports how many output items were observed, retained or not.
