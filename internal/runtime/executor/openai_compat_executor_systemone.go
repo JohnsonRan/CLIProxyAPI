@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -45,15 +46,17 @@ func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *clipr
 	payload := req.Payload
 	original := opts.OriginalRequest
 	if len(original) == 0 {
-		original = payload
+		original = bytes.Clone(payload)
 	}
+	doc := ojson.NewDoc(payload)
 	if baseModel != "" {
-		payload = helps.SetStringIfDifferent(payload, "model", baseModel)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, openAICompatSystemOneFormat, opts.SourceFormat.String(), "", payload, original, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, openAICompatSystemOneFormat, opts.SourceFormat.String(), "", doc, original, requestedModel, requestPath, opts.Headers)
+	payload = doc.Bytes()
 
 	url := strings.TrimSuffix(baseURL, "/") + openAICompatSystemOnePath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
