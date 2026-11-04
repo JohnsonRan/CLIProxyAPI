@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // Response kinds tag each upstream response so the summarizers can find the
@@ -72,13 +72,13 @@ func (s clientUsageSummary) empty() bool {
 // summarizeClientUsage derives the quota summary from a credential's upstream
 // responses. Failed or missing responses contribute nothing.
 func summarizeClientUsage(provider string, responses []clientUsageUpstream, observedAt time.Time) clientUsageSummary {
-	bodies := make(map[string]gjson.Result, len(responses))
+	bodies := make(map[string]ojson.Result, len(responses))
 	for _, response := range responses {
 		if response.kind == "" || !clientUsageUpstreamOK(response) || len(response.Body) == 0 {
 			continue
 		}
 		if _, seen := bodies[response.kind]; !seen {
-			bodies[response.kind] = gjson.ParseBytes(response.Body)
+			bodies[response.kind] = ojson.ParseBytes(response.Body)
 		}
 	}
 	var summary clientUsageSummary
@@ -100,7 +100,7 @@ func summarizeClientUsage(provider string, responses []clientUsageUpstream, obse
 	return summary
 }
 
-func summarizeCodexUsage(bodies map[string]gjson.Result, observedAt time.Time) clientUsageSummary {
+func summarizeCodexUsage(bodies map[string]ojson.Result, observedAt time.Time) clientUsageSummary {
 	var summary clientUsageSummary
 	usage, ok := bodies[clientUsageKindUsage]
 	if ok {
@@ -141,14 +141,14 @@ func summarizeCodexUsage(bodies map[string]gjson.Result, observedAt time.Time) c
 // codexUsageWindows classifies a Codex rate limit's primary and secondary
 // windows by their length, falling back to their order for payloads without
 // a length, as the panel does.
-func codexUsageWindows(limit gjson.Result, idPrefix, label string, observedAt time.Time) []clientUsageWindow {
+func codexUsageWindows(limit ojson.Result, idPrefix, label string, observedAt time.Time) []clientUsageWindow {
 	if !limit.IsObject() {
 		return nil
 	}
 	primary := clientUsageFirst(limit, "primary_window", "primaryWindow")
 	secondary := clientUsageFirst(limit, "secondary_window", "secondaryWindow")
-	var fiveHour, longer gjson.Result
-	for _, window := range []gjson.Result{primary, secondary} {
+	var fiveHour, longer ojson.Result
+	for _, window := range []ojson.Result{primary, secondary} {
 		if !window.IsObject() {
 			continue
 		}
@@ -184,7 +184,7 @@ func codexUsageWindows(limit gjson.Result, idPrefix, label string, observedAt ti
 	return out
 }
 
-func codexUsageWindow(window gjson.Result, id, label string, limitReached bool, observedAt time.Time) clientUsageWindow {
+func codexUsageWindow(window ojson.Result, id, label string, limitReached bool, observedAt time.Time) clientUsageWindow {
 	out := clientUsageWindow{ID: id, Label: label, PeriodSeconds: codexWindowSeconds(window)}
 	out.UsedPercent = clientUsageNumber(clientUsageFirst(window, "used_percent", "usedPercent"))
 	out.ResetAt = clientUsageTime(clientUsageFirst(window, "reset_at", "resetAt"))
@@ -200,7 +200,7 @@ func codexUsageWindow(window gjson.Result, id, label string, limitReached bool, 
 	return out
 }
 
-func codexWindowSeconds(window gjson.Result) int64 {
+func codexWindowSeconds(window ojson.Result) int64 {
 	if seconds := clientUsageNumber(clientUsageFirst(window, "limit_window_seconds", "limitWindowSeconds")); seconds != nil {
 		return int64(*seconds)
 	}
@@ -215,7 +215,7 @@ func codexMonthlySeconds(seconds int64) bool {
 // response, in the panel's order. Only five_hour is a 5-hour window.
 var claudeUsageWindowKeys = []string{"five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet", "seven_day_cowork"}
 
-func summarizeClaudeUsage(bodies map[string]gjson.Result) clientUsageSummary {
+func summarizeClaudeUsage(bodies map[string]ojson.Result) clientUsageSummary {
 	var summary clientUsageSummary
 	if usage, ok := bodies[clientUsageKindUsage]; ok {
 		known := map[string]struct{}{"extra_usage": {}, "limits": {}}
@@ -252,7 +252,7 @@ func summarizeClaudeUsage(bodies map[string]gjson.Result) clientUsageSummary {
 		}
 		// Dollar-denominated pools (for example iguana_necktie on credit plans)
 		// are balances; a plain iguana_necktie window is the Fable weekly limit.
-		usage.ForEach(func(key, value gjson.Result) bool {
+		usage.ForEach(func(key, value ojson.Result) bool {
 			name := key.String()
 			if _, skip := known[name]; skip || !value.IsObject() {
 				return true
@@ -315,7 +315,7 @@ func summarizeClaudeUsage(bodies map[string]gjson.Result) clientUsageSummary {
 
 // claudePlan mirrors the panel: an active Team organization wins, then the
 // account's Max and Pro flags.
-func claudePlan(profile gjson.Result) string {
+func claudePlan(profile ojson.Result) string {
 	if strings.EqualFold(profile.Get("organization.organization_type").String(), "claude_team") &&
 		strings.EqualFold(profile.Get("organization.subscription_status").String(), "active") {
 		return "team"
@@ -339,7 +339,7 @@ var antigravityPlans = map[string]string{
 	"g1-ultra-lite-tier": "ultra-lite",
 }
 
-func summarizeAntigravityUsage(bodies map[string]gjson.Result) clientUsageSummary {
+func summarizeAntigravityUsage(bodies map[string]ojson.Result) clientUsageSummary {
 	var summary clientUsageSummary
 	if usage, ok := bodies[clientUsageKindUsage]; ok {
 		for groupIndex, group := range usage.Get("groups").Array() {
@@ -396,7 +396,7 @@ func antigravityWindowSeconds(window string) int64 {
 	return 0
 }
 
-func summarizeXAIUsage(bodies map[string]gjson.Result) clientUsageSummary {
+func summarizeXAIUsage(bodies map[string]ojson.Result) clientUsageSummary {
 	var summary clientUsageSummary
 	if weekly, ok := bodies[clientUsageKindBillingWeek]; ok {
 		config := weekly.Get("config")
@@ -448,7 +448,7 @@ func summarizeXAIUsage(bodies map[string]gjson.Result) clientUsageSummary {
 }
 
 // xaiCents reads an xAI amount in cents, either bare or as {"val": n}.
-func xaiCents(value gjson.Result) *float64 {
+func xaiCents(value ojson.Result) *float64 {
 	if value.IsObject() {
 		return clientUsageNumber(value.Get("val"))
 	}
@@ -472,7 +472,7 @@ var commandCodePlans = map[string]struct {
 	"teams-pro":           {"Teams Pro", 40},
 }
 
-func summarizeCommandCodeUsage(bodies map[string]gjson.Result) clientUsageSummary {
+func summarizeCommandCodeUsage(bodies map[string]ojson.Result) clientUsageSummary {
 	var summary clientUsageSummary
 	subscription := bodies[clientUsageKindSubscription].Get("data")
 	planID := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(subscription.Get("planId").String())), "_", "-")
@@ -539,18 +539,18 @@ func summarizeCommandCodeUsage(bodies map[string]gjson.Result) clientUsageSummar
 }
 
 // clientUsageFirst returns the first existing field among keys.
-func clientUsageFirst(value gjson.Result, keys ...string) gjson.Result {
+func clientUsageFirst(value ojson.Result, keys ...string) ojson.Result {
 	for _, key := range keys {
-		if field := value.Get(key); field.Exists() && field.Type != gjson.Null {
+		if field := value.Get(key); field.Exists() && field.Type != ojson.Null {
 			return field
 		}
 	}
-	return gjson.Result{}
+	return ojson.Result{}
 }
 
-func clientUsageFirstString(value gjson.Result, keys ...string) string {
+func clientUsageFirstString(value ojson.Result, keys ...string) string {
 	for _, key := range keys {
-		if field := value.Get(key); field.Type == gjson.String {
+		if field := value.Get(key); field.Type == ojson.String {
 			if text := strings.TrimSpace(field.String()); text != "" {
 				return text
 			}
@@ -560,12 +560,12 @@ func clientUsageFirstString(value gjson.Result, keys ...string) string {
 }
 
 // clientUsageNumber reads a finite number given as a JSON number or a numeric string.
-func clientUsageNumber(value gjson.Result) *float64 {
+func clientUsageNumber(value ojson.Result) *float64 {
 	var number float64
 	switch value.Type {
-	case gjson.Number:
+	case ojson.Number:
 		number = value.Float()
-	case gjson.String:
+	case ojson.String:
 		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(value.String()), 64)
 		if errParse != nil {
 			return nil
@@ -580,7 +580,7 @@ func clientUsageNumber(value gjson.Result) *float64 {
 	return &number
 }
 
-func clientUsageCents(value gjson.Result) *float64 {
+func clientUsageCents(value ojson.Result) *float64 {
 	if number := clientUsageNumber(value); number != nil {
 		return clientUsageFloat(*number / 100)
 	}
@@ -591,8 +591,8 @@ func clientUsageFloat(value float64) *float64 { return &value }
 
 // clientUsageTime reads an RFC 3339 string or a Unix time in seconds or
 // milliseconds. Zero and negative values mean unknown.
-func clientUsageTime(value gjson.Result) *time.Time {
-	if value.Type == gjson.String {
+func clientUsageTime(value ojson.Result) *time.Time {
+	if value.Type == ojson.String {
 		text := strings.TrimSpace(value.String())
 		for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05"} {
 			if parsed, errParse := time.Parse(layout, text); errParse == nil {
@@ -615,7 +615,7 @@ func clientUsageTime(value gjson.Result) *time.Time {
 
 // clientUsagePeriod returns the reset instant and, when both ends are known,
 // the period length.
-func clientUsagePeriod(start, end gjson.Result) (*time.Time, int64) {
+func clientUsagePeriod(start, end ojson.Result) (*time.Time, int64) {
 	resetAt := clientUsageTime(end)
 	startAt := clientUsageTime(start)
 	if resetAt != nil && startAt != nil && resetAt.After(*startAt) {
