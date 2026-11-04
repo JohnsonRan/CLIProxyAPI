@@ -172,7 +172,7 @@ func claudeMetadataIdentitiesFromSessionObject(root, reqRoot sessionObject, hasN
 	return parseClaudeMetadataIdentities(userID, root.Get)
 }
 
-func parseClaudeMetadataIdentities(userID string, lookup func(string) gjson.Result) (sessionID, parentSessionID, agentID string) {
+func parseClaudeMetadataIdentities(userID string, lookup func(string) ojson.Result) (sessionID, parentSessionID, agentID string) {
 	if userID == "" {
 		return "", "", ""
 	}
