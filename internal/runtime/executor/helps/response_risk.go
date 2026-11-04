@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // Response risk values reported through usage.Record.UpstreamRisk.
@@ -84,7 +84,7 @@ func extractClaudeRisk(data []byte) ResponseRisk {
 	if len(data) == 0 {
 		return ResponseRisk{}
 	}
-	root := gjson.ParseBytes(data)
+	root := ojson.ParseBytes(data)
 	msgType := root.Get("type").String()
 
 	stop := root.Get("stop_reason")
@@ -122,7 +122,7 @@ func extractClaudeRisk(data []byte) ResponseRisk {
 	return ResponseRisk{}
 }
 
-func claudeFallbackRisk(block gjson.Result) ResponseRisk {
+func claudeFallbackRisk(block ojson.Result) ResponseRisk {
 	fromModel := strings.TrimSpace(block.Get("from.model").String())
 	toModel := strings.TrimSpace(block.Get("to.model").String())
 	reason := ""
@@ -144,9 +144,9 @@ func extractCodexMetadataRisk(data []byte) ResponseRisk {
 	if len(data) == 0 {
 		return ResponseRisk{}
 	}
-	switch gjson.GetBytes(data, "type").String() {
+	switch ojson.GetBytes(data, "type").String() {
 	case "response.metadata", "codex.response.metadata":
-		metadata := gjson.GetBytes(data, "metadata")
+		metadata := ojson.GetBytes(data, "metadata")
 		for _, v := range metadata.Get("openai_verification_recommendation").Array() {
 			if v.String() == ResponseRiskTrustedAccessForCyber {
 				return ResponseRisk{Kind: ResponseRiskTrustedAccessForCyber}
@@ -160,7 +160,7 @@ func extractCodexMetadataRisk(data []byte) ResponseRisk {
 		}
 	}
 	// The Codex CLI also accepts a top-level safety_buffering object on any event.
-	if sb := gjson.GetBytes(data, "safety_buffering"); sb.IsObject() {
+	if sb := ojson.GetBytes(data, "safety_buffering"); sb.IsObject() {
 		return ResponseRisk{
 			Kind:   ResponseRiskSafetyBuffering,
 			Reason: codexSafetyBufferingReason(sb),
@@ -169,7 +169,7 @@ func extractCodexMetadataRisk(data []byte) ResponseRisk {
 	return ResponseRisk{}
 }
 
-func codexSafetyBufferingReason(v gjson.Result) string {
+func codexSafetyBufferingReason(v ojson.Result) string {
 	var parts []string
 	if uc := joinStringArray(v.Get("use_cases")); uc != "" {
 		parts = append(parts, "use_cases: "+uc)
@@ -180,8 +180,8 @@ func codexSafetyBufferingReason(v gjson.Result) string {
 	return strings.Join(parts, "; ")
 }
 
-func joinStringArray(v gjson.Result) string {
-	if v.Type == gjson.String {
+func joinStringArray(v ojson.Result) string {
+	if v.Type == ojson.String {
 		return strings.TrimSpace(v.String())
 	}
 	var items []string
@@ -200,7 +200,7 @@ func extractGeminiSafetyBlock(data []byte) ResponseRisk {
 	if len(data) == 0 {
 		return ResponseRisk{}
 	}
-	root := gjson.ParseBytes(data)
+	root := ojson.ParseBytes(data)
 	if wrapped := root.Get("response"); wrapped.IsObject() {
 		root = wrapped
 	}
@@ -227,7 +227,7 @@ func extractGeminiSafetyBlock(data []byte) ResponseRisk {
 }
 
 // blockedSafetyRatings lists the safety categories Gemini blocked on, or rated HIGH.
-func blockedSafetyRatings(ratings gjson.Result) string {
+func blockedSafetyRatings(ratings ojson.Result) string {
 	var parts []string
 	for _, rating := range ratings.Array() {
 		probability := rating.Get("probability").String()

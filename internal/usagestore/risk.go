@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/MoeForge/moego/ojson"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/tidwall/gjson"
 )
 
 // Risk values recorded on events the upstream flagged for safety reasons. Besides these and the
@@ -73,7 +73,7 @@ func classifyRisk(record coreusage.Record, substituted bool) (risk, reason strin
 // errorMessage returns the upstream message of a rejection body, or "" when it has none.
 func errorMessage(body string) string {
 	for _, path := range []string{"error.message", "message", "response.error.message"} {
-		if m := strings.TrimSpace(gjson.Get(body, path).String()); m != "" {
+		if m := strings.TrimSpace(ojson.Get(body, path).String()); m != "" {
 			return truncate(m, maxRiskReasonBytes)
 		}
 	}
@@ -96,22 +96,22 @@ func turnPrompt(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
 	}
-	if !gjson.ValidBytes(payload) {
+	if !ojson.ValidBytes(payload) {
 		return clipMiddle(string(payload), maxRiskPromptBytes)
 	}
-	root := gjson.ParseBytes(payload)
-	var items gjson.Result
+	root := ojson.ParseBytes(payload)
+	var items ojson.Result
 	for _, path := range []string{"input", "messages", "contents", "request.contents"} {
 		if v := root.Get(path); v.Exists() {
 			items = v
 			break
 		}
 	}
-	if items.Type == gjson.String {
+	if items.Type == ojson.String {
 		return clipMiddle(items.Str, maxRiskPromptBytes)
 	}
 	if !items.IsArray() {
-		if p := root.Get("prompt"); p.Type == gjson.String {
+		if p := root.Get("prompt"); p.Type == ojson.String {
 			return clipMiddle(p.Str, maxRiskPromptBytes)
 		}
 		return clipMiddle(string(payload), maxRiskPromptBytes)
@@ -141,12 +141,12 @@ func turnPrompt(payload []byte) string {
 
 // isUserText reports whether an item is a user message with text, as opposed to a user-role
 // item that only returns tool results (Claude tool_result, Gemini functionResponse).
-func isUserText(item gjson.Result) bool {
+func isUserText(item ojson.Result) bool {
 	if item.Get("role").String() != "user" {
 		return false
 	}
 	content := item.Get("content")
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		return strings.TrimSpace(content.Str) != ""
 	}
 	for _, part := range append(content.Array(), item.Get("parts").Array()...) {
@@ -162,12 +162,12 @@ func isUserText(item gjson.Result) bool {
 
 // collectText appends the human-readable text of a message, part or tool item to sb and skips
 // opaque fields such as encrypted reasoning, signatures and inline media.
-func collectText(v gjson.Result, sb *strings.Builder) {
+func collectText(v ojson.Result, sb *strings.Builder) {
 	switch {
-	case v.Type == gjson.String:
+	case v.Type == ojson.String:
 		writeLine(sb, v.Str)
 	case v.IsArray():
-		v.ForEach(func(_, x gjson.Result) bool {
+		v.ForEach(func(_, x ojson.Result) bool {
 			collectText(x, sb)
 			return true
 		})
@@ -180,7 +180,7 @@ func collectText(v gjson.Result, sb *strings.Builder) {
 				}
 			}
 		}
-		v.ForEach(func(k, x gjson.Result) bool {
+		v.ForEach(func(k, x ojson.Result) bool {
 			switch k.Str {
 			case "text", "content", "output", "refusal", "summary", "thinking", "parts",
 				"tool_calls", "function", "functionCall", "functionResponse":
@@ -193,8 +193,8 @@ func collectText(v gjson.Result, sb *strings.Builder) {
 	}
 }
 
-func rawOrString(v gjson.Result) string {
-	if v.Type == gjson.String {
+func rawOrString(v ojson.Result) string {
+	if v.Type == ojson.String {
 		return v.Str
 	}
 	return v.Raw
