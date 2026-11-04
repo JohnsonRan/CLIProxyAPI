@@ -8,8 +8,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	"github.com/tidwall/gjson"
 )
 
 // responsesHTTPStateEntry is the continuation state of one HTTP Responses
@@ -366,7 +366,7 @@ func splitResponsesHTTPStateJSON(data []byte) responsesHTTPStateParts {
 		return responsesHTTPStateParts{raw: []string{responsesHTTPStateView(data)}}
 	}
 	parts := responsesHTTPStateParts{array: true}
-	root.ForEach(func(_, item gjson.Result) bool {
+	root.ForEach(func(_, item ojson.Result) bool {
 		parts.raw = append(parts.raw, item.Raw)
 		return true
 	})

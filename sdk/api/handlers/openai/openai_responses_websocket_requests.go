@@ -217,7 +217,7 @@ func shouldReplaceWebsocketTranscript(rawJSON []byte, nextInput ojson.Result) bo
 	if requestType != wsRequestTypeCreate && requestType != wsRequestTypeAppend {
 		return false
 	}
-	previousResponseID := fields[1]
+	previousResponseID := ojson.GetBytesNoCopy(rawJSON, "previous_response_id")
 	if strings.TrimSpace(previousResponseID.String()) != "" {
 		return false
 	}
@@ -394,7 +394,6 @@ func responsesWebsocketInputWithInheritedAdditionalTools(input ojson.Result, las
 		items = append(items, item.Raw)
 	}
 	return []byte("[" + strings.Join(items, ",") + "]")
-}
 }
 
 type responsesWebsocketInputItem struct {
