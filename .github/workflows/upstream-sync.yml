@@ -48,6 +48,7 @@ env:
     patch/session-claude-identity-once
     patch/antigravity-replay-signature-guard
     patch/thinking-validate-once
+    patch/request-body-no-copy
     patch/openai-compat-stream-validate-once
     patch/pluginhost-hooks-noalloc
     patch/responses-ws-previous-response-400
