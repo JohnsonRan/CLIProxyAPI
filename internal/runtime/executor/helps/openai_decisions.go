@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -85,15 +86,16 @@ func ExecuteOpenAIDecisions(ctx context.Context, cfg *config.Config, executor us
 	reporter := NewExecutorUsageReporter(ctx, executor, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	payload := req.Payload
 	original := opts.OriginalRequest
 	if len(original) == 0 {
-		original = payload
+		original = req.Payload
 	}
+	doc := ojson.NewDoc(req.Payload)
 	if baseModel != "" {
-		payload = SetStringIfDifferent(payload, "model", baseModel)
+		SetStringIfDifferentDoc(doc, "model", baseModel)
 	}
-	payload = ApplyPayloadConfigWithRequest(cfg, baseModel, OpenAIDecisionsFormat, opts.SourceFormat.String(), "", payload, original, PayloadRequestedModel(opts, req.Model), PayloadRequestPath(opts), opts.Headers)
+	ApplyPayloadConfigWithRequestDoc(cfg, baseModel, OpenAIDecisionsFormat, opts.SourceFormat.String(), "", doc, original, PayloadRequestedModel(opts, req.Model), PayloadRequestPath(opts), opts.Headers)
+	payload := doc.Bytes()
 
 	url := strings.TrimSuffix(strings.TrimSpace(baseURL), "/") + openAIDecisionsPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))

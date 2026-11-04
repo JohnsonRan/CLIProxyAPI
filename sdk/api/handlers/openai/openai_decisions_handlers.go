@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // Decisions handles POST /v1/decisions (OpenAI Decisions API).
@@ -28,25 +28,25 @@ func (h *OpenAIAPIHandler) Decisions(c *gin.Context) {
 		writeDecisionsError(c, clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), fmt.Sprintf("Invalid request: %v", err), "")
 		return
 	}
-	if !gjson.ValidBytes(rawJSON) || !gjson.ParseBytes(rawJSON).IsObject() {
+	if !ojson.ValidBytes(rawJSON) || !ojson.ParseBytes(rawJSON).IsObject() {
 		writeDecisionsError(c, http.StatusBadRequest, "Invalid request: body must be a JSON object", "")
 		return
 	}
 
-	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	modelName := strings.TrimSpace(ojson.GetBytes(rawJSON, "model").String())
 	if modelName == "" {
 		writeDecisionsError(c, http.StatusBadRequest, "Missing required parameter: 'model'.", "missing_required_parameter")
 		return
 	}
-	if input := gjson.GetBytes(rawJSON, "input"); !input.Exists() || input.Type == gjson.Null {
+	if input := ojson.GetBytes(rawJSON, "input"); !input.Exists() || input.Type == ojson.Null {
 		writeDecisionsError(c, http.StatusBadRequest, "Missing required parameter: 'input'.", "missing_required_parameter")
 		return
 	}
-	if questions := gjson.GetBytes(rawJSON, "questions"); !questions.IsArray() || len(questions.Array()) == 0 {
+	if questions := ojson.GetBytes(rawJSON, "questions"); !questions.IsArray() || len(questions.Array()) == 0 {
 		writeDecisionsError(c, http.StatusBadRequest, "Missing or invalid required parameter: 'questions' must be a non-empty array.", "missing_required_parameter")
 		return
 	}
-	if gjson.GetBytes(rawJSON, "stream").Bool() {
+	if ojson.GetBytes(rawJSON, "stream").Bool() {
 		writeDecisionsError(c, http.StatusBadRequest, "Streaming is not supported for decisions.", "unsupported_parameter")
 		return
 	}

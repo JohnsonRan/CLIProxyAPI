@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const decisionsTestResponse = `{"id":"dec_1","object":"decision","model":"gpt-6-luna","answers":[{"type":"predicate","name":"damaged","probability":0.97}],"usage":{"input_tokens":41,"output_tokens":3,"total_tokens":44}}`
@@ -94,10 +94,10 @@ func TestOpenAICompatExecutorDecisionsPassthrough(t *testing.T) {
 	if upstream.auth != "Bearer sk-compat" {
 		t.Fatalf("Authorization = %q", upstream.auth)
 	}
-	if model := gjson.Get(upstream.body, "model").String(); model != "gpt-6-luna" {
+	if model := ojson.Get(upstream.body, "model").String(); model != "gpt-6-luna" {
 		t.Fatalf("upstream model = %q, want gpt-6-luna (alias resolved)", model)
 	}
-	if gjson.Get(upstream.body, "questions.0.name").String() != "damaged" || gjson.Get(upstream.body, "messages").Exists() {
+	if ojson.Get(upstream.body, "questions.0.name").String() != "damaged" || ojson.Get(upstream.body, "messages").Exists() {
 		t.Fatalf("upstream body was not forwarded unchanged: %s", upstream.body)
 	}
 	if string(resp.Payload) != decisionsTestResponse {
@@ -128,10 +128,10 @@ func TestOpenAICompatExecutorDecisionsAppliesPayloadRulesLast(t *testing.T) {
 	if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if model := gjson.Get(upstream.body, "model").String(); model != "gpt-6-luna-2026-10-01" {
+	if model := ojson.Get(upstream.body, "model").String(); model != "gpt-6-luna-2026-10-01" {
 		t.Fatalf("upstream model = %q, want the payload override to win over the built-in model rewrite", model)
 	}
-	if gjson.Get(upstream.body, "safety_identifier").Exists() {
+	if ojson.Get(upstream.body, "safety_identifier").Exists() {
 		t.Fatalf("payload filter rule was not applied: %s", upstream.body)
 	}
 }
@@ -152,7 +152,7 @@ func TestOpenAICompatExecutorDecisionsPreservesUpstreamError(t *testing.T) {
 	if !ok || status.StatusCode() != http.StatusForbidden {
 		t.Fatalf("error = %v, want status 403", err)
 	}
-	if gjson.Get(err.Error(), "error.message").String() != "Decision API is not enabled for this user." {
+	if ojson.Get(err.Error(), "error.message").String() != "Decision API is not enabled for this user." {
 		t.Fatalf("error body = %s, want upstream body", err.Error())
 	}
 }
@@ -211,7 +211,7 @@ func TestCodexExecutorDecisionsUsesAPIKeyCredential(t *testing.T) {
 	if upstream.path != "/v1/decisions" || upstream.auth != "Bearer sk-codex" {
 		t.Fatalf("upstream path = %q auth = %q, want /v1/decisions with the API key", upstream.path, upstream.auth)
 	}
-	if gjson.Get(upstream.body, "input").String() == "" || gjson.Get(upstream.body, "instructions").Exists() {
+	if ojson.Get(upstream.body, "input").String() == "" || ojson.Get(upstream.body, "instructions").Exists() {
 		t.Fatalf("decisions body must not be translated to Responses: %s", upstream.body)
 	}
 	if string(resp.Payload) != decisionsTestResponse {
@@ -280,7 +280,7 @@ func TestOpenAIDecisionsErrorScope(t *testing.T) {
 			if !ok || status.StatusCode() != tc.status {
 				t.Fatalf("%s %d: status lost: %v", name, tc.status, err)
 			}
-			if gjson.Get(err.Error(), "error.message").String() != "x" {
+			if ojson.Get(err.Error(), "error.message").String() != "x" {
 				t.Fatalf("%s %d: body not preserved: %s", name, tc.status, err.Error())
 			}
 		}

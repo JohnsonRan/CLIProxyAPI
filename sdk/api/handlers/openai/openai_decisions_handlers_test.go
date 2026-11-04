@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -16,7 +17,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 type decisionsCaptureExecutor struct {
@@ -122,7 +122,7 @@ func TestDecisionsWithOnlyOAuthCredentialsDoesNotExecute(t *testing.T) {
 	router := newDecisionsRouter(t, executor, oauth)
 
 	resp := postDecisions(router, validDecisionsBody)
-	if resp.Code != http.StatusBadRequest || gjson.Get(resp.Body.String(), "error.code").String() != "model_not_supported" {
+	if resp.Code != http.StatusBadRequest || ojson.Get(resp.Body.String(), "error.code").String() != "model_not_supported" {
 		t.Fatalf("status = %d body = %s, want 400 model_not_supported", resp.Code, resp.Body.String())
 	}
 	if len(executor.authIDs) != 0 {
