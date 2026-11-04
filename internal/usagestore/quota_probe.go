@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 // Antigravity sends no quota headers with its responses, so its windows are read from the
@@ -138,7 +138,7 @@ func quotaPoolModelSQL(pool string) string {
 	return ""
 }
 
-func firstString(r gjson.Result, paths ...string) string {
+func firstString(r ojson.Result, paths ...string) string {
 	for _, p := range paths {
 		if v := r.Get(p); v.Exists() {
 			return strings.TrimSpace(v.String())
@@ -150,7 +150,7 @@ func firstString(r gjson.Result, paths ...string) string {
 // parseAntigravityQuota reads the windows of a retrieveUserQuotaSummary body, either bare or
 // wrapped in "response". Window IDs are "<pool>-<5h|daily|weekly>".
 func parseAntigravityQuota(body []byte) []quotaWindow {
-	root := gjson.ParseBytes(body)
+	root := ojson.ParseBytes(body)
 	if r := root.Get("response"); r.IsObject() {
 		root = r
 	}
@@ -174,13 +174,13 @@ func parseAntigravityQuota(body []byte) []quotaWindow {
 			default:
 				continue
 			}
-			var frac gjson.Result
+			var frac ojson.Result
 			for _, p := range []string{"remainingFraction", "remaining_fraction", "remaining.remainingFraction"} {
 				if frac = bucket.Get(p); frac.Exists() {
 					break
 				}
 			}
-			if frac.Type != gjson.Number {
+			if frac.Type != ojson.Number {
 				continue
 			}
 			used := math.Round((1-frac.Float())*100*1e6) / 1e6
