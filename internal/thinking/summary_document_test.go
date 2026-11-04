@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
-// TestSummaryDocumentMatchesGJSON pins the index to gjson.GetBytes semantics
+// TestSummaryDocumentMatchesOJSON pins the index to ojson.GetBytes semantics
 // for every path the summary readers use, including duplicate members, nested
 // misses, scalar roots and non-object bodies.
-func TestSummaryDocumentMatchesGJSON(t *testing.T) {
+func TestSummaryDocumentMatchesOJSON(t *testing.T) {
 	bodies := []string{
 		`{}`,
 		`[]`,
@@ -48,7 +48,7 @@ func TestSummaryDocumentMatchesGJSON(t *testing.T) {
 	for _, body := range bodies {
 		doc := indexSummaryDocument([]byte(body))
 		for _, path := range paths {
-			want := gjson.GetBytes([]byte(body), path)
+			want := ojson.GetBytes([]byte(body), path)
 			got := doc.get(path)
 			if got.Type != want.Type || got.Raw != want.Raw {
 				t.Fatalf("body %s path %q: got %s (%v), want %s (%v)", body, path, got.Raw, got.Type, want.Raw, want.Type)
