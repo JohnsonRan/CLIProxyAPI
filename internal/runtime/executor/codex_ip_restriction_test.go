@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestCodexTemporaryIPRestrictionClassifiedAs503(t *testing.T) {
@@ -18,7 +18,7 @@ func TestCodexTemporaryIPRestrictionClassifiedAs503(t *testing.T) {
 	if errHTTP.RetryAfter() == nil || *errHTTP.RetryAfter() != 30*time.Second {
 		t.Fatalf("HTTP retryAfter = %v, want 30s", errHTTP.RetryAfter())
 	}
-	if got := gjson.Get(errHTTP.Error(), "error.code").String(); got != "ip_temporarily_restricted" {
+	if got := ojson.Get(errHTTP.Error(), "error.code").String(); got != "ip_temporarily_restricted" {
 		t.Fatalf("HTTP error.code = %q, want ip_temporarily_restricted", got)
 	}
 

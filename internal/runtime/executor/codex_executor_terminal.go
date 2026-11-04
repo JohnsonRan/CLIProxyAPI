@@ -365,9 +365,9 @@ func isCodexTemporaryIPRestriction(statusCode int, body []byte) bool {
 	if statusCode != http.StatusUnauthorized {
 		return false
 	}
-	message := gjson.GetBytes(body, "error.message").String()
+	message := ojson.GetBytes(body, "error.message").String()
 	if message == "" {
-		message = gjson.GetBytes(body, "message").String()
+		message = ojson.GetBytes(body, "message").String()
 	}
 	if message == "" {
 		message = strings.TrimSpace(string(body))
@@ -376,19 +376,19 @@ func isCodexTemporaryIPRestriction(statusCode int, body []byte) bool {
 }
 
 func newCodexTemporaryIPRestrictionErr(body []byte) statusErr {
-	message := gjson.GetBytes(body, "error.message").String()
+	message := ojson.GetBytes(body, "error.message").String()
 	if message == "" {
-		message = gjson.GetBytes(body, "message").String()
+		message = ojson.GetBytes(body, "message").String()
 	}
 	if message == "" {
 		message = strings.TrimSpace(string(body))
 	}
-	out := []byte(`{"error":{}}`)
-	out, _ = sjson.SetBytes(out, "error.message", message)
-	out, _ = sjson.SetBytes(out, "error.type", "server_error")
-	out, _ = sjson.SetBytes(out, "error.code", "ip_temporarily_restricted")
+	doc := ojson.NewDoc([]byte(`{"error":{}}`))
+	_ = doc.Set("error.message", message)
+	_ = doc.Set("error.type", "server_error")
+	_ = doc.Set("error.code", "ip_temporarily_restricted")
 	retryAfter := 30 * time.Second
-	return statusErr{code: http.StatusServiceUnavailable, msg: string(out), retryAfter: &retryAfter}
+	return statusErr{code: http.StatusServiceUnavailable, msg: doc.String(), retryAfter: &retryAfter}
 }
 
 func classifyCodexStatusError(statusCode int, body []byte) []byte {
