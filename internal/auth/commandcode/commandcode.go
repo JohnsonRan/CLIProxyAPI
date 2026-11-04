@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -115,7 +115,7 @@ func FetchAccount(ctx context.Context, client *http.Client, apiKey string) (*Acc
 }
 
 func parseAccount(body []byte) *Account {
-	root := gjson.ParseBytes(body)
+	root := ojson.ParseBytes(body)
 	user := root.Get("user")
 	userName := strings.TrimSpace(user.Get("userName").String())
 	if userName == "" {

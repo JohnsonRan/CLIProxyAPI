@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -69,7 +69,7 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey strin
 // appends the System One models when a non-empty catalog does not list them.
 // Models served only on /systemone declare the decisions output modality.
 func ParseModels(body []byte, now int64) []*registry.ModelInfo {
-	data := gjson.GetBytes(body, "data")
+	data := ojson.GetBytes(body, "data")
 	if !data.IsArray() {
 		return nil
 	}
@@ -132,7 +132,7 @@ func ParseModels(body []byte, now int64) []*registry.ModelInfo {
 	return models
 }
 
-func containsEndpoint(endpoints gjson.Result, want string) bool {
+func containsEndpoint(endpoints ojson.Result, want string) bool {
 	for _, endpoint := range endpoints.Array() {
 		if strings.EqualFold(strings.TrimSpace(endpoint.String()), want) {
 			return true
