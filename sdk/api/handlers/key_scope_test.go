@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -18,7 +19,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -144,7 +144,7 @@ func TestScopeProvidersNarrowsAndRejects(t *testing.T) {
 		t.Fatalf("rejection status = %d, want 400", errMsg.StatusCode)
 	}
 	body := errMsg.Error.Error()
-	if gjson.Get(body, "error.code").String() != "model_not_found" || !strings.Contains(gjson.Get(body, "error.message").String(), keyScopeCodexModel) {
+	if ojson.Get(body, "error.code").String() != "model_not_found" || !strings.Contains(ojson.Get(body, "error.message").String(), keyScopeCodexModel) {
 		t.Fatalf("rejection body = %s", body)
 	}
 
@@ -379,7 +379,7 @@ func TestScopeModelListFiltersEveryListShape(t *testing.T) {
 
 	ids := func(body []byte, listKey, field string) []string {
 		var out []string
-		gjson.GetBytes(body, listKey).ForEach(func(_, entry gjson.Result) bool {
+		ojson.GetBytes(body, listKey).ForEach(func(_, entry ojson.Result) bool {
 			out = append(out, entry.Get(field).String())
 			return true
 		})
@@ -410,10 +410,10 @@ func TestScopeModelListFiltersEveryListShape(t *testing.T) {
 	if got := ids(scopedAnthropic, "data", "id"); !equal(got, []string{keyScopeClaudeModel, keyScopeSharedModel}) {
 		t.Fatalf("Anthropic list for a Claude key = %v", got)
 	}
-	if first, last := gjson.GetBytes(scopedAnthropic, "first_id").String(), gjson.GetBytes(scopedAnthropic, "last_id").String(); first != keyScopeClaudeModel || last != keyScopeSharedModel {
+	if first, last := ojson.GetBytes(scopedAnthropic, "first_id").String(), ojson.GetBytes(scopedAnthropic, "last_id").String(); first != keyScopeClaudeModel || last != keyScopeSharedModel {
 		t.Fatalf("Anthropic first_id/last_id = %q/%q", first, last)
 	}
-	if !gjson.GetBytes(scopedAnthropic, "has_more").Exists() {
+	if !ojson.GetBytes(scopedAnthropic, "has_more").Exists() {
 		t.Fatal("unrelated list fields were dropped")
 	}
 
@@ -465,7 +465,7 @@ func TestKeyScopeAcceptsOpenAICompatibilityNames(t *testing.T) {
 		}
 		c, _ := keyScopeRequestContext(apiKey)
 		list := handler.scopeModelList(c, []byte(`{"data":[{"id":"`+routerModel+`"},{"id":"`+keyScopeClaudeModel+`"}]}`))
-		if data := gjson.GetBytes(list, "data").Array(); len(data) != 1 || data[0].Get("id").String() != routerModel {
+		if data := ojson.GetBytes(list, "data").Array(); len(data) != 1 || data[0].Get("id").String() != routerModel {
 			t.Fatalf("%s: model list = %s, want only the compatibility model", apiKey, list)
 		}
 	}
@@ -487,11 +487,11 @@ func TestScopeModelListResolvesDisguisedAnthropicIDs(t *testing.T) {
 	codex, recorder := keyScopeRequestContext("sk-codex-abc")
 	handler.WriteModelListResponse(codex, "claude", list)
 	body := recorder.Body.Bytes()
-	data := gjson.GetBytes(body, "data").Array()
+	data := ojson.GetBytes(body, "data").Array()
 	if len(data) != 1 || data[0].Get("id").String() != disguised {
 		t.Fatalf("Anthropic list for a Codex key = %s, want only %s", body, disguised)
 	}
-	if first, last := gjson.GetBytes(body, "first_id").String(), gjson.GetBytes(body, "last_id").String(); first != disguised || last != disguised {
+	if first, last := ojson.GetBytes(body, "first_id").String(), ojson.GetBytes(body, "last_id").String(); first != disguised || last != disguised {
 		t.Fatalf("first_id/last_id = %q/%q, want the listed ID %q", first, last, disguised)
 	}
 }
@@ -505,7 +505,7 @@ func TestWriteModelListResponseAppliesKeyScope(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
-	data := gjson.GetBytes(recorder.Body.Bytes(), "data").Array()
+	data := ojson.GetBytes(recorder.Body.Bytes(), "data").Array()
 	if len(data) != 1 || data[0].Get("id").String() != keyScopeCodexModel {
 		t.Fatalf("written list = %s, want only the Codex model", recorder.Body.String())
 	}
@@ -537,7 +537,7 @@ func TestWriteModelListResponseScopesInterceptedCatalog(t *testing.T) {
 
 	c, recorder := keyScopeRequestContext("sk-codex-abc")
 	handler.WriteModelListResponse(c, "openai", original)
-	data := gjson.GetBytes(recorder.Body.Bytes(), "data").Array()
+	data := ojson.GetBytes(recorder.Body.Bytes(), "data").Array()
 	if len(data) != 1 || data[0].Get("id").String() != keyScopeCodexModel {
 		t.Fatalf("intercepted list for a Codex key = %s, want only the Codex model", recorder.Body.String())
 	}
@@ -570,7 +570,7 @@ func TestKeyScopesDoNotApplyInHomeMode(t *testing.T) {
 		t.Fatalf("Home routing = %v, %v; want it left alone", providers, errMsg)
 	}
 	handler.WriteModelListResponse(claude, "openai", gin.H{"object": "list", "data": []gin.H{{"id": "home-only-model"}}})
-	if data := gjson.GetBytes(recorder.Body.Bytes(), "data").Array(); len(data) != 1 {
+	if data := ojson.GetBytes(recorder.Body.Bytes(), "data").Array(); len(data) != 1 {
 		t.Fatalf("Home model list for a scoped key = %s, want it unchanged", recorder.Body.String())
 	}
 }

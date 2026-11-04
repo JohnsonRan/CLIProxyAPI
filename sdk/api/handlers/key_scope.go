@@ -6,13 +6,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // keyScope returns the providers the client API key of the request may use,
@@ -94,12 +93,14 @@ func (h *BaseAPIHandler) scopeProviders(ctx context.Context, modelName string, p
 	if len(kept) > 0 {
 		return kept, nil
 	}
-	body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
-	body, errSet := sjson.Set(body, "error.message", "model "+modelName+" is not available to this API key")
-	if errSet != nil {
-		body = `{"error":{"message":"model is not available to this API key","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+	doc := ojson.NewDocString(`{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`)
+	if errSet := doc.Set("error.message", "model "+modelName+" is not available to this API key"); errSet != nil {
+		return nil, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      errors.New(`{"error":{"message":"model is not available to this API key","type":"invalid_request_error","code":"model_not_found","param":"model"}}`),
+		}
 	}
-	return nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(body)}
+	return nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(doc.String())}
 }
 
 // keyModelFilter returns a predicate that reports whether the request's client
@@ -135,17 +136,19 @@ func (h *BaseAPIHandler) KeyAllowsModel(c *gin.Context, model string) bool {
 // (Codex, Gemini), with the model named by id, slug, model or name.
 func (h *BaseAPIHandler) scopeModelList(c *gin.Context, body []byte) []byte {
 	allows, scoped := h.keyModelFilter(c)
-	if !scoped || !gjson.ValidBytes(body) {
+	if !scoped || !ojson.ValidBytes(body) {
 		return body
 	}
+	doc := ojson.NewDoc(body)
+	modified := false
 	for _, listKey := range []string{"data", "models"} {
-		list := gjson.GetBytes(body, listKey)
+		list := doc.Get(listKey)
 		if !list.IsArray() {
 			continue
 		}
 		kept := make([]string, 0, len(list.Array()))
 		firstID, lastID := "", ""
-		list.ForEach(func(_, entry gjson.Result) bool {
+		list.ForEach(func(_, entry ojson.Result) bool {
 			if id := modelListEntryID(entry); id != "" && allows(id) {
 				kept = append(kept, entry.Raw)
 				if firstID == "" {
@@ -155,27 +158,28 @@ func (h *BaseAPIHandler) scopeModelList(c *gin.Context, body []byte) []byte {
 			}
 			return true
 		})
-		scopedBody, errSet := sjson.SetRawBytes(body, listKey, []byte("["+strings.Join(kept, ",")+"]"))
-		if errSet != nil {
+		if errSet := doc.SetRaw(listKey, "["+strings.Join(kept, ",")+"]"); errSet != nil {
 			return body
 		}
-		body = scopedBody
+		modified = true
 		// The Anthropic list names its first and last entries.
-		for field, value := range map[string]string{"first_id": firstID, "last_id": lastID} {
-			if gjson.GetBytes(body, field).Exists() {
-				if updated, errField := sjson.SetBytes(body, field, value); errField == nil {
-					body = updated
-				}
-			}
+		if doc.Get("first_id").Exists() {
+			_ = doc.Set("first_id", firstID)
+		}
+		if doc.Get("last_id").Exists() {
+			_ = doc.Set("last_id", lastID)
 		}
 	}
-	return body
+	if !modified {
+		return body
+	}
+	return doc.Bytes()
 }
 
 // modelListEntryID returns the registry ID of the model a list entry names.
 // Gemini lists prefix it with "models/", and the Anthropic list disguises
 // models from other providers, which requests resolve back the same way.
-func modelListEntryID(entry gjson.Result) string {
+func modelListEntryID(entry ojson.Result) string {
 	for _, field := range []string{"id", "slug", "model", "name"} {
 		if value := strings.TrimSpace(entry.Get(field).String()); value != "" {
 			return claudemodels.ResolveClaudeModelIDPrefix(strings.TrimPrefix(value, "models/"))
