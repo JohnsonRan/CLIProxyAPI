@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesKeepAlive_ClientMatrix(t *testing.T) {
@@ -292,7 +292,7 @@ func TestResponsesKeepAlive_NoContentDeltaInvention(t *testing.T) {
 		"assistant", "response", "item", "usage", "completion_tokens",
 	}
 	for _, key := range disallowed {
-		if gjson.Get(payload, key).Exists() {
+		if ojson.Get(payload, key).Exists() {
 			t.Fatalf("disallowed key %q found in keepalive payload: %s", key, payload)
 		}
 	}
