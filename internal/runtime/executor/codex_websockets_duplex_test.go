@@ -664,8 +664,8 @@ func TestCodexDuplexMultipleCreatesAttachesOwnRequestPayloadToUsage(t *testing.T
 		if chunk.Err != nil {
 			t.Fatal(chunk.Err)
 		}
-		eventType := gjson.GetBytes(chunk.Payload, "type").String()
-		eventID := gjson.GetBytes(chunk.Payload, "response.id").String()
+		eventType := ojson.GetBytes(chunk.Payload, "type").String()
+		eventID := ojson.GetBytes(chunk.Payload, "response.id").String()
 		if eventType == "response.completed" && eventID == "resp-1" {
 			input <- core.WebsocketInput{Payload: secondPayload}
 		}
