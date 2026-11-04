@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 func TestWriteErrorResponseReportsLongQuotaCooldownAsUsageLimit(t *testing.T) {
@@ -34,10 +34,10 @@ func TestWriteErrorResponseReportsLongQuotaCooldownAsUsageLimit(t *testing.T) {
 		t.Fatalf("X-Should-Retry = %q, want false", got)
 	}
 	body := recorder.Body.Bytes()
-	if got := gjson.GetBytes(body, "error.type").String(); got != "usage_limit_reached" {
+	if got := ojson.GetBytes(body, "error.type").String(); got != "usage_limit_reached" {
 		t.Fatalf("error.type = %q, want usage_limit_reached; body=%s", got, body)
 	}
-	if got := gjson.GetBytes(body, "error.resets_at").Int(); got <= time.Now().Unix() {
+	if got := ojson.GetBytes(body, "error.resets_at").Int(); got <= time.Now().Unix() {
 		t.Fatalf("error.resets_at = %d, want a future unix time; body=%s", got, body)
 	}
 }
@@ -60,7 +60,7 @@ func TestWriteErrorResponseKeepsShortCooldownRetryable(t *testing.T) {
 	if got := recorder.Header().Get("X-Should-Retry"); got != "" {
 		t.Fatalf("X-Should-Retry = %q, want absent", got)
 	}
-	if got := gjson.GetBytes(recorder.Body.Bytes(), "error.type").String(); got == "usage_limit_reached" {
+	if got := ojson.GetBytes(recorder.Body.Bytes(), "error.type").String(); got == "usage_limit_reached" {
 		t.Fatalf("short cooldown reported as usage_limit_reached; body=%s", recorder.Body.String())
 	}
 }
