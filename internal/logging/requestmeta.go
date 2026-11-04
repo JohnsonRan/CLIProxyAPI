@@ -23,6 +23,8 @@ type ClientRequestMetadata struct {
 	NodeKind         string
 	IsFork           bool
 	IsCompaction     bool
+	// WebSocket is true when the downstream request is a WebSocket upgrade.
+	WebSocket bool
 }
 
 type responseStatusHolder struct {
