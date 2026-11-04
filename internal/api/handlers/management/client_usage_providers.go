@@ -12,11 +12,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Upstream quota endpoints and client headers mirror the management panel's
@@ -161,19 +160,17 @@ func clientUsageUpstreamOK(response clientUsageUpstream) bool {
 
 // pickClientUsageFields keeps only the given paths of a JSON object.
 func pickClientUsageFields(body json.RawMessage, fields []string) json.RawMessage {
-	parsed := gjson.ParseBytes(body)
-	out := []byte("{}")
+	parsed := ojson.ParseBytes(body)
 	if !parsed.IsObject() {
-		return out
+		return json.RawMessage("{}")
 	}
+	doc := ojson.NewDoc([]byte("{}"))
 	for _, field := range fields {
 		if value := parsed.Get(field); value.Exists() {
-			if updated, errSet := sjson.SetRawBytes(out, field, []byte(value.Raw)); errSet == nil {
-				out = updated
-			}
+			_ = doc.SetRaw(field, value.Raw)
 		}
 	}
-	return out
+	return json.RawMessage(doc.Bytes())
 }
 
 // redactClientUsageBody re-encodes a JSON body without the keys in
