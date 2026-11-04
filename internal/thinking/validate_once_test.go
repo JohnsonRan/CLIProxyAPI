@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // legacyExtractCodexUsageConfig is extractCodexUsageConfig before it reused
 // its own validation for the configuration_update scan.
 func legacyExtractCodexUsageConfig(body []byte) ThinkingConfig {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
 	if config := extractConfigurationUpdateConfig(body); hasThinkingConfig(config) {
@@ -139,7 +139,7 @@ func TestExtractCodexUsageConfigMatchesLegacy(t *testing.T) {
 		if got != want {
 			t.Errorf("extractCodexUsageConfig(%s) = %+v, want %+v", name, got, want)
 		}
-		if got, want := configurationUpdateConfig(body, true), extractConfigurationUpdateConfig(body); gjson.ValidBytes(body) && got != want {
+		if got, want := configurationUpdateConfig(body, true), extractConfigurationUpdateConfig(body); ojson.ValidBytes(body) && got != want {
 			t.Errorf("configurationUpdateConfig(%s, true) = %+v, want %+v", name, got, want)
 		}
 	}
@@ -169,7 +169,14 @@ func BenchmarkExtractReasoningEffortResponses(b *testing.B) {
 	for _, update := range []bool{false, true} {
 		body := largeResponsesBody(450, update)
 		for _, provider := range []string{"openai-response", "codex"} {
-			b.Run(fmt.Sprintf("%s/update=%t", provider, update), func(b *testing.B) {
+			b.Run(fmt.Sprintf("Legacy/%s/update=%t", provider, update), func(b *testing.B) {
+				b.SetBytes(int64(len(body)))
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					_ = legacyExtractReasoningEffort(body, provider, "gpt-6")
+				}
+			})
+			b.Run(fmt.Sprintf("Patched/%s/update=%t", provider, update), func(b *testing.B) {
 				b.SetBytes(int64(len(body)))
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
@@ -182,18 +189,36 @@ func BenchmarkExtractReasoningEffortResponses(b *testing.B) {
 
 func BenchmarkExtractTranslatedReasoningEffortResponses(b *testing.B) {
 	body := largeResponsesBody(450, false)
-	b.SetBytes(int64(len(body)))
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = ExtractTranslatedReasoningEffort(body, "openai-response")
-	}
+	b.Run("Legacy", func(b *testing.B) {
+		b.SetBytes(int64(len(body)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = legacyExtractTranslatedReasoningEffort(body, "openai-response")
+		}
+	})
+	b.Run("Patched", func(b *testing.B) {
+		b.SetBytes(int64(len(body)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = ExtractTranslatedReasoningEffort(body, "openai-response")
+		}
+	})
 }
 
 func BenchmarkExtractCodexUsageConfig(b *testing.B) {
 	body := largeResponsesBody(450, false)
-	b.SetBytes(int64(len(body)))
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = extractCodexUsageConfig(body)
-	}
+	b.Run("Legacy", func(b *testing.B) {
+		b.SetBytes(int64(len(body)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = legacyExtractCodexUsageConfig(body)
+		}
+	})
+	b.Run("Patched", func(b *testing.B) {
+		b.SetBytes(int64(len(body)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = extractCodexUsageConfig(body)
+		}
+	})
 }

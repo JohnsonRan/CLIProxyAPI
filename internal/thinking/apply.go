@@ -749,7 +749,7 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 // validates the body and reads its input items once, where the general path
 // validated it up to five times and walked the input up to three times.
 func responsesReasoningEffort(body []byte, model string) string {
-	valid := len(body) > 0 && gjson.ValidBytes(body)
+	valid := len(body) > 0 && ojson.ValidBytes(body)
 	if valid {
 		// A configuration_update effort is never empty, so an update always
 		// returns here and the top-level effort is the only remaining field.
