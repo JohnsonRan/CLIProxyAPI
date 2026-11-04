@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 type rerankUsageCapture struct {
@@ -100,10 +100,10 @@ func TestOpenAICompatExecutor_Embeddings(t *testing.T) {
 	if requestedAuth != "Bearer test-secret-key" {
 		t.Errorf("requestedAuth = %q, want 'Bearer test-secret-key'", requestedAuth)
 	}
-	if gjson.Get(receivedBody, "input").String() != "hello world" {
-		t.Errorf("received input = %q, want 'hello world'", gjson.Get(receivedBody, "input").String())
+	if ojson.Get(receivedBody, "input").String() != "hello world" {
+		t.Errorf("received input = %q, want 'hello world'", ojson.Get(receivedBody, "input").String())
 	}
-	if gjson.GetBytes(resp.Payload, "data.0.embedding.0").Float() != 0.1 {
+	if ojson.GetBytes(resp.Payload, "data.0.embedding.0").Float() != 0.1 {
 		t.Errorf("expected embedding result in response payload, got %s", string(resp.Payload))
 	}
 }
@@ -168,10 +168,10 @@ func TestOpenAICompatExecutor_Rerank(t *testing.T) {
 	if requestedAuth != "Bearer test-secret-key" {
 		t.Errorf("requestedAuth = %q, want 'Bearer test-secret-key'", requestedAuth)
 	}
-	if gjson.Get(receivedBody, "query").String() != "capital of France" {
-		t.Errorf("received query = %q, want 'capital of France'", gjson.Get(receivedBody, "query").String())
+	if ojson.Get(receivedBody, "query").String() != "capital of France" {
+		t.Errorf("received query = %q, want 'capital of France'", ojson.Get(receivedBody, "query").String())
 	}
-	if gjson.GetBytes(resp.Payload, "results.0.relevance_score").Float() != 0.98 {
+	if ojson.GetBytes(resp.Payload, "results.0.relevance_score").Float() != 0.98 {
 		t.Errorf("expected relevance score 0.98, got %s", string(resp.Payload))
 	}
 }

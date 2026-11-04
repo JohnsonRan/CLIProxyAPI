@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // IsGeminiEmbeddingRequest checks if the request is an embedding request targeted at Gemini.
@@ -19,14 +19,14 @@ func IsGeminiEmbeddingRequest(sourceFormat string, requestPath string) bool {
 // ConvertOpenAIEmbeddingToGemini translates an OpenAI /v1/embeddings request payload
 // to Gemini :embedContent or :batchEmbedContents request payload and action name.
 func ConvertOpenAIEmbeddingToGemini(model string, payload []byte) (action string, body []byte, isBatch bool, err error) {
-	inputVal := gjson.GetBytes(payload, "input")
+	inputVal := ojson.GetBytesNoCopy(payload, "input")
 	if !inputVal.Exists() {
 		return "", nil, false, fmt.Errorf("missing input parameter")
 	}
 
 	normalizedModel := strings.TrimPrefix(model, "models/")
 	// OpenAI "dimensions" maps to Gemini outputDimensionality.
-	dimensions := gjson.GetBytes(payload, "dimensions")
+	dimensions := ojson.GetBytesNoCopy(payload, "dimensions")
 	withDimensions := func(request map[string]any) map[string]any {
 		if dimensions.Exists() && dimensions.Int() > 0 {
 			request["outputDimensionality"] = dimensions.Int()
@@ -38,7 +38,7 @@ func ConvertOpenAIEmbeddingToGemini(model string, payload []byte) (action string
 		arr := inputVal.Array()
 		requests := make([]map[string]any, 0, len(arr))
 		for _, item := range arr {
-			if item.Type != gjson.String {
+			if item.Type != ojson.String {
 				return "", nil, false, fmt.Errorf("gemini embeddings accept only string inputs, not token arrays")
 			}
 			requests = append(requests, withDimensions(map[string]any{
@@ -59,7 +59,7 @@ func ConvertOpenAIEmbeddingToGemini(model string, payload []byte) (action string
 		return "batchEmbedContents", batchPayload, true, nil
 	}
 
-	if inputVal.Type != gjson.String {
+	if inputVal.Type != ojson.String {
 		return "", nil, false, fmt.Errorf("gemini embeddings accept only string inputs, not token arrays")
 	}
 	singlePayload, errMarshal := json.Marshal(withDimensions(map[string]any{
@@ -93,13 +93,13 @@ func ConvertGeminiEmbeddingToOpenAI(model string, geminiResp []byte, isBatch boo
 	data := make([]embeddingItem, 0)
 	// Gemini reports token usage only in usageMetadata, when at all; the vector
 	// length is not a token count.
-	totalTokens := int(gjson.GetBytes(geminiResp, "usageMetadata.promptTokenCount").Int())
+	totalTokens := int(ojson.GetBytesNoCopy(geminiResp, "usageMetadata.promptTokenCount").Int())
 	if totalTokens == 0 {
-		totalTokens = int(gjson.GetBytes(geminiResp, "usageMetadata.totalTokenCount").Int())
+		totalTokens = int(ojson.GetBytesNoCopy(geminiResp, "usageMetadata.totalTokenCount").Int())
 	}
 
 	if isBatch {
-		embeddingsVal := gjson.GetBytes(geminiResp, "embeddings")
+		embeddingsVal := ojson.GetBytesNoCopy(geminiResp, "embeddings")
 		if embeddingsVal.IsArray() {
 			for i, emb := range embeddingsVal.Array() {
 				vals := emb.Get("values").Array()
@@ -115,7 +115,7 @@ func ConvertGeminiEmbeddingToOpenAI(model string, geminiResp []byte, isBatch boo
 			}
 		}
 	} else {
-		vals := gjson.GetBytes(geminiResp, "embedding.values").Array()
+		vals := ojson.GetBytesNoCopy(geminiResp, "embedding.values").Array()
 		floats := make([]float64, len(vals))
 		for j, v := range vals {
 			floats[j] = v.Float()

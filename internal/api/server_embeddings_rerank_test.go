@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestServer_EmbeddingsAndRerankRoutesMounted(t *testing.T) {
@@ -40,7 +40,7 @@ func TestServer_EmbeddingsAndRerankRoutesMounted(t *testing.T) {
 				t.Errorf("%s %s returned status %d, want 400 (handler reached); body = %s", rt.method, rt.path, w.Code, w.Body.String())
 			}
 
-			errCode := gjson.GetBytes(w.Body.Bytes(), "error.code").String()
+			errCode := ojson.GetBytes(w.Body.Bytes(), "error.code").String()
 			if errCode != "missing_required_parameter" {
 				t.Errorf("%s %s returned error code %q, want 'missing_required_parameter'", rt.method, rt.path, errCode)
 			}
