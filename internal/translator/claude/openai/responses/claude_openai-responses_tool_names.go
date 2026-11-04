@@ -46,6 +46,18 @@ func buildClaudeToolNamesWithWinners(root ojson.Result, winners map[string]respo
 	return m
 }
 
+// detach copies the names m shares with a no-copy parse of the request.
+func (m claudeToolNames) detach() claudeToolNames {
+	out := claudeToolNames{toClaude: make(map[string]string, len(m.toClaude)), fromClaude: make(map[string]string, len(m.fromClaude))}
+	for identity, name := range m.toClaude {
+		out.toClaude[strings.Clone(identity)] = strings.Clone(name)
+	}
+	for name, identity := range m.fromClaude {
+		out.fromClaude[strings.Clone(name)] = strings.Clone(identity)
+	}
+	return out
+}
+
 // claudeName returns the Claude name for a qualified Responses identity.
 func (m claudeToolNames) claudeName(identity string) string {
 	if name, ok := m.toClaude[identity]; ok {
