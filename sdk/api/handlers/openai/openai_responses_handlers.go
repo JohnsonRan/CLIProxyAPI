@@ -337,10 +337,11 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 	case "response.completed":
 		repaired := f.repairCompletedPayload(payload)
 		if f.previousResponseID != "" {
-			prevField := gjson.GetBytes(repaired, "response.previous_response_id")
-			if !prevField.Exists() || prevField.Type == gjson.Null || strings.TrimSpace(prevField.String()) == "" {
-				if updated, errSet := sjson.SetBytes(repaired, "response.previous_response_id", f.previousResponseID); errSet == nil {
-					repaired = updated
+			prevField := ojson.GetBytesNoCopy(repaired, "response.previous_response_id")
+			if !prevField.Exists() || prevField.Type == ojson.Null || strings.TrimSpace(prevField.String()) == "" {
+				doc := ojson.NewDoc(repaired)
+				if errSet := doc.Set("response.previous_response_id", f.previousResponseID); errSet == nil {
+					repaired = doc.Bytes()
 				}
 			}
 		}

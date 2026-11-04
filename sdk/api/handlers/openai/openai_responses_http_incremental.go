@@ -11,11 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -44,8 +43,9 @@ func responsesHTTPStateOwner(c *gin.Context) string {
 // sending the delta alone would silently drop the conversation history; the
 // client must resend the full input instead, as with OpenAI's own API.
 func responsesHTTPPreviousResponseNotFoundError(prevID string) *interfaces.ErrorMessage {
-	body, _ := sjson.SetBytes([]byte(`{"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`), "error.message", fmt.Sprintf("Previous response with id '%s' not found.", prevID))
-	return &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(string(body))}
+	doc := ojson.NewDoc([]byte(`{"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`))
+	_ = doc.Set("error.message", fmt.Sprintf("Previous response with id '%s' not found.", prevID))
+	return &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(doc.String())}
 }
 
 // prepareHTTPResponsesIncrementalRequest expands previous_response_id into the
@@ -55,7 +55,7 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 	if len(rawJSON) == 0 {
 		return rawJSON, nil
 	}
-	prevID := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String())
+	prevID := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "previous_response_id").String())
 	if prevID == "" {
 		return rawJSON, nil
 	}
@@ -70,12 +70,14 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 		c.Set(responsesHTTPPinnedAuthIDContextKey, entry.authID)
 	}
 
-	streamResult := gjson.GetBytes(rawJSON, "stream")
-	wasStreaming := streamResult.Type == gjson.True
+	streamResult := ojson.GetBytesNoCopy(rawJSON, "stream")
+	wasStreaming := streamResult.Type == ojson.True
 
 	withType := coerceResponsesWebsocketStringInput(rawJSON)
-	if !gjson.GetBytes(withType, "type").Exists() {
-		withType, _ = sjson.SetBytes(withType, "type", wsRequestTypeCreate)
+	if !ojson.GetBytesNoCopy(withType, "type").Exists() {
+		doc := ojson.NewDoc(withType)
+		_ = doc.Set("type", wsRequestTypeCreate)
+		withType = doc.Bytes()
 	}
 	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithIncrementalState(
 		withType,
@@ -93,11 +95,13 @@ func (h *OpenAIResponsesAPIHandler) prepareHTTPResponsesIncrementalRequest(c *gi
 		return nil, responsesHTTPPreviousResponseNotFoundError(prevID)
 	}
 	if !wasStreaming {
+		doc := ojson.NewDoc(normalized)
 		if streamResult.Exists() {
-			normalized, _ = sjson.SetBytes(normalized, "stream", false)
+			_ = doc.Set("stream", false)
 		} else {
-			normalized, _ = sjson.DeleteBytes(normalized, "stream")
+			_ = doc.Delete("stream")
 		}
+		normalized = doc.Bytes()
 	}
 	if c != nil {
 		c.Set(responsesHTTPExpandedFromCacheContextKey, true)
@@ -131,19 +135,20 @@ func (h *OpenAIResponsesAPIHandler) finalizeHTTPNonStreamIncrementalResponse(c *
 		return resp
 	}
 	if prevID := httpIncrementalPreviousResponseIDFromContext(c); prevID != "" {
-		prevField := gjson.GetBytes(resp, "previous_response_id")
-		if !prevField.Exists() || prevField.Type == gjson.Null || strings.TrimSpace(prevField.String()) == "" {
-			if updated, errSet := sjson.SetBytes(resp, "previous_response_id", prevID); errSet == nil {
-				resp = updated
+		prevField := ojson.GetBytesNoCopy(resp, "previous_response_id")
+		if !prevField.Exists() || prevField.Type == ojson.Null || strings.TrimSpace(prevField.String()) == "" {
+			doc := ojson.NewDoc(resp)
+			if errSet := doc.Set("previous_response_id", prevID); errSet == nil {
+				resp = doc.Bytes()
 			}
 		}
 	}
-	responseID := strings.TrimSpace(gjson.GetBytes(resp, "id").String())
+	responseID := strings.TrimSpace(ojson.GetBytesNoCopy(resp, "id").String())
 	if responseID == "" {
 		return resp
 	}
 	outputRaw := []byte("[]")
-	if out := gjson.GetBytes(resp, "output"); out.Exists() && out.IsArray() {
+	if out := ojson.GetBytesNoCopy(resp, "output"); out.Exists() && out.IsArray() {
 		outputRaw = []byte(out.Raw)
 	}
 	pendingCallIDs := extractPendingToolCallIDsFromOutput(outputRaw)
@@ -162,12 +167,12 @@ func (h *OpenAIResponsesAPIHandler) recordHTTPStreamIncrementalCompleted(owner s
 	if len(completedPayload) == 0 {
 		return
 	}
-	responseID := strings.TrimSpace(gjson.GetBytes(completedPayload, "response.id").String())
+	responseID := strings.TrimSpace(ojson.GetBytesNoCopy(completedPayload, "response.id").String())
 	if responseID == "" {
 		return
 	}
 	outputRaw := []byte("[]")
-	if out := gjson.GetBytes(completedPayload, "response.output"); out.Exists() && out.IsArray() {
+	if out := ojson.GetBytesNoCopy(completedPayload, "response.output"); out.Exists() && out.IsArray() {
 		outputRaw = []byte(out.Raw)
 	}
 	pendingCallIDs := extractPendingToolCallIDsFromOutput(outputRaw)
@@ -183,15 +188,16 @@ func (h *OpenAIResponsesAPIHandler) recordHTTPStreamIncrementalCompleted(owner s
 
 func canonicalHTTPIncrementalRequestSnapshot(requestJSON []byte) []byte {
 	snapshot := coerceResponsesWebsocketStringInput(bytes.Clone(requestJSON))
-	if !gjson.GetBytes(snapshot, "input").Exists() {
-		snapshot, _ = sjson.SetRawBytes(snapshot, "input", []byte("[]"))
+	doc := ojson.NewDoc(snapshot)
+	if !doc.Get("input").Exists() {
+		_ = doc.SetRawBytes("input", []byte("[]"))
 	}
-	snapshot, _ = sjson.DeleteBytes(snapshot, "previous_response_id")
-	return snapshot
+	_ = doc.Delete("previous_response_id")
+	return doc.Bytes()
 }
 
 func extractPendingToolCallIDsFromOutput(outputRaw []byte) []string {
-	parsed := gjson.ParseBytes(outputRaw)
+	parsed := ojson.ParseBytes(outputRaw)
 	if !parsed.IsArray() {
 		return nil
 	}

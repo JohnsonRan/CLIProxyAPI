@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -18,7 +19,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 type httpIncrementalCaptureExecutor struct {
@@ -143,16 +143,16 @@ func TestHTTPResponsesIncrementalSSEAndNonStreamContinuation(t *testing.T) {
 			secondUpstream := exec.payloads[1]
 			exec.mu.Unlock()
 
-			if gjson.GetBytes(secondUpstream, "previous_response_id").Exists() {
+			if ojson.GetBytes(secondUpstream, "previous_response_id").Exists() {
 				t.Fatalf("expanded HTTP payload must strip previous_response_id for stateless upstream: %s", secondUpstream)
 			}
-			if got := gjson.GetBytes(secondUpstream, "instructions").String(); got != "Be concise" {
+			if got := ojson.GetBytes(secondUpstream, "instructions").String(); got != "Be concise" {
 				t.Fatalf("inherited instructions = %q, want 'Be concise': %s", got, secondUpstream)
 			}
-			if got := gjson.GetBytes(secondUpstream, "tools.0.name").String(); got != "lookup" {
+			if got := ojson.GetBytes(secondUpstream, "tools.0.name").String(); got != "lookup" {
 				t.Fatalf("inherited tool = %q, want 'lookup': %s", got, secondUpstream)
 			}
-			items := gjson.GetBytes(secondUpstream, "input").Array()
+			items := ojson.GetBytes(secondUpstream, "input").Array()
 			if len(items) != 3 {
 				t.Fatalf("merged input items = %d, want 3 (user message + function_call + function_call_output): %s", len(items), secondUpstream)
 			}
@@ -181,10 +181,10 @@ func TestNormalizeResponsesWebsocketStandardPayloadAndToolInheritance(t *testing
 		if errMsg != nil {
 			t.Fatalf("normalizeResponsesWebsocketRequest() error = %v", errMsg.Error)
 		}
-		if got := gjson.GetBytes(normalized, "model").String(); got != "gpt-5.4" {
+		if got := ojson.GetBytes(normalized, "model").String(); got != "gpt-5.4" {
 			t.Fatalf("model = %q, want gpt-5.4", got)
 		}
-		if got := gjson.GetBytes(normalized, "input.0.content.0.text").String(); got != "hello standard ws" {
+		if got := ojson.GetBytes(normalized, "input.0.content.0.text").String(); got != "hello standard ws" {
 			t.Fatalf("coerced input text = %q, want 'hello standard ws': %s", got, normalized)
 		}
 		if !bytes.Equal(normalized, last) {
@@ -201,7 +201,7 @@ func TestNormalizeResponsesWebsocketStandardPayloadAndToolInheritance(t *testing
 		if errMsg != nil {
 			t.Fatalf("normalize error: %v", errMsg.Error)
 		}
-		if got := gjson.GetBytes(normalized, "tools.0.name").String(); got != "bash" {
+		if got := ojson.GetBytes(normalized, "tools.0.name").String(); got != "bash" {
 			t.Fatalf("inherited top-level tool = %q, want bash: %s", got, normalized)
 		}
 
@@ -210,10 +210,10 @@ func TestNormalizeResponsesWebsocketStandardPayloadAndToolInheritance(t *testing
 		if errRep != nil {
 			t.Fatalf("replacement error: %v", errRep.Error)
 		}
-		if got := gjson.GetBytes(repNorm, "input.0.type").String(); got != "additional_tools" {
+		if got := ojson.GetBytes(repNorm, "input.0.type").String(); got != "additional_tools" {
 			t.Fatalf("input[0].type = %q, want additional_tools: %s", got, repNorm)
 		}
-		if got := gjson.GetBytes(repNorm, "tools.0.name").String(); got != "bash" {
+		if got := ojson.GetBytes(repNorm, "tools.0.name").String(); got != "bash" {
 			t.Fatalf("replacement inherited top-level tool = %q, want bash: %s", got, repNorm)
 		}
 	})
@@ -253,10 +253,10 @@ func TestHTTPResponsesIncrementalUnknownPreviousResponseIsRejected(t *testing.T)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("stream=%t status = %d, want 400, body = %s", stream, rec.Code, rec.Body.String())
 		}
-		if got := gjson.Get(rec.Body.String(), "error.code").String(); got != "previous_response_not_found" {
+		if got := ojson.Get(rec.Body.String(), "error.code").String(); got != "previous_response_not_found" {
 			t.Fatalf("stream=%t error.code = %q, want previous_response_not_found, body = %s", stream, got, rec.Body.String())
 		}
-		if got := gjson.Get(rec.Body.String(), "error.param").String(); got != "previous_response_id" {
+		if got := ojson.Get(rec.Body.String(), "error.param").String(); got != "previous_response_id" {
 			t.Fatalf("stream=%t error.param = %q, want previous_response_id, body = %s", stream, got, rec.Body.String())
 		}
 	}
@@ -313,11 +313,11 @@ func TestResponsesWebsocketContinuesPreviousResponseAcrossConnections(t *testing
 	// Turn 1 on its own socket, turn 2 on a fresh socket, turn 3 over HTTP:
 	// every hop continues from the previous id with only the delta.
 	first := turn(`{"type":"response.create","model":"` + model + `","instructions":"Be concise","input":[{"type":"message","id":"u1","role":"user","content":"hi"}]}`)
-	if got := gjson.GetBytes(first, "response.id").String(); got != "resp_ws_reconnect_1" {
+	if got := ojson.GetBytes(first, "response.id").String(); got != "resp_ws_reconnect_1" {
 		t.Fatalf("turn 1 response = %s", first)
 	}
 	second := turn(`{"type":"response.create","previous_response_id":"resp_ws_reconnect_1","input":[{"type":"message","id":"u2","role":"user","content":"again"}]}`)
-	if got := gjson.GetBytes(second, "type").String(); got != wsEventTypeCompleted {
+	if got := ojson.GetBytes(second, "type").String(); got != wsEventTypeCompleted {
 		t.Fatalf("turn 2 on a new socket = %s, want %s", second, wsEventTypeCompleted)
 	}
 
@@ -341,17 +341,17 @@ func TestResponsesWebsocketContinuesPreviousResponseAcrossConnections(t *testing
 	}
 	for i, want := range wantIDs {
 		payload := payloads[i+1]
-		if gjson.GetBytes(payload, "previous_response_id").Exists() {
+		if ojson.GetBytes(payload, "previous_response_id").Exists() {
 			t.Fatalf("turn %d kept previous_response_id: %s", i+2, payload)
 		}
-		if got := gjson.GetBytes(payload, "model").String(); got != model {
+		if got := ojson.GetBytes(payload, "model").String(); got != model {
 			t.Fatalf("turn %d model = %q, want inherited %q: %s", i+2, got, model, payload)
 		}
-		if got := gjson.GetBytes(payload, "instructions").String(); got != "Be concise" {
+		if got := ojson.GetBytes(payload, "instructions").String(); got != "Be concise" {
 			t.Fatalf("turn %d instructions = %q, want inherited: %s", i+2, got, payload)
 		}
 		var got []string
-		for _, item := range gjson.GetBytes(payload, "input").Array() {
+		for _, item := range ojson.GetBytes(payload, "input").Array() {
 			got = append(got, item.Get("id").String())
 		}
 		if strings.Join(got, ",") != strings.Join(want, ",") {
