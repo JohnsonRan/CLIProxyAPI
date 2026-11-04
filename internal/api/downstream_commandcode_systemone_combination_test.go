@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	commandcodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/commandcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 func TestSystemOneRouteServesCommandCodeOAuthCatalog(t *testing.T) {
@@ -79,10 +79,10 @@ func TestSystemOneRouteServesCommandCodeOAuthCatalog(t *testing.T) {
 	if gotAuth != "Bearer user_oauth_key" {
 		t.Fatalf("upstream Authorization = %q", gotAuth)
 	}
-	if gjson.Get(gotBody, "model").String() != "typesafe/jev" {
+	if ojson.Get(gotBody, "model").String() != "typesafe/jev" {
 		t.Fatalf("upstream body = %s", gotBody)
 	}
-	if got := gjson.GetBytes(rr.Body.Bytes(), "answers.is_urgent.noul").Float(); got != 0.95 {
+	if got := ojson.GetBytes(rr.Body.Bytes(), "answers.is_urgent.noul").Float(); got != 0.95 {
 		t.Fatalf("response body = %s", rr.Body.String())
 	}
 }

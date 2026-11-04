@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -20,7 +21,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -104,7 +104,7 @@ func TestClientModelRulesAndKeyScopesIntersect(t *testing.T) {
 		{"id": comboClaudeModel}, {"id": comboCodexModel}, {"id": comboCodexHidden}, {"id": comboSharedModel},
 	}})
 	var listed []string
-	for _, item := range gjson.GetBytes(recorder.Body.Bytes(), "data").Array() {
+	for _, item := range ojson.GetBytes(recorder.Body.Bytes(), "data").Array() {
 		listed = append(listed, item.Get("id").String())
 	}
 	if len(listed) != 2 || listed[0] != comboCodexModel || listed[1] != comboSharedModel {
