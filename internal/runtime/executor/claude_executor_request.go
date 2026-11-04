@@ -911,7 +911,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 }
 
 func claudeBodyIndicatesLowCreditBalance(body []byte) bool {
-	message := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	message := strings.ToLower(ojson.GetBytesNoCopy(body, "error.message").String())
 	if message == "" {
 		message = strings.ToLower(string(body))
 	}
