@@ -3,7 +3,7 @@ package helps
 import (
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestConvertOpenAIEmbeddingToGeminiMapsDimensions(t *testing.T) {
@@ -11,7 +11,7 @@ func TestConvertOpenAIEmbeddingToGeminiMapsDimensions(t *testing.T) {
 	if errSingle != nil {
 		t.Fatal(errSingle)
 	}
-	if got := gjson.GetBytes(single, "outputDimensionality").Int(); got != 256 {
+	if got := ojson.GetBytes(single, "outputDimensionality").Int(); got != 256 {
 		t.Fatalf("single outputDimensionality = %d, want 256; body=%s", got, single)
 	}
 
@@ -19,7 +19,7 @@ func TestConvertOpenAIEmbeddingToGeminiMapsDimensions(t *testing.T) {
 	if errBatch != nil {
 		t.Fatal(errBatch)
 	}
-	for i, request := range gjson.GetBytes(batch, "requests").Array() {
+	for i, request := range ojson.GetBytes(batch, "requests").Array() {
 		if got := request.Get("outputDimensionality").Int(); got != 128 {
 			t.Fatalf("batch request %d outputDimensionality = %d, want 128; body=%s", i, got, batch)
 		}
@@ -39,7 +39,7 @@ func TestConvertGeminiEmbeddingToOpenAIUsageIsNotVectorLength(t *testing.T) {
 	if errConvert != nil {
 		t.Fatal(errConvert)
 	}
-	if got := gjson.GetBytes(out, "usage.prompt_tokens").Int(); got != 0 {
+	if got := ojson.GetBytes(out, "usage.prompt_tokens").Int(); got != 0 {
 		t.Fatalf("prompt_tokens = %d, want 0 when Gemini reports no usage", got)
 	}
 
@@ -47,7 +47,7 @@ func TestConvertGeminiEmbeddingToOpenAIUsageIsNotVectorLength(t *testing.T) {
 	if errConvert != nil {
 		t.Fatal(errConvert)
 	}
-	if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 7 {
+	if got := ojson.GetBytes(out, "usage.total_tokens").Int(); got != 7 {
 		t.Fatalf("total_tokens = %d, want 7 from usageMetadata", got)
 	}
 }

@@ -877,7 +877,7 @@ func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
 		return
 	}
 
-	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	modelName := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	if modelName == "" {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -889,7 +889,7 @@ func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
 		return
 	}
 
-	input := gjson.GetBytes(rawJSON, "input")
+	input := ojson.GetBytesNoCopy(rawJSON, "input")
 	if !input.Exists() {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -934,7 +934,7 @@ func (h *OpenAIAPIHandler) Rerank(c *gin.Context) {
 		return
 	}
 
-	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	modelName := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	if modelName == "" {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -946,7 +946,7 @@ func (h *OpenAIAPIHandler) Rerank(c *gin.Context) {
 		return
 	}
 
-	query := strings.TrimSpace(gjson.GetBytes(rawJSON, "query").String())
+	query := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "query").String())
 	if query == "" {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -958,7 +958,7 @@ func (h *OpenAIAPIHandler) Rerank(c *gin.Context) {
 		return
 	}
 
-	docs := gjson.GetBytes(rawJSON, "documents")
+	docs := ojson.GetBytesNoCopy(rawJSON, "documents")
 	if !docs.Exists() || !docs.IsArray() || len(docs.Array()) == 0 {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

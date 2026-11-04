@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestGeminiExecutor_EmbeddingsSingle(t *testing.T) {
@@ -65,10 +65,10 @@ func TestGeminiExecutor_EmbeddingsSingle(t *testing.T) {
 	if !strings.HasSuffix(requestedPath, "/models/text-embedding-004:embedContent") {
 		t.Errorf("requestedPath = %q, want suffix /models/text-embedding-004:embedContent", requestedPath)
 	}
-	if gjson.Get(receivedBody, "content.parts.0.text").String() != "test prompt" {
+	if ojson.Get(receivedBody, "content.parts.0.text").String() != "test prompt" {
 		t.Errorf("unexpected translated Gemini body: %s", receivedBody)
 	}
-	if gjson.GetBytes(resp.Payload, "data.0.embedding.0").Float() != 0.123 {
+	if ojson.GetBytes(resp.Payload, "data.0.embedding.0").Float() != 0.123 {
 		t.Errorf("unexpected translated OpenAI response: %s", string(resp.Payload))
 	}
 }
@@ -124,10 +124,10 @@ func TestGeminiExecutor_EmbeddingsBatch(t *testing.T) {
 	if !strings.HasSuffix(requestedPath, "/models/text-embedding-004:batchEmbedContents") {
 		t.Errorf("requestedPath = %q, want suffix /models/text-embedding-004:batchEmbedContents", requestedPath)
 	}
-	if gjson.Get(receivedBody, "requests.1.content.parts.0.text").String() != "second" {
+	if ojson.Get(receivedBody, "requests.1.content.parts.0.text").String() != "second" {
 		t.Errorf("unexpected batch translated Gemini body: %s", receivedBody)
 	}
-	if gjson.GetBytes(resp.Payload, "data.1.embedding.0").Float() != 0.3 {
+	if ojson.GetBytes(resp.Payload, "data.1.embedding.0").Float() != 0.3 {
 		t.Errorf("unexpected translated OpenAI response: %s", string(resp.Payload))
 	}
 }

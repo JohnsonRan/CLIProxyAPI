@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
 )
 
 func newTestOpenAIHandler() *OpenAIAPIHandler {
@@ -59,8 +59,8 @@ func TestEmbeddingsValidation(t *testing.T) {
 			if w.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", w.Code, tt.wantStatus, w.Body.String())
 			}
-			msg := gjson.GetBytes(w.Body.Bytes(), "error.message").String()
-			if !gjson.GetBytes(w.Body.Bytes(), "error").Exists() {
+			msg := ojson.GetBytes(w.Body.Bytes(), "error.message").String()
+			if !ojson.GetBytes(w.Body.Bytes(), "error").Exists() {
 				t.Fatalf("expected error object, got %s", w.Body.String())
 			}
 			if msg == "" {
@@ -123,7 +123,7 @@ func TestRerankValidation(t *testing.T) {
 			if w.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", w.Code, tt.wantStatus, w.Body.String())
 			}
-			if !gjson.GetBytes(w.Body.Bytes(), "error").Exists() {
+			if !ojson.GetBytes(w.Body.Bytes(), "error").Exists() {
 				t.Fatalf("expected error object, got %s", w.Body.String())
 			}
 		})

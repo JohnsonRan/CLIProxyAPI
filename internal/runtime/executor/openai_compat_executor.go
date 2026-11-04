@@ -927,13 +927,15 @@ func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *clip
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	doc := ojson.NewDoc(payload)
 	if baseModel != "" {
-		payload = helps.SetStringIfDifferent(payload, "model", baseModel)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	}
 
 	from := opts.SourceFormat.String()
 	to := "openai"
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to, from, "", payload, originalPayload, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to, from, "", doc, originalPayload, requestedModel, requestPath, opts.Headers)
+	payload = doc.Bytes()
 
 	endpoint := "/embeddings"
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
@@ -1023,13 +1025,15 @@ func (e *OpenAICompatExecutor) executeRerank(ctx context.Context, auth *cliproxy
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	doc := ojson.NewDoc(payload)
 	if baseModel != "" {
-		payload = helps.SetStringIfDifferent(payload, "model", baseModel)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	}
 
 	from := opts.SourceFormat.String()
 	to := "rerank"
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to, from, "", payload, originalPayload, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to, from, "", doc, originalPayload, requestedModel, requestPath, opts.Headers)
+	payload = doc.Bytes()
 
 	endpoint := "/rerank"
 	url := strings.TrimSuffix(baseURL, "/") + endpoint

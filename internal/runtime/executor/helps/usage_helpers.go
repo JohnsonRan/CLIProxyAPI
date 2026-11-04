@@ -1780,7 +1780,7 @@ func ParseRerankUsage(data []byte) usage.Detail {
 	if hasUsageDetail(detail) {
 		return detail
 	}
-	root := ojson.ParseBytes(data)
+	root := util.ParseGJSONBytesNoCopy(data)
 	for _, path := range []string{"meta.tokens", "meta.billed_units"} {
 		node := root.Get(path)
 		if !node.Exists() || !node.IsObject() {

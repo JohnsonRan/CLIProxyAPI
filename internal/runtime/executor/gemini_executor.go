@@ -283,7 +283,9 @@ func (e *GeminiExecutor) executeEmbeddings(ctx context.Context, auth *cliproxyau
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, req.Payload, requestedModel, requestPath, opts.Headers)
+	doc := ojson.NewDoc(body)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", doc, req.Payload, requestedModel, requestPath, opts.Headers)
+	body = doc.Bytes()
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, action)
