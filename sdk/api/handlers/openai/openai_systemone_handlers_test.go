@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
 )
 
 func TestSystemOneRejectsInvalidRequests(t *testing.T) {
@@ -42,10 +42,10 @@ func TestSystemOneRejectsInvalidRequests(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
 			}
-			if got := gjson.GetBytes(w.Body.Bytes(), "error.message").String(); got != tt.wantMsg {
+			if got := ojson.GetBytes(w.Body.Bytes(), "error.message").String(); got != tt.wantMsg {
 				t.Fatalf("error.message = %q, want %q", got, tt.wantMsg)
 			}
-			if got := gjson.GetBytes(w.Body.Bytes(), "error.type").String(); got != "invalid_request_error" {
+			if got := ojson.GetBytes(w.Body.Bytes(), "error.type").String(); got != "invalid_request_error" {
 				t.Fatalf("error.type = %q", got)
 			}
 		})

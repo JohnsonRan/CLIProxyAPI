@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
 )
 
 // systemOneHandlerType is the entry protocol for TypeSafe System One decision requests.
@@ -28,21 +28,21 @@ func (h *OpenAIAPIHandler) SystemOne(c *gin.Context) {
 		writeSystemOneError(c, clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), fmt.Sprintf("Invalid request: %v", err), "")
 		return
 	}
-	if !gjson.ValidBytes(rawJSON) || !gjson.ParseBytes(rawJSON).IsObject() {
+	if !ojson.ValidBytes(rawJSON) || !ojson.ParseBytes(rawJSON).IsObject() {
 		writeSystemOneError(c, http.StatusBadRequest, "Invalid request: body must be a JSON object", "")
 		return
 	}
 
-	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	modelName := strings.TrimSpace(ojson.GetBytes(rawJSON, "model").String())
 	if modelName == "" {
 		writeSystemOneError(c, http.StatusBadRequest, "Missing required parameter 'model'", "missing_required_parameter")
 		return
 	}
-	if state := gjson.GetBytes(rawJSON, "state"); !state.Exists() || state.Type == gjson.Null {
+	if state := ojson.GetBytes(rawJSON, "state"); !state.Exists() || state.Type == ojson.Null {
 		writeSystemOneError(c, http.StatusBadRequest, "Missing required parameter 'state'", "missing_required_parameter")
 		return
 	}
-	if questions := gjson.GetBytes(rawJSON, "questions"); !questions.IsObject() || len(questions.Map()) == 0 {
+	if questions := ojson.GetBytes(rawJSON, "questions"); !questions.IsObject() || len(questions.Map()) == 0 {
 		writeSystemOneError(c, http.StatusBadRequest, "Missing or invalid required parameter 'questions'", "missing_required_parameter")
 		return
 	}

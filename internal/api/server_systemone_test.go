@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 func TestSystemOneRouteForwardsToOpenAICompatProvider(t *testing.T) {
@@ -59,10 +59,10 @@ func TestSystemOneRouteForwardsToOpenAICompatProvider(t *testing.T) {
 	if gotAuth != "Bearer upstream-key" {
 		t.Fatalf("upstream Authorization = %q", gotAuth)
 	}
-	if gjson.Get(gotBody, "model").String() != "typesafe/jev" || gjson.Get(gotBody, "questions.department.criteria.billing").String() != "payments" {
+	if ojson.Get(gotBody, "model").String() != "typesafe/jev" || ojson.Get(gotBody, "questions.department.criteria.billing").String() != "payments" {
 		t.Fatalf("upstream body = %s", gotBody)
 	}
-	if got := gjson.GetBytes(rr.Body.Bytes(), "answers.department.choice").String(); got != "billing" {
+	if got := ojson.GetBytes(rr.Body.Bytes(), "answers.department.choice").String(); got != "billing" {
 		t.Fatalf("response body = %s", rr.Body.String())
 	}
 }
