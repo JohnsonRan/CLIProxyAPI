@@ -3,7 +3,7 @@
 // headless Chrome/Edge over the DevTools protocol. Exits non-zero on the first failed check.
 //   CHROME=/usr/bin/google-chrome BASE=http://127.0.0.1:18317 bun smoke.ts
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createWriteStream, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -60,10 +60,15 @@ check('options', (await api('options')).models?.length === 2);
 const proc = spawn(
   CHROME,
   ['--headless=new', '--no-sandbox', '--remote-debugging-port=9333', `--user-data-dir=${mkdtempSync(join(tmpdir(), 'smoke-'))}`, '--window-size=1440,1000', 'about:blank'],
-  { stdio: 'ignore' }
+  { stdio: ['ignore', 'pipe', 'pipe'] }
 );
+// Keep Chrome's output so a failed start can be diagnosed from the artifact.
+const chromeLog = createWriteStream(join(SHOTS || tmpdir(), 'chrome.log'));
+proc.stdout?.pipe(chromeLog);
+proc.stderr?.pipe(chromeLog);
 let wsUrl = '';
-for (let i = 0; i < 60 && !wsUrl; i++) {
+// Cold starts on shared runners occasionally exceed 15 s, so allow up to 60 s.
+for (let i = 0; i < 240 && !wsUrl; i++) {
   await sleep(250);
   try {
     const list = (await (await fetch('http://127.0.0.1:9333/json')).json()) as { type: string; webSocketDebuggerUrl: string }[];
