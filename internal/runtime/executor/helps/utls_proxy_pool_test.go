@@ -28,9 +28,9 @@ func TestUtlsFallbackProxyConnectionPool(t *testing.T) {
 			server.Start()
 			defer server.Close()
 			cfg := testConfig()
-			auth := &cliproxyauth.Auth{ProxyURL: "direct"}
-			if enabled {
-				auth.ProxyConnectionPool = poolEnabled()
+			auth := &cliproxyauth.Auth{
+				ProxyURL:            "direct",
+				ProxyConnectionPool: &cliproxyauth.ProxyConnectionPoolOverride{Enabled: &enabled},
 			}
 			for i := 0; i < 2; i++ {
 				client := NewUtlsHTTPClient(context.Background(), cfg, auth, 0)
