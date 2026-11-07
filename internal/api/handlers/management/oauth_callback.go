@@ -17,6 +17,9 @@ type oauthCallbackRequest struct {
 	Code        string `json:"code"`
 	State       string `json:"state"`
 	Error       string `json:"error"`
+	// APIKey carries Command Code's callback credential, which arrives as
+	// apiKey instead of an authorization code.
+	APIKey string `json:"api_key"`
 }
 
 func (h *Handler) PostOAuthCallback(c *gin.Context) {
@@ -39,6 +42,7 @@ func (h *Handler) GetOAuthCallback(c *gin.Context) {
 		Code:     strings.TrimSpace(c.Query("code")),
 		State:    strings.TrimSpace(c.Query("state")),
 		Error:    firstNonEmpty(c.Query("error"), c.Query("error_description")),
+		APIKey:   strings.TrimSpace(c.Query("apiKey")),
 	}
 	h.handleOAuthCallback(c, req)
 }
@@ -52,6 +56,7 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 	state := strings.TrimSpace(req.State)
 	code := strings.TrimSpace(req.Code)
 	errMsg := strings.TrimSpace(req.Error)
+	apiKey := strings.TrimSpace(req.APIKey)
 
 	if rawRedirect := strings.TrimSpace(req.RedirectURL); rawRedirect != "" {
 		u, errParse := url.Parse(rawRedirect)
@@ -65,6 +70,9 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		}
 		if code == "" {
 			code = strings.TrimSpace(q.Get("code"))
+		}
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(q.Get("apiKey"))
 		}
 		if errMsg == "" {
 			errMsg = strings.TrimSpace(q.Get("error"))
@@ -81,6 +89,11 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 	if err := ValidateOAuthState(state); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
 		return
+	}
+	if code == "" && apiKey != "" {
+		if sessionProvider, _, _, _, _, ok := GetOAuthSessionDetails(state); ok && sessionProvider == "commandcode" {
+			code = apiKey
+		}
 	}
 	if code == "" && errMsg == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "code or error is required"})
