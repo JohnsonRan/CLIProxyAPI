@@ -82,7 +82,9 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.Models()
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
+	// Keep the OpenAI fields (id, object, created, owned_by) plus the
+	// OpenRouter-style capability fields clients use to classify models.
+	// Capability fields are only present when the registry declares them.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -100,6 +102,28 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 			filteredModel["owned_by"] = ownedBy
 		}
 
+		// The configured max_context_length override is folded into
+		// context_length; Gemini-style catalogs only declare token limits.
+		if contextLength, exists := firstModelValue(model, "context_length", "input_token_limit"); exists {
+			filteredModel["context_length"] = contextLength
+		}
+
+		if architecture, exists := model["architecture"]; exists {
+			filteredModel["architecture"] = architecture
+		}
+
+		if displayName, ok := model["display_name"].(string); ok && displayName != "" {
+			filteredModel["name"] = displayName
+		}
+
+		if maxCompletionTokens, exists := firstModelValue(model, "max_completion_tokens", "output_token_limit"); exists {
+			filteredModel["top_provider"] = map[string]any{"max_completion_tokens": maxCompletionTokens}
+		}
+
+		if reasoning, exists := model["reasoning"]; exists {
+			filteredModel["reasoning"] = reasoning
+		}
+
 		filteredModels[i] = filteredModel
 	}
 
@@ -107,6 +131,16 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		"object": "list",
 		"data":   filteredModels,
 	})
+}
+
+// firstModelValue returns the first key present in a registry model map.
+func firstModelValue(model map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, exists := model[key]; exists {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 // ChatCompletions handles the /v1/chat/completions endpoint.
