@@ -49,3 +49,54 @@ func TestCodexConfigRequestCompressionSerialization(t *testing.T) {
 		t.Fatalf("unexpected JSON: %s", data)
 	}
 }
+
+func TestCodexRequestCompressionDefaultAndLegacyValues(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		yaml    string
+		enabled bool
+	}{
+		{name: "default on", yaml: "port: 8317\n", enabled: true},
+		{name: "explicit off", yaml: "codex:\n  upstream-request-compression: false\n", enabled: false},
+		{name: "legacy zstd", yaml: "codex:\n  upstream-request-compression: \"zstd\"\n", enabled: true},
+		{name: "legacy unquoted zstd", yaml: "codex:\n  upstream-request-compression: zstd\n", enabled: true},
+		{name: "legacy auto", yaml: "codex:\n  upstream-request-compression: auto\n", enabled: true},
+		{name: "legacy off", yaml: "codex:\n  upstream-request-compression: \"off\"\n", enabled: false},
+		{name: "legacy gzip means zstd on", yaml: "codex:\n  upstream-request-compression: gzip\n", enabled: true},
+		{name: "legacy no", yaml: "codex:\n  upstream-request-compression: no\n", enabled: false},
+		{name: "legacy N", yaml: "codex:\n  upstream-request-compression: N\n", enabled: false},
+		{name: "legacy yes", yaml: "codex:\n  upstream-request-compression: yes\n", enabled: true},
+		{name: "legacy none", yaml: "codex:\n  upstream-request-compression: none\n", enabled: false},
+		{name: "v8 legacy br means zstd on", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: br\n", enabled: true},
+		{name: "v8 legacy off", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: \"off\"\n", enabled: false},
+		{name: "v8 zstd", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: zstd\n", enabled: true},
+		{name: "v8 no", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: no\n", enabled: false},
+		{name: "v8 N", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: N\n", enabled: false},
+		{name: "v8 yes", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: yes\n", enabled: true},
+		{name: "v8 none", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: none\n", enabled: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, errParse := ParseConfigBytes([]byte(tt.yaml))
+			if errParse != nil {
+				t.Fatal(errParse)
+			}
+			if cfg.Codex.UpstreamRequestCompression != tt.enabled {
+				t.Fatalf("enabled=%v, want %v", cfg.Codex.UpstreamRequestCompression, tt.enabled)
+			}
+		})
+	}
+
+	for _, bad := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "legacy integer rejected", yaml: "codex:\n  upstream-request-compression: 0\n"},
+		{name: "v8 integer rejected", yaml: "config-version: 8\nupstream:\n  codex:\n    upstream-request-compression: 0\n"},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			if _, errParse := ParseConfigBytes([]byte(bad.yaml)); errParse == nil {
+				t.Fatalf("%s must fail to parse", bad.name)
+			}
+		})
+	}
+}
