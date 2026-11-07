@@ -37,9 +37,7 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 	if !summaryFormatSupported(normalized) || len(body) == 0 || !ojson.ValidBytes(body) {
 		return SummaryConfig{}
 	}
-	return extractSummaryConfigFromGetter(func(path string) ojson.Result {
-		return ojson.GetBytesNoCopy(body, path)
-	}, normalized)
+	return extractSummaryConfigFromGetter(indexSummaryDocument(body).get, normalized)
 }
 
 // ExtractSummaryConfigDoc reads protocol-specific summary visibility intent from doc.
@@ -144,9 +142,7 @@ func ExtractExplicitSummaryConfig(body []byte, format string) SummaryConfig {
 	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return SummaryConfig{}
 	}
-	config, _ := extractOpenAIExplicitSummaryConfigFromGetter(func(path string) ojson.Result {
-		return ojson.GetBytesNoCopy(body, path)
-	})
+	config, _ := extractOpenAIExplicitSummaryConfigFromGetter(indexSummaryDocument(body).get)
 	return config
 }
 
@@ -403,6 +399,37 @@ func summaryFormatSupported(format string) bool {
 	default:
 		return false
 	}
+}
+
+// summaryDocument indexes the top-level members of a request body so the
+// candidate summary paths can be read without rescanning the whole body for
+// each of them. Bodies of several hundred KiB are common and the summary
+// fields sit beside the message history, so each ojson.GetBytes call otherwise
+// walks all of it. Member values reference the body directly; the index is
+// used only while the body is unchanged and is never retained.
+type summaryDocument map[string]ojson.Result
+
+func indexSummaryDocument(body []byte) summaryDocument {
+	doc := summaryDocument{}
+	util.ParseGJSONBytesNoCopy(body).ForEach(func(key, value ojson.Result) bool {
+		name := key.String()
+		// ojson.Get returns the first duplicate member; keep the same answer.
+		if _, seen := doc[name]; !seen {
+			doc[name] = value
+		}
+		return true
+	})
+	return doc
+}
+
+// get resolves a dotted path whose first segment is a plain top-level key.
+func (doc summaryDocument) get(path string) ojson.Result {
+	root, rest, _ := strings.Cut(path, ".")
+	value, ok := doc[root]
+	if !ok || rest == "" {
+		return value
+	}
+	return value.Get(rest)
 }
 
 func claudeThinkingAcceptsDisplayFromGetter(get func(string) ojson.Result) bool {
