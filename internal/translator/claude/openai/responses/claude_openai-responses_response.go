@@ -364,6 +364,63 @@ func extractResponsesRequestEcho(root ojson.Result) responsesRequestEcho {
 	return e
 }
 
+// detach copies the strings e shares with a no-copy parse of the request.
+func (e responsesRequestEcho) detach() responsesRequestEcho {
+	e.instructions = strings.Clone(e.instructions)
+	e.model = strings.Clone(e.model)
+	e.previousResponseID = strings.Clone(e.previousResponseID)
+	e.promptCacheKey = strings.Clone(e.promptCacheKey)
+	e.safetyIdentifier = strings.Clone(e.safetyIdentifier)
+	e.serviceTier = strings.Clone(e.serviceTier)
+	e.truncation = strings.Clone(e.truncation)
+	e.reasoning = cloneJSONValueStrings(e.reasoning)
+	e.text = cloneJSONValueStrings(e.text)
+	e.toolChoice = cloneJSONValueStrings(e.toolChoice)
+	e.tools = cloneJSONValueStrings(e.tools)
+	e.user = cloneJSONValueStrings(e.user)
+	e.metadata = cloneJSONValueStrings(e.metadata)
+	return e
+}
+
+// cloneJSONValueStrings copies every string in a value built by ojson.Result.Value.
+func cloneJSONValueStrings(v any) any {
+	switch x := v.(type) {
+	case string:
+		return strings.Clone(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = cloneJSONValueStrings(item)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for key, item := range x {
+			out[strings.Clone(key)] = cloneJSONValueStrings(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// detachResponsesToolWinners copies the strings and tool JSON the winners share
+// with a no-copy parse of the request.
+func detachResponsesToolWinners(winners map[string]responsesToolDescriptor) map[string]responsesToolDescriptor {
+	out := make(map[string]responsesToolDescriptor, len(winners))
+	for name, d := range winners {
+		d.name = strings.Clone(d.name)
+		d.childName = strings.Clone(d.childName)
+		d.namespace = strings.Clone(d.namespace)
+		d.toolType = strings.Clone(d.toolType)
+		if d.tool.Raw != "" {
+			d.tool = ojson.Parse(strings.Clone(d.tool.Raw))
+		}
+		out[strings.Clone(name)] = d
+	}
+	return out
+}
+
 func (e responsesRequestEcho) applyDoc(doc *ojson.Doc, prefix string) {
 	if e.hasInstructions {
 		_ = doc.Set(prefix+"instructions", e.instructions)
@@ -868,13 +925,16 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 }
 
 func newClaudeToResponsesState(requestJSON []byte, toolSearch bool) *claudeToResponsesState {
-	root := util.ParseGJSONBytesNoCopy(bytes.Clone(requestJSON))
+	// Parse the caller's buffer in place and copy only the values the state
+	// keeps; cloning the whole request cost about its size per response.
+	root := util.ParseGJSONBytesNoCopy(requestJSON)
 	winners := responsesToolWinners(root, toolSearch)
+	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
 	return &claudeToResponsesState{
 		ToolSearch:              toolSearch,
-		RequestEcho:             extractResponsesRequestEcho(root),
-		ToolWinners:             winners,
-		ToolNames:               buildClaudeToolNamesWithWinners(root, winners, toolSearch),
+		RequestEcho:             extractResponsesRequestEcho(root).detach(),
+		ToolWinners:             detachResponsesToolWinners(winners),
+		ToolNames:               toolNames.detach(),
 		ApplyPatchCalls:         make(map[string]*translatorcommon.ApplyPatchCallState),
 		FuncItemAdded:           make(map[int]bool),
 		FuncArgsSent:            make(map[int]int),
