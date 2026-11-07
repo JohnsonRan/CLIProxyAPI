@@ -66,6 +66,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfgMu.Unlock()
 		s.applyKVStoreConfig(cfg)
 		redisqueue.SetUsageStatisticsEnabled(true)
+		redisqueue.SetExcludeEmbeddingUsage(false)
 	}
 
 	defer func() {
