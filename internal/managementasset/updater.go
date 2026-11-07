@@ -291,6 +291,67 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	return err == nil
 }
 
+// ForceUpdateManagementHTML checks for and downloads the latest management asset
+// immediately, ignoring the auto-update throttle. It shares the auto-updater's
+// singleflight key, so a manual update never races a background sync.
+// It returns whether the asset changed and a machine-readable status.
+func ForceUpdateManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) (bool, string, error) {
+	return forceUpdateManagementHTML(ctx, staticDir, newHTTPClient(proxyURL), resolveReleaseURL(panelRepository))
+}
+
+type forceUpdateResult struct {
+	updated bool
+	status  string
+}
+
+func forceUpdateManagementHTML(ctx context.Context, staticDir string, client *http.Client, releaseURL string) (bool, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return false, "empty_static_dir", fmt.Errorf("empty static directory")
+	}
+	localPath := filepath.Join(staticDir, managementAssetName)
+
+	value, err, _ := sfGroup.Do(localPath, func() (interface{}, error) {
+		lastUpdateCheckMu.Lock()
+		lastUpdateCheckTime = time.Now()
+		lastUpdateCheckMu.Unlock()
+
+		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
+			return forceUpdateResult{status: "mkdir_failed"}, fmt.Errorf("failed to prepare static directory: %w", errMkdirAll)
+		}
+
+		localHash, _ := fileSHA256(localPath)
+		asset, remoteHash, errFetch := fetchLatestAsset(ctx, client, releaseURL)
+		if errFetch != nil {
+			return forceUpdateResult{status: "fetch_failed"}, fmt.Errorf("failed to fetch latest release information: %w", errFetch)
+		}
+		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
+			return forceUpdateResult{status: "already_latest"}, nil
+		}
+
+		data, downloadedHash, errDownload := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+		if errDownload != nil {
+			return forceUpdateResult{status: "download_failed"}, fmt.Errorf("failed to download management asset: %w", errDownload)
+		}
+		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+			return forceUpdateResult{status: "digest_mismatch"}, fmt.Errorf("management asset digest mismatch: expected %s got %s", remoteHash, downloadedHash)
+		}
+		if localHash != "" && strings.EqualFold(localHash, downloadedHash) {
+			return forceUpdateResult{status: "already_latest"}, nil
+		}
+		if errWrite := atomicWriteFile(localPath, data); errWrite != nil {
+			return forceUpdateResult{status: "write_failed"}, fmt.Errorf("failed to write management asset on disk: %w", errWrite)
+		}
+		log.Infof("management asset updated on demand (hash=%s)", downloadedHash)
+		return forceUpdateResult{updated: true, status: "updated"}, nil
+	})
+	result, _ := value.(forceUpdateResult)
+	return result.updated, result.status, err
+}
+
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
 	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
