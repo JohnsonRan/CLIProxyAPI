@@ -10,11 +10,11 @@
 
 **管理与可观测性**
 
-- 默认提供本 Fork 的管理面板 [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)（仍可通过 `remote-management.panel-github-repository` 指定其它面板），可在面板中按需更新。该面板以同样的方式跟随上游面板，并为本 Fork 的特性提供界面：使用量与模型指纹页面、客户端 Key 的模型规则与提供商范围、认证文件 `allowed_models`、按 Key 共享额度与上游额度、Command Code 登录，以及 embeddings/rerank/System One 模型标记。
+- 默认提供本 Fork 的管理面板 [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center)（仍可通过 `remote-management.panel-github-repository` 指定其它面板），可在面板中按需更新。该面板以同样的方式跟随上游面板，并为本 Fork 的特性提供界面：使用量与模型指纹页面、客户端 Key 的模型规则与提供商范围、认证文件 `allowed_models`、按 Key 共享额度与上游额度，以及 embeddings/rerank/System One 模型标记。
 - 内置使用量统计，持久化到 SQLite（`observability.usage.store`），无需外部采集器：基于 models.dev 或自定义价格计算费用，延迟/首字时间/输出速度分析，实时进行中请求，客户端 IP 归属地，Codex 与 Claude 订阅的额度价值估算，上游风控事件，CSV/JSON 导出与数据库优化。`observability.usage.exclude-embeddings` 可将 embedding 请求排除在统计之外。
 - 管理密钥验证结果会缓存，不再每次管理请求都执行 bcrypt。
 - 模型指纹检测（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)），检查某个模型名背后实际作答的模型。
-- 客户端额度接口 `GET /v1/usage`：客户端 API Key 可读取分配给它的 OAuth 凭据（Codex、Claude、Antigravity、xAI、Command Code）的额度，包括经由级联代理的凭据。
+- 客户端额度接口 `GET /v1/usage`：客户端 API Key 可读取分配给它的 OAuth 凭据（Codex、Claude、Antigravity、xAI）的额度，包括经由级联代理的凭据。
 
 **访问控制**
 
@@ -26,7 +26,6 @@
 
 - 面向 OpenAI 兼容与 Gemini 提供商的 `/v1/embeddings` 与 `/v1/rerank`。
 - `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）与 TypeSafe System One（`/v1/systemone`）。
-- Command Code（commandcode.ai）OAuth 登录。
 - `openai-compatibility` 提供商支持 `auto-discover-models` 与 `excluded-models`。
 - `/v1/models` 列出模态、上下文长度、最大输出 token 与推理支持（OpenRouter 格式）。
 

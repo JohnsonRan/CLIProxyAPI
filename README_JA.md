@@ -10,11 +10,11 @@
 
 **管理と可観測性**
 
-- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、Command Code ログイン、embeddings/rerank/System One のモデルフラグ。
+- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、embeddings/rerank/System One のモデルフラグ。
 - SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。`observability.usage.exclude-embeddings` で embedding リクエストを統計から除外できます。
 - 管理キーの検証結果をキャッシュし、管理リクエストごとに bcrypt を実行しません。
 - モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
-- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI、Command Code）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
+- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
 
 **アクセス制御**
 
@@ -26,7 +26,6 @@
 
 - OpenAI 互換および Gemini プロバイダー向けの `/v1/embeddings` と `/v1/rerank`。
 - `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）、TypeSafe System One（`/v1/systemone`）。
-- Command Code（commandcode.ai）の OAuth ログイン。
 - `openai-compatibility` プロバイダーの `auto-discover-models` と `excluded-models`。
 - `/v1/models` でモダリティ、コンテキスト長、最大出力トークン数、推論サポートを提供（OpenRouter 形式）。
 

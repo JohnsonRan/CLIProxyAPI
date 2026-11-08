@@ -10,11 +10,11 @@ Everything upstream offers, plus the following. Each feature lives on its own `p
 
 **Management and observability**
 
-- This fork's management panel, [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center), is served by default (`remote-management.panel-github-repository` still selects another one) and can be updated on demand from the panel. It tracks the upstream panel the same way and adds the UI for this fork's features: the usage and fingerprint pages, client key model rules and provider scopes, auth file `allowed_models`, per-key quota sharing and upstream quota, Command Code login, and embeddings/rerank/System One model flags.
+- This fork's management panel, [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center), is served by default (`remote-management.panel-github-repository` still selects another one) and can be updated on demand from the panel. It tracks the upstream panel the same way and adds the UI for this fork's features: the usage and fingerprint pages, client key model rules and provider scopes, auth file `allowed_models`, per-key quota sharing and upstream quota, and embeddings/rerank/System One model flags.
 - Built-in usage statistics persisted to SQLite (`observability.usage.store`), with no external collector: costs from models.dev or custom prices, latency/TTFT/output-speed analysis, live in-flight requests, client IP location, quota value estimates for Codex and Claude subscriptions, upstream risk-control events, CSV/JSON export and database optimization. `observability.usage.exclude-embeddings` keeps embedding requests out of the statistics.
 - Management key checks are cached instead of running bcrypt on every management request.
 - Model fingerprint detection ([LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)) to check which model really answers behind a served model name.
-- Client quota endpoint `GET /v1/usage`: a client API key reads the quota of the OAuth credentials (Codex, Claude, Antigravity, xAI, Command Code) assigned to it, including those behind chained proxies.
+- Client quota endpoint `GET /v1/usage`: a client API key reads the quota of the OAuth credentials (Codex, Claude, Antigravity, xAI) assigned to it, including those behind chained proxies.
 
 **Access control**
 
@@ -26,7 +26,6 @@ Everything upstream offers, plus the following. Each feature lives on its own `p
 
 - `/v1/embeddings` and `/v1/rerank` for OpenAI-compatible and Gemini providers.
 - `/v1/responses/input_tokens`, OpenAI Decisions (`/v1/decisions`) and TypeSafe System One (`/v1/systemone`).
-- Command Code (commandcode.ai) OAuth login.
 - `auto-discover-models` and `excluded-models` for `openai-compatibility` providers.
 - `/v1/models` lists modalities, context length, max output tokens and reasoning support (OpenRouter style).
 
