@@ -159,24 +159,6 @@ func TestSummarizeXAIUsage(t *testing.T) {
 	}
 }
 
-func TestSummarizeCommandCodeUsage(t *testing.T) {
-	summary := summarizeClientUsage(clientUsageCommandCodeProvider, clientUsageTestResponses(map[string]string{
-		clientUsageKindUsage:        `{"credits":{"monthlyCredits":60,"purchasedCredits":5,"freeCredits":-1},"windowLimits":{"fiveHour":{"cap":4,"used":1,"resetAt":"2026-10-18T02:00:00Z"},"weekly":{"cap":0,"used":0}}}`,
-		clientUsageKindSubscription: `{"data":{"planId":"individual-pro-v1-monthly","status":"active","currentPeriodEnd":"2026-11-01T00:00:00Z"}}`,
-	}), time.Now())
-
-	if summary.Plan != "Pro" {
-		t.Fatalf("plan = %q", summary.Plan)
-	}
-	assertClientUsageWindow(t, findClientUsageWindow(t, summary, "five_hour"), 25, "2026-10-18T02:00:00Z", 18000)
-	// A zero cap reads as exhausted, like the panel.
-	assertClientUsageWindow(t, findClientUsageWindow(t, summary, "weekly"), 100, "", 604800)
-	assertClientUsageWindow(t, findClientUsageWindow(t, summary, "monthly"), 25, "2026-11-01T00:00:00Z", 0)
-	if credits := findClientUsageBalance(t, summary, "credits"); *credits.Remaining != 65 {
-		t.Fatalf("credits = %+v", credits)
-	}
-}
-
 // Failed and optional-only responses contribute nothing, and the summary
 // always serializes windows as a list.
 func TestSummarizeClientUsageIgnoresFailedResponses(t *testing.T) {

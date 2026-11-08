@@ -91,8 +91,6 @@ func summarizeClientUsage(provider string, responses []clientUsageUpstream, obse
 		summary = summarizeAntigravityUsage(bodies)
 	case "xai":
 		summary = summarizeXAIUsage(bodies)
-	case clientUsageCommandCodeProvider:
-		summary = summarizeCommandCodeUsage(bodies)
 	}
 	if summary.Windows == nil {
 		summary.Windows = []clientUsageWindow{}
@@ -453,89 +451,6 @@ func xaiCents(value ojson.Result) *float64 {
 		return clientUsageNumber(value.Get("val"))
 	}
 	return clientUsageNumber(value)
-}
-
-// commandCodePlans is the official CLI's plan table: plan ID prefix to name
-// and monthly credits in dollars.
-var commandCodePlans = map[string]struct {
-	name    string
-	monthly float64
-}{
-	"individual-go":       {"Go", 10},
-	"individual-go-v1":    {"Go", 10},
-	"individual-goat":     {"GOAT", 70},
-	"individual-pro":      {"Pro", 30},
-	"individual-pro-v1":   {"Pro", 80},
-	"individual-provider": {"Provider", 15},
-	"individual-max":      {"Max", 150},
-	"individual-ultra":    {"Ultra", 300},
-	"teams-pro":           {"Teams Pro", 40},
-}
-
-func summarizeCommandCodeUsage(bodies map[string]ojson.Result) clientUsageSummary {
-	var summary clientUsageSummary
-	subscription := bodies[clientUsageKindSubscription].Get("data")
-	planID := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(subscription.Get("planId").String())), "_", "-")
-	var planKey string
-	for key := range commandCodePlans {
-		if strings.HasPrefix(planID, key) && len(key) > len(planKey) {
-			planKey = key
-		}
-	}
-	if planKey != "" {
-		summary.Plan = commandCodePlans[planKey].name
-	}
-	credits, ok := bodies[clientUsageKindUsage]
-	if !ok {
-		return summary
-	}
-	for _, window := range []struct {
-		key, id string
-		period  int64
-	}{{"fiveHour", "five_hour", clientUsageFiveHourSeconds}, {"weekly", "weekly", clientUsageWeekSeconds}} {
-		raw := credits.Get("windowLimits." + window.key)
-		capValue, used := clientUsageNumber(raw.Get("cap")), clientUsageNumber(raw.Get("used"))
-		if capValue == nil || used == nil {
-			continue
-		}
-		percent := 100.0
-		if *capValue > 0 {
-			percent = math.Min(100, *used / *capValue * 100)
-		}
-		summary.Windows = append(summary.Windows, clientUsageWindow{
-			ID:            window.id,
-			UsedPercent:   &percent,
-			ResetAt:       clientUsageTime(raw.Get("resetAt")),
-			PeriodSeconds: window.period,
-		})
-	}
-	monthlyLeft := clientUsageNumber(credits.Get("credits.monthlyCredits"))
-	// The API reports only the remaining monthly credits, so the used share
-	// needs a known plan with an active subscription.
-	if planKey != "" && monthlyLeft != nil && subscription.Get("status").String() == "active" {
-		total := math.Max(commandCodePlans[planKey].monthly, math.Max(0, *monthlyLeft))
-		percent := 0.0
-		if total > 0 {
-			percent = (total - math.Max(0, *monthlyLeft)) / total * 100
-		}
-		summary.Windows = append(summary.Windows, clientUsageWindow{
-			ID:          "monthly",
-			UsedPercent: &percent,
-			ResetAt:     clientUsageTime(subscription.Get("currentPeriodEnd")),
-		})
-	}
-	var left float64
-	found := false
-	for _, key := range []string{"monthlyCredits", "purchasedCredits", "freeCredits"} {
-		if value := clientUsageNumber(credits.Get("credits." + key)); value != nil {
-			left += math.Max(0, *value)
-			found = true
-		}
-	}
-	if found {
-		summary.Balances = append(summary.Balances, clientUsageBalance{ID: "credits", Remaining: &left, Unit: "usd"})
-	}
-	return summary
 }
 
 // clientUsageFirst returns the first existing field among keys.
