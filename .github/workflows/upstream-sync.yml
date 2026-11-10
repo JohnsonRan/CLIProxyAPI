@@ -25,7 +25,6 @@ env:
     patch/management-panel-update
     patch/management-ua-shim
     patch/downstream-panel-source
-    patch/fix-interrupt-test-race
     patch/claude-search-recovery
     patch/codex-oauth-resilience
     patch/embeddings-and-rerank
