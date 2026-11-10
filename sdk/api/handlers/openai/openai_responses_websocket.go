@@ -1080,14 +1080,19 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					return attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && !cliproxyexecutor.LocalWebsocketTurnExecuted(cliCtx)
 				},
 				onCompleted: func(output []byte, responseID string, pendingToolCallIDs []string) {
-					// A native WebSocket upstream keeps the transcript itself.
-					if nativeWebsocketPassthrough || turnUsesUpstreamWebsocket.Load() {
+					localTurnExecuted := cliproxyexecutor.LocalWebsocketTurnExecuted(cliCtx)
+					// A native WebSocket upstream keeps the transcript itself, except local compaction.
+					if (nativeWebsocketPassthrough || turnUsesUpstreamWebsocket.Load()) && !localTurnExecuted {
 						return
+					}
+					cacheRequest := nextLastRequest
+					if localTurnExecuted {
+						cacheRequest = responsesWebsocketLocalCompactionBoundaryRequest(requestJSON)
 					}
 					authID, _ := turnAuthID.Load().(string)
 					defaultResponsesHTTPStateCache.put(responseID, responsesHTTPStateEntry{
 						owner:              stateOwner,
-						request:            canonicalHTTPIncrementalRequestSnapshot(nextLastRequest),
+						request:            canonicalHTTPIncrementalRequestSnapshot(cacheRequest),
 						responseOutput:     output,
 						pendingToolCallIDs: pendingToolCallIDs,
 						authID:             authID,
