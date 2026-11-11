@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -157,8 +158,11 @@ func TestClaudeExecuteRecordsRefusalCategory(t *testing.T) {
 		Model:   "claude-opus-5",
 		Payload: []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: sdktranslator.FormatClaude})
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
+	// Upstream 03a8743c returns a non-stream policy refusal as a 400 request fault; the failure
+	// record still carries the refusal category.
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) || status.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("Execute error = %v, want a 400 refusal", err)
 	}
 	capture.await(t, "refusal_bio", "blocked")
 }
