@@ -1555,6 +1555,27 @@ func TestOfficialAPIKeyWithEmptyOrAutoCloakConfigDoesNotCloak(t *testing.T) {
 	}
 }
 
+func TestOfficialAPIKeyWithSensitiveWordsReplaceCloaks(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "sk-ant-usr-test-key",
+			Cloak: &config.CloakConfig{
+				Mode:                  "auto",
+				SensitiveWordsReplace: map[string]string{"secret": "redacted"},
+			},
+		}},
+	}
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"api_key": "sk-ant-usr-test-key"},
+	}
+	policy, _ := resolveClaudeWirePolicy(cfg, auth, "sk-ant-usr-test-key", false)
+	if !policy.Cloak {
+		t.Fatal("resolveClaudeWirePolicy() Cloak = false, want true when sensitive-words-replace opts the API key in")
+	}
+}
+
 func TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402(t *testing.T) {
 	t.Parallel()
 
