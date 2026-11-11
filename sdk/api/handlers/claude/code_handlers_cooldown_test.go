@@ -296,16 +296,18 @@ func TestClaudeCooldownMessagesRoute_PassthroughUnifiedRateLimitHeaders(t *testi
 				request.Header.Set("Content-Type", "application/json")
 				recorder := httptest.NewRecorder()
 
-				before := time.Now().Unix()
 				router.ServeHTTP(recorder, request)
-				after := time.Now().Unix()
 
 				if recorder.Code != http.StatusTooManyRequests {
 					t.Fatalf("status = %d, want 429; body=%s", recorder.Code, recorder.Body.String())
 				}
-				seconds, errSeconds := strconv.ParseInt(recorder.Header().Get("Retry-After"), 10, 64)
-				if errSeconds != nil || seconds <= 0 {
-					t.Fatalf("Retry-After = %q, want positive seconds", recorder.Header().Get("Retry-After"))
+				// 7823s is above coreauth.QuotaExhaustedCooldownThreshold: a final usage
+				// limit without Retry-After, whose unified reset follows the cooldown deadline.
+				if got := recorder.Header().Get("Retry-After"); got != "" {
+					t.Fatalf("Retry-After = %q, want none on a usage limit", got)
+				}
+				if got := recorder.Header().Get("X-Should-Retry"); got != "false" {
+					t.Fatalf("X-Should-Retry = %q, want false", got)
 				}
 
 				if !passthrough {
@@ -328,8 +330,8 @@ func TestClaudeCooldownMessagesRoute_PassthroughUnifiedRateLimitHeaders(t *testi
 					t.Fatalf("Anthropic-Ratelimit-Unified-5h-Status = %q, want rejected", got)
 				}
 				resetAt, errReset := strconv.ParseInt(recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), 10, 64)
-				if errReset != nil || resetAt < before+seconds || resetAt > after+seconds {
-					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %q, want unix epoch in [%d, %d]", recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), before+seconds, after+seconds)
+				if errReset != nil || resetAt < next.Unix()-2 || resetAt > next.Unix()+2 {
+					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %q, want unix epoch near cooldown deadline %d", recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), next.Unix())
 				}
 				if got := recorder.Header().Get("Anthropic-Ratelimit-Unified-5h-Reset"); got != strconv.FormatInt(resetAt, 10) {
 					t.Fatalf("Anthropic-Ratelimit-Unified-5h-Reset = %q, want %d", got, resetAt)
