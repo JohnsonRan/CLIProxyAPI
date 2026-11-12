@@ -30,7 +30,9 @@ type Record struct {
 	TraceID string
 	// SelectionID identifies the scheduler selection decision that produced this usage record when available.
 	SelectionID string
-	Provider    string
+	// HomeSelection carries deferred accounting for reused Home dispatches.
+	HomeSelection *HomeSelection
+	Provider      string
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
@@ -64,6 +66,14 @@ type Record struct {
 	ResponseServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string
+	// UpstreamModel stores the canonical upstream model expected to be served, when an executor maps the requested model.
+	UpstreamModel string
+	// UpstreamRisk names a safety action the upstream response announced, e.g. "refusal_cyber"
+	// (Claude stop_reason refusal) or "trusted_access_for_cyber" (Codex response.metadata).
+	UpstreamRisk string
+	// UpstreamRiskReason is the explanation the upstream gave with UpstreamRisk, e.g. Claude's
+	// stop_details.explanation; empty when none was given.
+	UpstreamRiskReason string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -83,6 +93,14 @@ type Record struct {
 // FailureStreamTruncatedCode marks a locally synthesized failure for an
 // accepted upstream stream that ended without its terminal frame.
 const FailureStreamTruncatedCode = "stream_truncated"
+
+// FailureRequestScopedCode marks failures belonging to the request rather than
+// the selected credential, including local capability validation failures.
+const FailureRequestScopedCode = "request_scoped"
+
+// FailureForceCooldownCode marks failures matched by a request-scoped error rule
+// configured with a cooldown action (stop-and-cooldown or continue-and-cooldown).
+const FailureForceCooldownCode = "force_cooldown"
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
@@ -116,6 +134,8 @@ type Detail struct {
 	VideoInputTokens         *int64
 	FileInputTokens          *int64
 	CachedTextTokens         *int64
+	CachedImageTokens        *int64
+	CachedAudioTokens        *int64
 	TextOutputTokens         *int64
 	ImageOutputTokens        *int64
 	AudioOutputTokens        *int64
@@ -731,6 +751,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.TraceID = trID
 		}
 	}
+	if record.HomeSelection == nil {
+		record.HomeSelection = HomeSelectionFromContext(ctx)
+	}
 	if strings.TrimSpace(record.SelectionID) == "" {
 		if selID := SelectionIDFromContext(ctx); selID != "" {
 			record.SelectionID = selID
@@ -761,6 +784,14 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		m.mu.Unlock()
 		return
 	}
+	if record.ResponseHeaders == nil {
+		record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	}
+	if requestPayloadCapture.Load() && canBeRiskRecord(record) {
+		if raw := RequestPayloadFromContext(ctx); len(raw) > 0 {
+			ctx = context.WithValue(ctx, requestPayloadSnapshotKey{}, raw)
+		}
+	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
 	m.cond.Signal()
@@ -777,6 +808,7 @@ func (m *Manager) run(ctx context.Context) {
 			return
 		}
 		item := m.queue[0]
+		m.queue[0] = queueItem{}
 		m.queue = m.queue[1:]
 		m.mu.Unlock()
 		m.dispatch(item)
