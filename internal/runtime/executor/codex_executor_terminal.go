@@ -454,6 +454,9 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
 }
 
 func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
+	if isCodexTemporaryIPRestriction(statusCode, body) {
+		return newCodexTemporaryIPRestrictionErr(body)
+	}
 	errCode := statusCode
 	isUsageLimit := isCodexUsageLimitError(body)
 	credentialScoped := isUsageLimit && !modelLevelCooling
@@ -474,6 +477,38 @@ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header,
 		}
 	}
 	return err
+}
+
+// This upstream 401 describes a short-lived network admission failure, not an
+// expired OAuth token. A 503 avoids the conductor's unauthorized refresh path.
+func isCodexTemporaryIPRestriction(statusCode int, body []byte) bool {
+	if statusCode != http.StatusUnauthorized {
+		return false
+	}
+	message := ojson.GetBytes(body, "error.message").String()
+	if message == "" {
+		message = ojson.GetBytes(body, "message").String()
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
+	return strings.Contains(strings.ToLower(message), "your ip is not authorized to make this request")
+}
+
+func newCodexTemporaryIPRestrictionErr(body []byte) statusErr {
+	message := ojson.GetBytes(body, "error.message").String()
+	if message == "" {
+		message = ojson.GetBytes(body, "message").String()
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
+	doc := ojson.NewDoc([]byte(`{"error":{}}`))
+	_ = doc.Set("error.message", message)
+	_ = doc.Set("error.type", "server_error")
+	_ = doc.Set("error.code", "ip_temporarily_restricted")
+	retryAfter := 30 * time.Second
+	return statusErr{code: http.StatusServiceUnavailable, msg: doc.String(), retryAfter: &retryAfter}
 }
 
 func classifyCodexStatusError(statusCode int, body []byte) []byte {
