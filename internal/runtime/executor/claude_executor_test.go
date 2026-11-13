@@ -6022,14 +6022,14 @@ func TestHomeV8ClaudeCloakCredentialOptions(t *testing.T) {
 		t.Fatalf("rewritten text = %q, want %q", gotText, wantText)
 	}
 
-	// 3. Empty cloak block (cloak: {}) enables CLI cloaking when DisableClaudeCloakMode=false,
-	// and stays disabled when DisableClaudeCloakMode=true.
+	// 3. Empty cloak block (cloak: {}) is not an explicit opt-in, so an unprofiled API key
+	// keeps its native wire format whether DisableClaudeCloakMode is false or true.
 	emptyCloakAuth := &cliproxyauth.Auth{
 		Provider:   "claude",
 		Attributes: map[string]string{"api_key": "sk-ant-empty-cloak", "auth_kind": cliproxyauth.AuthKindAPIKey},
 		Metadata:   map[string]any{"credential_options": map[string]any{"cloak": map[string]any{}}},
 	}
-	if _, didEmptyEnabled, errEmpty := applyCloaking(context.Background(), cfgEnabled, emptyCloakAuth, payload, "sk-ant-empty-cloak", false, false); errEmpty != nil || !didEmptyEnabled {
+	if _, didEmptyEnabled, errEmpty := applyCloaking(context.Background(), cfgEnabled, emptyCloakAuth, payload, "sk-ant-empty-cloak", false, false); errEmpty != nil || didEmptyEnabled {
 		t.Fatalf("empty cloak block with DisableClaudeCloakMode=false: didCloak=%v, err=%v", didEmptyEnabled, errEmpty)
 	}
 	if _, didEmptyDisabled, errEmptyDis := applyCloaking(context.Background(), cfgDisabled, emptyCloakAuth, payload, "sk-ant-empty-cloak", false, false); errEmptyDis != nil || didEmptyDisabled {
