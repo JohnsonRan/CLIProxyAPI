@@ -110,6 +110,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		return e.executeOpenAIImage(ctx, auth, req, opts)
 	}
+	if helps.IsOpenAIDecisionsRequest(opts) {
+		return e.executeOpenAIDecisions(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	isCompat, errExpand := e.expandCodexResponsesCompaction(auth, &req, &opts, baseModel)
 	if errExpand != nil {
