@@ -97,6 +97,7 @@ func (s *Server) setupRoutes() {
 		v1.POST("/decisions", openaiHandlers.Decisions)
 		v1.POST("/live", s.codexLiveHandler.Handle)
 		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
+		v1.GET("/usage", s.mgmt.GetClientUsage)
 	}
 
 	s.engine.GET("/v1/tunnel", s.handleWebsocketTunnel)
