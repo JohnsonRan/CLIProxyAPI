@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
@@ -202,14 +203,10 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 		len(rawJSON) >= e.cfg.Codex.RequestCompressionMinBytes() {
 		parsedURL, errParse := neturl.Parse(url)
 		if errParse == nil && strings.EqualFold(parsedURL.Hostname(), "chatgpt.com") && strings.HasPrefix(parsedURL.Path, "/backend-api/codex/") {
-			encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
-			if errNewWriter == nil {
-				compressed := encoder.EncodeAll(rawJSON, nil)
-				if errClose := encoder.Close(); errClose != nil {
-					log.Errorf("codex executor: close request encoder error: %v", errClose)
-				} else if len(compressed) < len(rawJSON) {
-					wireBody = compressed
-				}
+			if compressed, errCompress := compressCodexRequestBody(rawJSON); errCompress != nil {
+				log.Errorf("codex executor: compress request body error: %v", errCompress)
+			} else if len(compressed) < len(rawJSON) {
+				wireBody = compressed
 			}
 		}
 	}
@@ -228,6 +225,30 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 		httpReq.Header.Set("Session-Id", cache.ID)
 	}
 	return httpReq, rawJSON, nil
+}
+
+// codexZstdRequestEncoders reuses single-slot encoders: creating one per request costs about
+// 20 MB of allocations, one shared encoder serializes concurrent requests, and a shared
+// multi-slot encoder keeps every slot's memory forever. The pool scales with concurrency and
+// lets the GC reclaim idle encoders.
+var codexZstdRequestEncoders = sync.Pool{New: func() any {
+	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1), zstd.WithLowerEncoderMem(true))
+	if errNewWriter != nil {
+		return errNewWriter
+	}
+	return encoder
+}}
+
+// compressCodexRequestBody zstd-encodes a request body with a pooled encoder.
+func compressCodexRequestBody(body []byte) ([]byte, error) {
+	switch pooled := codexZstdRequestEncoders.Get().(type) {
+	case *zstd.Encoder:
+		defer codexZstdRequestEncoders.Put(pooled)
+		return pooled.EncodeAll(body, nil), nil
+	case error:
+		return nil, pooled
+	}
+	return nil, fmt.Errorf("codex executor: no zstd request encoder")
 }
 
 // alignCodexContentEncoding inspects a replay copy without consuming the live request body.
