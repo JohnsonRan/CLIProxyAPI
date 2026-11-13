@@ -134,3 +134,27 @@ func TestAutoUpdateSkipReason(t *testing.T) {
 		})
 	}
 }
+
+func TestPatchManagementHTMLInjectsUAStabilizerOnlyWhenObfuscationPresent(t *testing.T) {
+	plain := []byte("<html><head><title>Plain</title></head><body>management app</body></html>")
+	if got := PatchManagementHTML(plain); string(got) != string(plain) {
+		t.Fatalf("plain HTML should remain untouched, got %s", got)
+	}
+
+	bundle := []byte(`<!doctype html><html><head><meta charset="utf-8"></head><body><script>const vl="cli-proxy-api-webui::secure-storage";</script></body></html>`)
+	patched := PatchManagementHTML(bundle)
+	if !strings.Contains(string(patched), "cpa_obfuscation_ua_migrated") {
+		t.Fatalf("expected UA stabilizer script in patched HTML, got: %s", patched)
+	}
+	if gotAgain := PatchManagementHTML(patched); string(gotAgain) != string(patched) {
+		t.Fatal("PatchManagementHTML must be idempotent")
+	}
+}
+
+func TestPatchManagementHTMLSkipsPanelsThatFixedTheKey(t *testing.T) {
+	// The downstream panel derives a version-free key itself and ships this marker.
+	fixed := []byte(`<html><head></head><body><script>const s="cli-proxy-api-webui::secure-storage",m="cpa_obfuscation_ua_migrated";</script></body></html>`)
+	if got := PatchManagementHTML(fixed); string(got) != string(fixed) {
+		t.Fatalf("panel with its own key fix must be served unchanged, got %s", got)
+	}
+}
