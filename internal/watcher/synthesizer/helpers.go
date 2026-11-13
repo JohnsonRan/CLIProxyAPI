@@ -61,17 +61,7 @@ func ApplyAuthExcludedModelsMeta(auth *coreauth.Auth, perKey []string, authKind 
 	if auth == nil {
 		return
 	}
-	seen := make(map[string]struct{})
-	for _, entry := range perKey {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			seen[strings.ToLower(trimmed)] = struct{}{}
-		}
-	}
-	combined := make([]string, 0, len(seen))
-	for k := range seen {
-		combined = append(combined, k)
-	}
-	sort.Strings(combined)
+	combined := normalizeModelRules(perKey)
 	hash := diff.ComputeExcludedModelsHash(combined)
 	if auth.Attributes == nil {
 		auth.Attributes = make(map[string]string)
@@ -86,6 +76,40 @@ func ApplyAuthExcludedModelsMeta(auth *coreauth.Auth, perKey []string, authKind 
 	if authKind != "" {
 		auth.Attributes["auth_kind"] = authKind
 	}
+}
+
+// ApplyAuthAllowedModelsMeta stores the credential's own allowed models ("allowed_models")
+// on an auth entry, replacing any previous value. An empty list removes the attribute, which
+// leaves the credential unrestricted.
+func ApplyAuthAllowedModelsMeta(auth *coreauth.Auth, perKey []string) {
+	if auth == nil {
+		return
+	}
+	combined := normalizeModelRules(perKey)
+	if len(combined) == 0 {
+		delete(auth.Attributes, "allowed_models")
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["allowed_models"] = strings.Join(combined, ",")
+}
+
+// normalizeModelRules trims, lowercases, deduplicates and sorts model rules.
+func normalizeModelRules(rules []string) []string {
+	seen := make(map[string]struct{})
+	for _, entry := range rules {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			seen[strings.ToLower(trimmed)] = struct{}{}
+		}
+	}
+	combined := make([]string, 0, len(seen))
+	for k := range seen {
+		combined = append(combined, k)
+	}
+	sort.Strings(combined)
+	return combined
 }
 
 // addRequestRetryToMetadata copies a per-credential request-retry override into metadata.
