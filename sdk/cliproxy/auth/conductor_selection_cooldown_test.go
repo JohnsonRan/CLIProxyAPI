@@ -885,9 +885,18 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				before := time.Now().Unix()
 				headers := cooldownErr.Headers()
 				after := time.Now().Unix()
-				retrySeconds, errSeconds := strconv.ParseInt(headers.Get("Retry-After"), 10, 64)
-				if errSeconds != nil || retrySeconds <= 0 {
-					t.Fatalf("Retry-After = %q, want positive seconds", headers.Get("Retry-After"))
+				// A 2h cooldown is above QuotaExhaustedCooldownThreshold: it is a final
+				// usage limit without Retry-After, and the unified reset follows the
+				// cooldown deadline instead.
+				if got := headers.Get("Retry-After"); got != "" {
+					t.Fatalf("Retry-After = %q, want none on a usage limit", got)
+				}
+				if got := headers.Get("X-Should-Retry"); got != "false" {
+					t.Fatalf("X-Should-Retry = %q, want false", got)
+				}
+				retrySeconds := cooldownErr.resetSeconds()
+				if retrySeconds <= 0 {
+					t.Fatalf("resetSeconds() = %d, want positive seconds", retrySeconds)
 				}
 				if got := headers.Get("Anthropic-Ratelimit-Unified-Status"); got != "rejected" {
 					t.Fatalf("Anthropic-Ratelimit-Unified-Status = %q, want rejected", got)
@@ -1863,9 +1872,13 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if got := hdrA.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
 					t.Fatalf("%s modelA claim = %q, want seven_day", pathName, got)
 				}
-				retrySecA, errSecA := strconv.ParseInt(hdrA.Get("Retry-After"), 10, 64)
-				if errSecA != nil || retrySecA < 7100 {
-					t.Fatalf("%s modelA Retry-After = %q, want ~7200s (>= 7100s) matching 2h independent deadline", pathName, hdrA.Get("Retry-After"))
+				// Both cooldowns are above QuotaExhaustedCooldownThreshold, so neither
+				// carries Retry-After; check the deadline the unified headers use.
+				if got := hdrA.Get("Retry-After"); got != "" {
+					t.Fatalf("%s modelA Retry-After = %q, want none on a usage limit", pathName, got)
+				}
+				if retrySecA := cdErrA.resetSeconds(); retrySecA < 7100 {
+					t.Fatalf("%s modelA resetSeconds() = %d, want ~7200s (>= 7100s) matching 2h independent deadline", pathName, retrySecA)
 				}
 
 				// Model B must report five_hour AND ~1h Retry-After.
@@ -1878,9 +1891,11 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if got := hdrB.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
 					t.Fatalf("%s modelB claim = %q, want five_hour", pathName, got)
 				}
-				retrySecB, errSecB := strconv.ParseInt(hdrB.Get("Retry-After"), 10, 64)
-				if errSecB != nil || retrySecB > 3660 || retrySecB < 3500 {
-					t.Fatalf("%s modelB Retry-After = %q, want ~3600s", pathName, hdrB.Get("Retry-After"))
+				if got := hdrB.Get("Retry-After"); got != "" {
+					t.Fatalf("%s modelB Retry-After = %q, want none on a usage limit", pathName, got)
+				}
+				if retrySecB := cdErrB.resetSeconds(); retrySecB > 3660 || retrySecB < 3500 {
+					t.Fatalf("%s modelB resetSeconds() = %d, want ~3600s", pathName, retrySecB)
 				}
 			})
 		}

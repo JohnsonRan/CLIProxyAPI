@@ -22,15 +22,19 @@ import (
 
 func TestClaudeCooldownMessageMatchesRetryAfter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// Cooldowns longer than coreauth.QuotaExhaustedCooldownThreshold are a final
+	// usage limit: no Retry-After, X-Should-Retry: false, and the reset time is
+	// in the usage-limit message instead of the "reset after" hint.
 	for _, tt := range []struct {
-		name       string
-		duration   time.Duration
-		header     string
-		resetAfter string
+		name        string
+		duration    time.Duration
+		header      string
+		wantMessage string
 	}{
-		{name: "reported delay", duration: 8250 * time.Second, header: "8250", resetAfter: "2h17m30s"},
-		{name: "round up fractional second", duration: 60*time.Second + 100*time.Millisecond, header: "61", resetAfter: "1m1s"},
-		{name: "largest duration", duration: time.Duration(1<<63 - 1), header: "9223372037", resetAfter: "9223372037s"},
+		{name: "reported delay", duration: 250 * time.Second, header: "250", wantMessage: "cooling down via provider claude (reset after 4m10s)"},
+		{name: "round up fractional second", duration: 60*time.Second + 100*time.Millisecond, header: "61", wantMessage: "cooling down via provider claude (reset after 1m1s)"},
+		{name: "usage limit", duration: 8250 * time.Second, wantMessage: "Usage limit reached: all credentials for model claude-sonnet-4-5-20250929 have exhausted their quota via provider claude. Try again in 2h17m30s."},
+		{name: "largest duration", duration: time.Duration(1<<63 - 1), wantMessage: "Try again in 2562047h47m16.854775807s."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -48,12 +52,22 @@ func TestClaudeCooldownMessageMatchesRetryAfter(t *testing.T) {
 			if got := recorder.Header().Get("Retry-After"); got != tt.header {
 				t.Fatalf("Retry-After = %q, want %q", got, tt.header)
 			}
+			wantShouldRetry := ""
+			if tt.header == "" {
+				wantShouldRetry = "false"
+			}
+			if got := recorder.Header().Get("X-Should-Retry"); got != wantShouldRetry {
+				t.Fatalf("X-Should-Retry = %q, want %q", got, wantShouldRetry)
+			}
 			if got := ojson.GetBytesNoCopy(recorder.Body.Bytes(), "error.type").String(); got != "rate_limit_error" {
 				t.Fatalf("error.type = %q, want rate_limit_error", got)
 			}
 			message := ojson.GetBytesNoCopy(recorder.Body.Bytes(), "error.message").String()
-			if !strings.Contains(message, "cooling down") || !strings.Contains(message, "reset after "+tt.resetAfter) {
-				t.Fatalf("error.message = %q, want cooldown message with reset after %s", message, tt.resetAfter)
+			if !strings.Contains(message, tt.wantMessage) {
+				t.Fatalf("error.message = %q, want it to contain %q", message, tt.wantMessage)
+			}
+			if tt.header == "" && strings.Contains(message, "reset after") {
+				t.Fatalf("error.message = %q, want no second reset hint on a usage limit", message)
 			}
 		})
 	}
@@ -85,8 +99,8 @@ func TestClaudeCooldownMessageInCommittedStream(t *testing.T) {
 	}
 	_, event, _ := strings.Cut(body, "event: error\ndata: ")
 	message := ojson.Get(strings.TrimSpace(event), "error.message").String()
-	if !strings.Contains(message, "cooling down") || !strings.Contains(message, "reset after 2h17m30s") {
-		t.Fatalf("SSE error.message = %q, want cooldown message with reset after 2h17m30s", message)
+	if !strings.Contains(message, "Usage limit reached") || !strings.Contains(message, "Try again in 2h17m30s.") {
+		t.Fatalf("SSE error.message = %q, want usage limit message with reset in 2h17m30s", message)
 	}
 }
 
@@ -181,7 +195,9 @@ func TestClaudeCooldownMessagesRoute(t *testing.T) {
 	manager.RegisterExecutor(executor)
 	const model = "issue-7285-cooldown-model"
 	const authID = "issue-7285-cooldown-auth"
-	next := time.Now().Add(8250 * time.Second)
+	// Stay below coreauth.QuotaExhaustedCooldownThreshold so the cooldown keeps
+	// Retry-After; longer cooldowns are covered by TestClaudeCooldownMessageMatchesRetryAfter.
+	next := time.Now().Add(250 * time.Second)
 	auth := &coreauth.Auth{
 		ID:             authID,
 		Provider:       executor.Identifier(),
@@ -280,16 +296,18 @@ func TestClaudeCooldownMessagesRoute_PassthroughUnifiedRateLimitHeaders(t *testi
 				request.Header.Set("Content-Type", "application/json")
 				recorder := httptest.NewRecorder()
 
-				before := time.Now().Unix()
 				router.ServeHTTP(recorder, request)
-				after := time.Now().Unix()
 
 				if recorder.Code != http.StatusTooManyRequests {
 					t.Fatalf("status = %d, want 429; body=%s", recorder.Code, recorder.Body.String())
 				}
-				seconds, errSeconds := strconv.ParseInt(recorder.Header().Get("Retry-After"), 10, 64)
-				if errSeconds != nil || seconds <= 0 {
-					t.Fatalf("Retry-After = %q, want positive seconds", recorder.Header().Get("Retry-After"))
+				// 7823s is above coreauth.QuotaExhaustedCooldownThreshold: a final usage
+				// limit without Retry-After, whose unified reset follows the cooldown deadline.
+				if got := recorder.Header().Get("Retry-After"); got != "" {
+					t.Fatalf("Retry-After = %q, want none on a usage limit", got)
+				}
+				if got := recorder.Header().Get("X-Should-Retry"); got != "false" {
+					t.Fatalf("X-Should-Retry = %q, want false", got)
 				}
 
 				if !passthrough {
@@ -312,8 +330,8 @@ func TestClaudeCooldownMessagesRoute_PassthroughUnifiedRateLimitHeaders(t *testi
 					t.Fatalf("Anthropic-Ratelimit-Unified-5h-Status = %q, want rejected", got)
 				}
 				resetAt, errReset := strconv.ParseInt(recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), 10, 64)
-				if errReset != nil || resetAt < before+seconds || resetAt > after+seconds {
-					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %q, want unix epoch in [%d, %d]", recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), before+seconds, after+seconds)
+				if errReset != nil || resetAt < next.Unix()-2 || resetAt > next.Unix()+2 {
+					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %q, want unix epoch near cooldown deadline %d", recorder.Header().Get("Anthropic-Ratelimit-Unified-Reset"), next.Unix())
 				}
 				if got := recorder.Header().Get("Anthropic-Ratelimit-Unified-5h-Reset"); got != strconv.FormatInt(resetAt, 10) {
 					t.Fatalf("Anthropic-Ratelimit-Unified-5h-Reset = %q, want %d", got, resetAt)
