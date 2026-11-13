@@ -491,11 +491,11 @@ func TestResponsesWebsocketExistingWSCompactionRejectsStaleParent_Issue7406(t *t
 		t.Fatalf("turn 2 response.id = %q, want resp_ag_compact_*", synthID)
 	}
 
-	// Turn 3a: Stale pre-compaction WS response ID (resp_ws_c1_t1) MUST be rejected with 409 previous_response_not_found, NOT silently grafted onto synthID.
+	// Turn 3a: Stale pre-compaction WS response ID (resp_ws_c1_t1) MUST be rejected with 400 previous_response_not_found, NOT silently grafted onto synthID.
 	_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":%q,"input":[{"type":"message","role":"user","content":"wrong branch"}]}`, modelID, oldWSRespID)))
 	staleErr := readUntil("error")
-	if staleErr.Get("status").Int() != http.StatusConflict || staleErr.Get("error.code").String() != "previous_response_not_found" {
-		t.Fatalf("expected 409 previous_response_not_found for pre-compaction WS ID %q, got %s", oldWSRespID, staleErr.Raw)
+	if staleErr.Get("status").Int() != http.StatusBadRequest || staleErr.Get("error.code").String() != "previous_response_not_found" {
+		t.Fatalf("expected 400 previous_response_not_found for pre-compaction WS ID %q, got %s", oldWSRespID, staleErr.Raw)
 	}
 
 	// Turn 3b: Valid continuation referencing synthID dials fresh WS c2 with expanded summary and no previous_response_id.
