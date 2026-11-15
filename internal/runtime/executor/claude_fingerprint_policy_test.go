@@ -1576,6 +1576,40 @@ func TestOfficialAPIKeyWithSensitiveWordsReplaceCloaks(t *testing.T) {
 	}
 }
 
+func TestOfficialAPIKeyWithSensitivePatternsReplaceCloaks(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.SensitivePatternRule{{Pattern: `secret-\d+`, Replacement: "redacted"}}
+
+	cfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "sk-ant-usr-test-key",
+			Cloak: &config.CloakConfig{
+				Mode:                     "auto",
+				SensitivePatternsReplace: rules,
+			},
+		}},
+	}
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"api_key": "sk-ant-usr-test-key"},
+	}
+	policy, _ := resolveClaudeWirePolicy(cfg, auth, "sk-ant-usr-test-key", false)
+	if !policy.Cloak {
+		t.Fatal("resolveClaudeWirePolicy() Cloak = false, want true when sensitive-patterns-replace opts the API key in")
+	}
+
+	attrAuth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key":                          "sk-ant-usr-test-key",
+			"cloak_sensitive_patterns_replace": `[{"pattern":"secret-\\d+","replacement":"redacted"}]`,
+		},
+	}
+	policy, _ = resolveClaudeWirePolicy(&config.Config{}, attrAuth, "sk-ant-usr-test-key", false)
+	if !policy.Cloak {
+		t.Fatal("resolveClaudeWirePolicy() Cloak = false, want true when the cloak_sensitive_patterns_replace attribute opts the API key in")
+	}
+}
+
 func TestClassifyClaudeUpstreamErrorPromotesLowCreditBalance400To402(t *testing.T) {
 	t.Parallel()
 
