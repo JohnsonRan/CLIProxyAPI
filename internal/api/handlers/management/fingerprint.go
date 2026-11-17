@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	lmfpd "github.com/Ikaleio/lm-detector/sdk/go"
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
 )
