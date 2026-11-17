@@ -1,7 +1,7 @@
 package openai
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"testing"
 	"time"
 )
