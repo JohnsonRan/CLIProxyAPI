@@ -682,6 +682,25 @@ func parseAntigravityTOSViolation(body []byte) *antigravityTOSViolation {
 	return nil
 }
 
+// antigravityHasExplicitQuotaExhaustedReason reports whether body is a
+// RESOURCE_EXHAUSTED error whose google.rpc.ErrorInfo reason is QUOTA_EXHAUSTED.
+// Keyword matches and long RATE_LIMIT_EXCEEDED delays are not explicit quota
+// exhaustion evidence.
+func antigravityHasExplicitQuotaExhaustedReason(body []byte) bool {
+	if !strings.EqualFold(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.status").String()), "RESOURCE_EXHAUSTED") {
+		return false
+	}
+	for _, detail := range ojson.GetBytesNoCopy(body, "error.details").Array() {
+		if detail.Get("@type").String() != "type.googleapis.com/google.rpc.ErrorInfo" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(detail.Get("reason").String()), "QUOTA_EXHAUSTED") {
+			return true
+		}
+	}
+	return false
+}
+
 func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 	return newAntigravityStatusErrWithHeaders(statusCode, nil, body)
 }
@@ -691,6 +710,9 @@ func newAntigravityStatusErrWithHeaders(statusCode int, headers http.Header, bod
 	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 		if retryAfter, parseErr := helps.ParseRetryDelayWithHeaders(headers, body, time.Now()); parseErr == nil && retryAfter != nil {
 			err.retryAfter = retryAfter
+		}
+		if statusCode == http.StatusTooManyRequests {
+			err.quotaExhausted = antigravityHasExplicitQuotaExhaustedReason(body)
 		}
 	} else if statusCode == http.StatusUnauthorized {
 		err.credentialScoped = true
