@@ -22,6 +22,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -71,6 +72,9 @@ type UsageReporter struct {
 	// responseModelFinal marks that a terminal event already reported the served
 	// model, so later frames skip parsing entirely.
 	responseModelFinal atomic.Bool
+
+	// upstreamRisk holds the first safety action the upstream response announced (see response_risk.go).
+	upstreamRisk atomic.Pointer[ResponseRisk]
 
 	upstreamModelMu sync.RWMutex
 	// upstreamModel holds the canonical upstream model expected to be served when
@@ -158,6 +162,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
 	}
+	inflight.Attach(ctx, inflight.Upstream{Provider: provider, Model: model, AuthIndex: reporter.authIndex, APIKey: apiKey, Stream: reporter.stream})
 	return reporter
 }
 
@@ -238,7 +243,18 @@ func (r *UsageReporter) accessTokenFingerprint() string {
 // ObserveResponseModel stores the model reported by an upstream response or event and
 // ignores payloads without one; the substitution warning is emitted at publish time.
 func (r *UsageReporter) ObserveResponseModel(payload []byte) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil {
+		return
+	}
+	// Risk signals are read on every observed frame up to publication (the Codex CLI stops
+	// reading on response.completed, so upstream metadata precedes completion); frames after the
+	// record is published are not reflected.
+	if r.upstreamRisk.Load() == nil {
+		if risk := extractResponseRisk(payload, r.provider); risk.Kind != "" {
+			r.upstreamRisk.CompareAndSwap(nil, &risk)
+		}
+	}
+	if r.responseModelFinal.Load() {
 		return
 	}
 	provider := ""
@@ -701,8 +717,14 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (image generation tool usage) that
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
+	upstreamModel := ""
+	var upstreamRisk ResponseRisk
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		upstreamModel = r.UpstreamModel()
+		if risk := r.upstreamRisk.Load(); risk != nil {
+			upstreamRisk = *risk
+		}
 	}
 	return usage.Record{
 		RequestID:            r.requestID,
@@ -729,6 +751,9 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		EffectiveServiceTier: r.effectiveServiceTier,
 		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
 		ResponseModel:        responseModel,
+		UpstreamModel:        upstreamModel,
+		UpstreamRisk:         upstreamRisk.Kind,
+		UpstreamRiskReason:   upstreamRisk.Reason,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
 		RequestedAt:          r.requestedAt,
