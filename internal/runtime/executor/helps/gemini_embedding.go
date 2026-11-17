@@ -1,10 +1,10 @@
 package helps
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 )
 
