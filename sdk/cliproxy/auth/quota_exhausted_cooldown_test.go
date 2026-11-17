@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"net/http"
 	"testing"
 	"time"
