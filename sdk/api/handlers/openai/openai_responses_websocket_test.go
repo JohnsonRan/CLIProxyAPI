@@ -317,9 +317,10 @@ func TestResponsesWebsocketWriterCloseDoesNotWaitForActiveDataWriter(t *testing.
 		}
 		writer := newResponsesWebsocketWriter(conn)
 
-		// Holding writeMu models a data writer blocked inside WriteMessage. The
+		// Holding writeMu with writing set models a data writer blocked inside WriteMessage. The
 		// upstream-close path must hard-close the socket instead of waiting for it.
 		writer.writeMu.Lock()
+		writer.writing.Store(true)
 		closeDone := make(chan error, 1)
 		go func() {
 			matched, errClose := writer.closeForUpstreamError(&websocket.CloseError{
@@ -371,6 +372,7 @@ func TestResponsesWebsocketGenericDisconnectDoesNotWaitForActiveDataWriter(t *te
 		writer := newResponsesWebsocketWriter(conn)
 
 		writer.writeMu.Lock()
+		writer.writing.Store(true)
 		closeDone := make(chan struct{})
 		go func() {
 			writer.closeForUpstreamDisconnect(&websocket.CloseError{
@@ -402,6 +404,68 @@ func TestResponsesWebsocketGenericDisconnectDoesNotWaitForActiveDataWriter(t *te
 	}
 	if _, _, err = conn.ReadMessage(); err == nil {
 		t.Fatal("client read succeeded, want connection closure")
+	}
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
+// A data write that already reached the client can still hold writeMu for a
+// moment. The disconnect close must wait for that holder and deliver its terminal
+// payload instead of hard-closing, or the client sees 1006 without the error.
+func TestResponsesWebsocketDisconnectPayloadWaitsForFinishedDataWriter(t *testing.T) {
+	const terminalPayload = `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"exhausted"}}`
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		writer := newResponsesWebsocketWriter(conn)
+
+		// Model the gap between WriteMessage returning and writeMu being released.
+		writer.writeMu.Lock()
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created"}`)); errWrite != nil {
+			writer.writeMu.Unlock()
+			serverErrCh <- errWrite
+			return
+		}
+		closeDone := make(chan bool, 1)
+		go func() {
+			wrote, _ := writer.closeWithPayload([]byte(terminalPayload))
+			closeDone <- wrote
+		}()
+		for !writer.closing.Load() {
+			runtime.Gosched()
+		}
+		for i := 0; i < 100; i++ {
+			runtime.Gosched()
+		}
+		writer.writeMu.Unlock()
+		if wrote := <-closeDone; !wrote {
+			serverErrCh <- errors.New("closeWithPayload did not write the terminal payload")
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err = conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, first, errRead := conn.ReadMessage(); errRead != nil || ojson.GetBytesNoCopy(first, "type").String() != "response.created" {
+		t.Fatalf("first frame = %s, err=%v; want response.created", first, errRead)
+	}
+	_, second, errRead := conn.ReadMessage()
+	if errRead != nil || string(second) != terminalPayload {
+		t.Fatalf("second frame = %s, err=%v; want terminal payload", second, errRead)
 	}
 	if errServer := <-serverErrCh; errServer != nil {
 		t.Fatalf("server error: %v", errServer)
