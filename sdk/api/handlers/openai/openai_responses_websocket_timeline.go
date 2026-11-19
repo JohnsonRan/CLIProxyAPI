@@ -300,7 +300,7 @@ func writeResponsesWebsocketPayload(writer *responsesWebsocketWriter, wsTimeline
 	}
 	writer.writeMu.Lock()
 	defer writer.writeMu.Unlock()
-	return writer.writeLocked(func() error {
+	return writer.writeLocked(responsesWebsocketWriteData, func() error {
 		return writer.conn.WriteMessage(websocket.TextMessage, payload)
 	})
 }
