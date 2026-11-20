@@ -324,11 +324,11 @@ func applySummaryConfigForProviderDoc(doc *ojson.Doc, docValid bool, format, mod
 				value = "updates"
 			}
 		}
-		if doc.Set("thinking.display", value) == nil {
+		if setSummaryStringDoc(doc, "thinking.display", value) {
 			modified = true
 		}
 	case "gemini":
-		if doc.Set("generationConfig.thinkingConfig.includeThoughts", enabled) == nil {
+		if setSummaryBoolDoc(doc, "generationConfig.thinkingConfig.includeThoughts", enabled) {
 			modified = true
 		}
 		for _, path := range []string{
@@ -341,7 +341,7 @@ func applySummaryConfigForProviderDoc(doc *ojson.Doc, docValid bool, format, mod
 			}
 		}
 	case "antigravity":
-		if doc.Set("request.generationConfig.thinkingConfig.includeThoughts", enabled) == nil {
+		if setSummaryBoolDoc(doc, "request.generationConfig.thinkingConfig.includeThoughts", enabled) {
 			modified = true
 		}
 		for _, path := range []string{
@@ -360,7 +360,7 @@ func applySummaryConfigForProviderDoc(doc *ojson.Doc, docValid bool, format, mod
 		if enabled {
 			value = "auto"
 		}
-		if doc.Set("generation_config.thinking_summaries", value) == nil {
+		if setSummaryStringDoc(doc, "generation_config.thinking_summaries", value) {
 			modified = true
 		}
 		if doc.Get("generation_config.thinkingSummaries").Exists() && doc.Delete("generation_config.thinkingSummaries") == nil {
@@ -368,7 +368,7 @@ func applySummaryConfigForProviderDoc(doc *ojson.Doc, docValid bool, format, mod
 		}
 	case "openai-response", "codex":
 		if enabled {
-			if doc.Set("reasoning.summary", normalizedSummaryDetail(config.Detail)) == nil {
+			if setSummaryStringDoc(doc, "reasoning.summary", normalizedSummaryDetail(config.Detail)) {
 				modified = true
 			}
 			if doc.Get("reasoning.generate_summary").Exists() && doc.Delete("reasoning.generate_summary") == nil {
@@ -454,16 +454,33 @@ func claudeThinkingAcceptsDisplayFromGetter(get func(string) ojson.Result) bool 
 func applyOpenAIChatSummaryConfigDoc(doc *ojson.Doc, provider string, enabled bool) bool {
 	modified := false
 	if isOpenRouterProvider(provider) || doc.Get("reasoning.exclude").IsBool() {
-		if doc.Set("reasoning.exclude", !enabled) == nil {
+		if setSummaryBoolDoc(doc, "reasoning.exclude", !enabled) {
 			modified = true
 		}
 	}
 	if doc.Get("include_reasoning").IsBool() {
-		if doc.Set("include_reasoning", enabled) == nil {
+		if setSummaryBoolDoc(doc, "include_reasoning", enabled) {
 			modified = true
 		}
 	}
 	return modified
+}
+
+// setSummaryStringDoc and setSummaryBoolDoc write value unless path already holds
+// it, so re-applying the same summary intent reports no change and the byte
+// wrappers return the body instead of a copy.
+func setSummaryStringDoc(doc *ojson.Doc, path, value string) bool {
+	if current := doc.Get(path); current.Type == ojson.String && current.Str == value {
+		return false
+	}
+	return doc.Set(path, value) == nil
+}
+
+func setSummaryBoolDoc(doc *ojson.Doc, path string, value bool) bool {
+	if current := doc.Get(path); current.IsBool() && current.Bool() == value {
+		return false
+	}
+	return doc.Set(path, value) == nil
 }
 
 func isOpenRouterProvider(provider string) bool {
