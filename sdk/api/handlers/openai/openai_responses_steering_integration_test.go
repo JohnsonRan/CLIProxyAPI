@@ -203,8 +203,11 @@ func TestResponsesSteeringFullDuplexIntegration(t *testing.T) {
 func TestResponsesWebsocketIsCompatLocalCompactionIntegration_Issue7406(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const marker = "WS-HANDLER-COMPACT-7406"
-	for _, steering := range []bool{false, true} {
-		t.Run(fmt.Sprintf("steering=%t", steering), func(t *testing.T) {
+	for _, scenario := range []struct{ steering, reconnect bool }{
+		{false, false}, {true, false}, {false, true}, {true, true},
+	} {
+		t.Run(fmt.Sprintf("steering=%t/reconnect=%t", scenario.steering, scenario.reconnect), func(t *testing.T) {
+			steering := scenario.steering
 			wsReceived := make(chan []byte, 8)
 			httpReceived := make(chan []byte, 4)
 
@@ -244,7 +247,7 @@ func TestResponsesWebsocketIsCompatLocalCompactionIntegration_Issue7406(t *testi
 			}))
 			defer upstream.Close()
 
-			modelID := fmt.Sprintf("compat-ws-model-%t", steering)
+			modelID := fmt.Sprintf("compat-ws-model-%t-%t", steering, scenario.reconnect)
 			cfg := &config.Config{
 				CodexKey: []config.CodexKey{{
 					APIKey:  "test-compat-key",
@@ -258,7 +261,7 @@ func TestResponsesWebsocketIsCompatLocalCompactionIntegration_Issue7406(t *testi
 			manager := coreauth.NewManager(nil, nil, nil)
 			manager.SetConfig(cfg)
 			manager.RegisterExecutor(runtimeexecutor.NewCodexAutoExecutor(cfg))
-			authID := fmt.Sprintf("compat-ws-auth-%t", steering)
+			authID := fmt.Sprintf("compat-ws-auth-%t-%t", steering, scenario.reconnect)
 			if _, errReg := manager.Register(context.Background(), &coreauth.Auth{
 				ID:         authID,
 				Provider:   "codex",
@@ -323,6 +326,19 @@ func TestResponsesWebsocketIsCompatLocalCompactionIntegration_Issue7406(t *testi
 			bogusErr := readUntil("error")
 			if bogusErr.Get("error.code").String() != "previous_response_not_found" {
 				t.Fatalf("expected previous_response_not_found for wrong synthetic ID, got %s", bogusErr.Raw)
+			}
+
+			if scenario.reconnect {
+				// A new socket must recover only the compacted state, not the trigger or raw history.
+				reconnected, _, errReconnect := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstream.URL, "http")+"/v1/responses", nil)
+				if errReconnect != nil {
+					t.Fatal(errReconnect)
+				}
+				if errClose := conn.Close(); errClose != nil {
+					t.Errorf("close original websocket: %v", errClose)
+				}
+				conn = reconnected
+				_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			}
 
 			// Turn 2b: Valid synthetic previous_response_id starts a fresh root WS turn with expanded summary and NO pre-compaction raw text or synthetic ID.
