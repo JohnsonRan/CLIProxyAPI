@@ -122,19 +122,98 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
 	return true, websocket.FormatCloseMessage(code, reason)
 }
 
+// Kinds of conn write a writeMu holder may be inside.
+const (
+	responsesWebsocketWriteNone int32 = iota
+	responsesWebsocketWriteData
+	responsesWebsocketWritePing
+)
+
 type responsesWebsocketWriter struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 	closing atomic.Bool
+	// writing holds the kind of conn write a writeMu holder may be inside, which
+	// can block on a client that stopped reading.
+	writing atomic.Int32
+	// final is the terminal write a closer left for the data writer whose conn
+	// write was in flight. That writer runs it as soon as its write returns.
+	final atomic.Pointer[func()]
 }
 
 func newResponsesWebsocketWriter(conn *websocket.Conn) *responsesWebsocketWriter {
 	return &responsesWebsocketWriter{conn: conn}
 }
 
+// writeLocked runs write, a conn write of the given kind, unless the writer is
+// closing. The caller holds writeMu. writing is published before closing is
+// checked, so a closer that set closing and then sees writing clear knows no
+// conn write can start under this holder. Clearing writing comes before the
+// final check, so a closer that saw a data write in flight and left its
+// terminal write here always has it run.
+func (w *responsesWebsocketWriter) writeLocked(kind int32, write func() error) error {
+	w.writing.Store(kind)
+	errWrite := error(websocket.ErrCloseSent)
+	if !w.closing.Load() {
+		errWrite = write()
+	}
+	w.writing.Store(responsesWebsocketWriteNone)
+	if final := w.final.Swap(nil); final != nil {
+		(*final)()
+	}
+	return errWrite
+}
+
+type responsesWebsocketFinish uint8
+
+const (
+	// responsesWebsocketFinalRan: the terminal write ran before finishClose returned.
+	responsesWebsocketFinalRan responsesWebsocketFinish = iota
+	// responsesWebsocketFinalHandedOff: the data writer in flight runs it after its frame.
+	responsesWebsocketFinalHandedOff
+	// responsesWebsocketFinalDropped: the connection was closed without it.
+	responsesWebsocketFinalDropped
+)
+
+// finishClose runs final, the terminal write of the closer that set closing,
+// under writeMu, without waiting behind a conn write in flight, which may be
+// stalled on a client that stopped reading. A data write in flight gets final:
+// the writer runs it right after its own frame, so the terminal frame is
+// neither lost nor sent ahead of that frame, even when the frame has already
+// reached the client and the writer has not yet cleared writing. A keepalive
+// Ping in flight is not part of the response, and a blocked Ping must not keep
+// the connection open (Issue #7407), so the connection is closed without final.
+// A holder that is not inside a conn write releases writeMu without network
+// I/O, so finishClose waits for it and runs final itself. errClose is set only
+// when final was dropped.
+func (w *responsesWebsocketWriter) finishClose(final func()) (finish responsesWebsocketFinish, errClose error) {
+	if w.writeMu.TryLock() {
+		defer w.writeMu.Unlock()
+		final()
+		return responsesWebsocketFinalRan, nil
+	}
+	w.final.Store(&final)
+	kind := w.writing.Load()
+	if kind == responsesWebsocketWriteData {
+		return responsesWebsocketFinalHandedOff, nil
+	}
+	if !w.final.CompareAndSwap(&final, nil) {
+		// The holder finished its write and took final.
+		return responsesWebsocketFinalHandedOff, nil
+	}
+	if kind == responsesWebsocketWritePing {
+		return responsesWebsocketFinalDropped, w.conn.Close()
+	}
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+	final()
+	return responsesWebsocketFinalRan, nil
+}
+
 // closeForUpstreamError sends a best-effort close frame without waiting behind
-// an active downstream writer. If a data or Ping write already owns writeMu,
-// the connection is closed immediately so the blocked writer and session can exit.
+// a downstream write in flight. A data write in flight sends the close frame
+// right after its own frame; a Ping write in flight is interrupted by closing
+// the connection, so the blocked keepalive and session can exit.
 func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error) {
 	if w == nil || w.conn == nil {
 		return false, nil
@@ -146,13 +225,16 @@ func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error
 	if !w.closing.CompareAndSwap(false, true) {
 		return true, nil
 	}
-	if !w.writeMu.TryLock() {
-		return true, w.conn.Close()
+	var errWrite, errClose error
+	switch finish, errFinish := w.finishClose(func() {
+		errWrite = w.conn.WriteControl(websocket.CloseMessage, payload, time.Time{})
+		errClose = w.conn.Close()
+	}); finish {
+	case responsesWebsocketFinalHandedOff:
+		return true, nil
+	case responsesWebsocketFinalDropped:
+		return true, errFinish
 	}
-	defer w.writeMu.Unlock()
-
-	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Time{})
-	errClose := w.conn.Close()
 	if errWrite != nil {
 		return true, errWrite
 	}
@@ -183,10 +265,9 @@ func (w *responsesWebsocketWriter) writePing() error {
 		return nil
 	}
 	defer w.writeMu.Unlock()
-	if w.closing.Load() {
-		return websocket.ErrCloseSent
-	}
-	return w.conn.WriteControl(websocket.PingMessage, nil, time.Time{})
+	return w.writeLocked(responsesWebsocketWritePing, func() error {
+		return w.conn.WriteControl(websocket.PingMessage, nil, time.Time{})
+	})
 }
 
 func (w *responsesWebsocketWriter) keepAlive(ctx context.Context, cancel context.CancelCauseFunc, intervals <-chan time.Duration) {
@@ -275,6 +356,9 @@ func queueResponsesWebsocketKeepAliveInterval(intervals chan time.Duration, inte
 	intervals <- interval
 }
 
+// closeWithPayload sends payload as the last frame and closes the connection.
+// It reports true when payload was written, or was left to the data writer
+// whose conn write is in flight, which sends it right after its own frame.
 func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error) {
 	if w == nil || w.conn == nil {
 		return false, nil
@@ -282,13 +366,16 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 	if !w.closing.CompareAndSwap(false, true) {
 		return false, nil
 	}
-	if !w.writeMu.TryLock() {
-		return false, w.conn.Close()
+	var errWrite, errClose error
+	switch finish, errFinish := w.finishClose(func() {
+		errWrite = w.conn.WriteMessage(websocket.TextMessage, payload)
+		errClose = w.conn.Close()
+	}); finish {
+	case responsesWebsocketFinalHandedOff:
+		return true, nil
+	case responsesWebsocketFinalDropped:
+		return false, errFinish
 	}
-	defer w.writeMu.Unlock()
-
-	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
-	errClose := w.conn.Close()
 	if errWrite != nil {
 		return false, errWrite
 	}
