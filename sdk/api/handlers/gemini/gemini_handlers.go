@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 // GeminiAPIHandler contains the handlers for Gemini API endpoints.
@@ -94,6 +95,20 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 		return
 	}
 	action := strings.TrimPrefix(request.Action, "/")
+
+	apiKey := c.GetString("userApiKey")
+	if apiKey == "" && c.Request != nil {
+		apiKey = coreusage.APIKeyFromContext(c.Request.Context())
+	}
+	if h.Cfg != nil && h.Cfg.HasClientModelRestrictions(apiKey) && !h.Cfg.IsModelAllowedForClient(apiKey, action) {
+		c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Not Found",
+				Type:    "not_found",
+			},
+		})
+		return
+	}
 
 	// Get dynamic models from the global registry and find the matching one
 	availableModels := h.Models()
