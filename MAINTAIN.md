@@ -351,7 +351,7 @@ Tests that fail on plain `upstream/main` are skipped in the validation step thro
 git fetch upstream main --tags
 branches=(patch/http-compression patch/responses-ws-sse-incremental patch/chatgpt-utls-pool patch/runtime-memory-bounds patch/startup-model-registration patch/claude-api-key-policy patch/management-panel-update patch/management-ua-shim patch/downstream-panel-source patch/claude-search-recovery patch/codex-oauth-resilience patch/embeddings-and-rerank patch/client-api-key-models patch/proxy-transport-reuse patch/systemone-endpoint patch/model-capabilities patch/quota-cooldown-fail-fast patch/responses-input-tokens patch/openai-compat-model-discovery patch/client-key-provider-scope patch/openai-decisions-endpoint patch/codex-app-keepalive patch/runtime-gc-tuning patch/summary-config-single-scan patch/pgo patch/quota-api patch/session-claude-identity-once patch/antigravity-replay-signature-guard patch/thinking-validate-once patch/request-body-no-copy patch/openai-compat-stream-validate-once patch/pluginhost-hooks-noalloc patch/responses-ws-previous-response-400 patch/auth-file-allowed-models patch/usage-store tmp/patch/usage-store-exclude-embeddings patch/fingerprint-detector patch/responses-ws-disconnect-close-race)
 # Compatibility patches applied as base..tip deltas; keep in sync with COMPAT_BASES.
-declare -A compat_bases=([tmp/patch/usage-store-exclude-embeddings]=324f7d328e02b3476ab539c5ee1d52b6d02511de)
+declare -A compat_bases=([tmp/patch/usage-store-exclude-embeddings]=3b89f44e3d368caaa4f5fb6c7cd62986dd8f2ed7)
 # Name every ref: the default origin refspec may only track main.
 git fetch origin ci "${branches[@]}"
 
