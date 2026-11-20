@@ -77,6 +77,11 @@ func (e *CodexAutoExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.
 }
 
 func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	// The Decisions API is plain HTTP and never uses the WebSocket upstream.
+	if helps.IsOpenAIDecisionsRequest(opts) && e != nil && e.httpExec != nil {
+		return e.httpExec.Execute(ctx, auth, req, opts)
+	}
+
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}

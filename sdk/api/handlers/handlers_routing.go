@@ -59,6 +59,9 @@ func preferExecutionProvider(providers []string, preferred string) []string {
 }
 
 func adjustExecutionProvidersForEntryProtocol(entryProtocol string, providers []string) []string {
+	if entryProtocol == OpenAIDecisionsEntryProtocol {
+		return openAIDecisionsExecutionProviders(providers)
+	}
 	if entryProtocol == Interactions {
 		return preferExecutionProvider(providers, GeminiInteractions)
 	}
