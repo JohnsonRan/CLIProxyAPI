@@ -81,7 +81,26 @@ func TestCodexRequestCompressionDefaultAndLegacyValues(t *testing.T) {
 				t.Fatal(errParse)
 			}
 			if cfg.Codex.UpstreamRequestCompression != tt.enabled {
-				t.Fatalf("enabled=%v, want %v", cfg.Codex.UpstreamRequestCompression, tt.enabled)
+				t.Fatalf("parsed request compression = %v, want %v", cfg.Codex.UpstreamRequestCompression, tt.enabled)
+			}
+
+			path := writeUploadTestConfig(t, tt.yaml)
+			loaded, errLoad := LoadConfig(path)
+			if errLoad != nil {
+				t.Fatal(errLoad)
+			}
+			if loaded.Codex.UpstreamRequestCompression != tt.enabled {
+				t.Fatalf("loaded request compression = %v, want %v", loaded.Codex.UpstreamRequestCompression, tt.enabled)
+			}
+			persisted, errParse := ParseConfigBytes([]byte(readUploadTestConfig(t, path)))
+			if errParse != nil {
+				t.Fatal(errParse)
+			}
+			if persisted.ServerID == "" || persisted.ServerID != loaded.ServerID {
+				t.Fatalf("persisted server ID = %q, loaded %q", persisted.ServerID, loaded.ServerID)
+			}
+			if persisted.Codex.UpstreamRequestCompression != tt.enabled {
+				t.Fatalf("request compression after server ID write = %v, want %v", persisted.Codex.UpstreamRequestCompression, tt.enabled)
 			}
 		})
 	}
