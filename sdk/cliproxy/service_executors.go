@@ -605,7 +605,13 @@ func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
 // Callers filter native models before applying OAuth aliases, so plugin models are filtered
 // here by their original IDs instead of re-filtering the merged list by alias names.
 func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo, excluded []string) []*ModelInfo {
-	return appendDistinctModels(models, applyExcludedModels(s.pluginModelsForProvider(providerKey), excluded))
+	return s.appendFilteredPluginModels(providerKey, models, excluded, nil)
+}
+
+// appendFilteredPluginModels also filters static models by the credential's allow-list.
+func (s *Service) appendFilteredPluginModels(providerKey string, models []*ModelInfo, excluded, allowed []string) []*ModelInfo {
+	pluginModels := applyAllowedModels(applyExcludedModels(s.pluginModelsForProvider(providerKey), excluded), allowed)
+	return appendDistinctModels(models, pluginModels)
 }
 
 func appendDistinctModels(models, additional []*ModelInfo) []*ModelInfo {
@@ -748,7 +754,7 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 	if _, _, compat := openAICompatInfoFromAuth(activeAuth); providerKey == "copilot" && !compat {
 		models = s.copilotPublicPluginModels(activeAuth, models)
 	}
-	models = applyExcludedModels(models, activeExcluded)
+	models = applyAllowedModels(applyExcludedModels(models, activeExcluded), authAllowedModels(activeAuth))
 	models = applyOAuthModelAliasForAuth(cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	publicationFence := fence
 	if pluginAuthCommitted {
