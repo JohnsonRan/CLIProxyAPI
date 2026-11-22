@@ -22,10 +22,12 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -71,6 +73,9 @@ type UsageReporter struct {
 	// responseModelFinal marks that a terminal event already reported the served
 	// model, so later frames skip parsing entirely.
 	responseModelFinal atomic.Bool
+
+	// upstreamRisk holds the first safety action the upstream response announced (see response_risk.go).
+	upstreamRisk atomic.Pointer[ResponseRisk]
 
 	upstreamModelMu sync.RWMutex
 	// upstreamModel holds the canonical upstream model expected to be served when
@@ -158,6 +163,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
 	}
+	inflight.Attach(ctx, inflight.Upstream{Provider: provider, Model: model, AuthIndex: reporter.authIndex, APIKey: apiKey, Stream: reporter.stream})
 	return reporter
 }
 
@@ -167,6 +173,40 @@ func (r *UsageReporter) SetStream(stream bool) {
 		return
 	}
 	r.stream = stream
+}
+
+// PluginExecutorType returns the canonical usage executor label for a plugin ID.
+func PluginExecutorType(pluginID string) string {
+	if id := strings.TrimSpace(pluginID); id != "" {
+		return "plugin:" + id
+	}
+	return ""
+}
+
+// ApplyPluginExecutorAttribution populates executorType and optional upstream credential
+// attribution fields for direct plugin executor dispatches and auth-backed plugin executors.
+// Already-populated AuthIndex and AuthType values (e.g. from coreauth.Auth) are preserved.
+func (r *UsageReporter) ApplyPluginExecutorAttribution(executorPluginID string, attr *pluginapi.UsageAttribution) {
+	if r == nil {
+		return
+	}
+	if r.executorType == "" {
+		if executorType := PluginExecutorType(executorPluginID); executorType != "" {
+			r.executorType = executorType
+		}
+	}
+	if attr == nil {
+		return
+	}
+	if v := strings.TrimSpace(attr.AuthIndex); v != "" && r.authIndex == "" {
+		r.authIndex = v
+	}
+	if v := strings.TrimSpace(attr.AuthType); v != "" && r.authType == "" {
+		r.authType = v
+	}
+	if v := strings.TrimSpace(attr.Source); v != "" {
+		r.source = v
+	}
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -238,7 +278,18 @@ func (r *UsageReporter) accessTokenFingerprint() string {
 // ObserveResponseModel stores the model reported by an upstream response or event and
 // ignores payloads without one; the substitution warning is emitted at publish time.
 func (r *UsageReporter) ObserveResponseModel(payload []byte) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil {
+		return
+	}
+	// Risk signals are read on every observed frame up to publication (the Codex CLI stops
+	// reading on response.completed, so upstream metadata precedes completion); frames after the
+	// record is published are not reflected.
+	if r.upstreamRisk.Load() == nil {
+		if risk := extractResponseRisk(payload, r.provider); risk.Kind != "" {
+			r.upstreamRisk.CompareAndSwap(nil, &risk)
+		}
+	}
+	if r.responseModelFinal.Load() {
 		return
 	}
 	provider := ""
@@ -347,9 +398,18 @@ func (r *UsageReporter) ResponseModel() string {
 	return r.responseModel
 }
 
+type usageExecutorTypeProvider interface {
+	UsageExecutorType() string
+}
+
 func ExecutorTypeName(executor any) string {
 	if executor == nil {
 		return ""
+	}
+	if custom, ok := executor.(usageExecutorTypeProvider); ok && custom != nil {
+		if name := strings.TrimSpace(custom.UsageExecutorType()); name != "" {
+			return name
+		}
 	}
 	executorType := reflect.TypeOf(executor)
 	for executorType.Kind() == reflect.Pointer {
@@ -701,8 +761,14 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (image generation tool usage) that
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
+	upstreamModel := ""
+	var upstreamRisk ResponseRisk
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		upstreamModel = r.UpstreamModel()
+		if risk := r.upstreamRisk.Load(); risk != nil {
+			upstreamRisk = *risk
+		}
 	}
 	return usage.Record{
 		RequestID:            r.requestID,
@@ -729,6 +795,9 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		EffectiveServiceTier: r.effectiveServiceTier,
 		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
 		ResponseModel:        responseModel,
+		UpstreamModel:        upstreamModel,
+		UpstreamRisk:         upstreamRisk.Kind,
+		UpstreamRiskReason:   upstreamRisk.Reason,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
 		RequestedAt:          r.requestedAt,
