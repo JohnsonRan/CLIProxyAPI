@@ -38,7 +38,7 @@ func TestRegisterModelsForAuth_CredentialAllowedModels(t *testing.T) {
 	}
 	for _, id := range ids {
 		base := strings.TrimPrefix(id, "team/")
-		if !matchWildcard("gemini-2.5-*", base) {
+		if !strings.HasPrefix(base, "gemini-2.5-") {
 			t.Errorf("model %q registered outside the allow-list", id)
 		}
 		if base == "gemini-2.5-flash" {
@@ -48,6 +48,31 @@ func TestRegisterModelsForAuth_CredentialAllowedModels(t *testing.T) {
 	// The allow-list matches upstream IDs, so the prefixed route stays available.
 	if !slices.Contains(ids, "team/gemini-2.5-pro") {
 		t.Errorf("expected prefixed allowed model, got %v", ids)
+	}
+}
+
+func TestApplyAllowedModelsToAntigravityCatalog(t *testing.T) {
+	const provider = "antigravity"
+	const allowedNative = "gemini-3-flash"
+	const excludedNative = "gemini-3.1-flash-lite"
+	service := &Service{
+		cfg:        &config.Config{OAuthExcludedModels: map[string][]string{provider: {excludedNative}}},
+		pluginHost: newPluginStaticModelHost(t, provider),
+	}
+	auth := &coreauth.Auth{Provider: provider, Attributes: map[string]string{
+		"auth_kind":      "oauth",
+		"allowed_models": "GEMINI-3*-FLASH*," + pluginStaticCredentialModel,
+	}}
+	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{
+		allowedNative: {}, excludedNative: {},
+	}}
+	var ids []string
+	for _, model := range service.antigravityModelsForHints(auth, hints) {
+		ids = append(ids, model.ID)
+	}
+	slices.Sort(ids)
+	if want := []string{allowedNative, pluginStaticCredentialModel}; !slices.Equal(ids, want) {
+		t.Fatalf("Antigravity catalog = %v, want %v", ids, want)
 	}
 }
 
