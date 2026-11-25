@@ -103,6 +103,81 @@ func TestStatusErrorsReportOnlyStructuredQuotaExhaustion(t *testing.T) {
 			err:  newOpenAICompatStatusError(http.StatusForbidden, nil, []byte(`{"error":{"type":"insufficient_quota","code":"insufficient_quota"}}`)),
 			want: false,
 		},
+		{
+			name: "claude unified 5h rejection",
+			err: classifyClaudeUpstreamError(http.StatusTooManyRequests, http.Header{
+				"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
+				"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`)),
+			want: true,
+		},
+		{
+			name: "claude unified 7d rejection",
+			err: classifyClaudeUpstreamError(http.StatusTooManyRequests, http.Header{
+				"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
+				"Anthropic-Ratelimit-Unified-7d-Status": {"rejected"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`)),
+			want: true,
+		},
+		{
+			name: "claude unified rejection under model-level cooling",
+			err: classifyClaudeUpstreamErrorWithCooling(http.StatusTooManyRequests, http.Header{
+				"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
+				"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`), true),
+			want: true,
+		},
+		{
+			name: "claude fast direct response unified rejection",
+			err: newClaudeFastDirectResponseError(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header: http.Header{
+					"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
+					"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
+				},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`)),
+			want: true,
+		},
+		{
+			name: "claude generic 429 without unified rejection headers",
+			err: classifyClaudeUpstreamError(http.StatusTooManyRequests, http.Header{
+				"Retry-After": {"7200"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`)),
+			want: false,
+		},
+		{
+			name: "claude overage-only rejection with shared windows allowed",
+			err: classifyClaudeUpstreamError(http.StatusTooManyRequests, http.Header{
+				"Anthropic-Ratelimit-Unified-Status":         {"rejected"},
+				"Anthropic-Ratelimit-Unified-5h-Status":      {"allowed"},
+				"Anthropic-Ratelimit-Unified-7d-Status":      {"allowed"},
+				"Anthropic-Ratelimit-Unified-Overage-Status": {"rejected"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Overage rejected"}}`)),
+			want: false,
+		},
+		{
+			name: "claude fable-only 7d_oi rejection with shared windows allowed",
+			err: classifyClaudeUpstreamError(http.StatusTooManyRequests, http.Header{
+				"Anthropic-Ratelimit-Unified-Status":       {"rejected"},
+				"Anthropic-Ratelimit-Unified-5h-Status":    {"allowed"},
+				"Anthropic-Ratelimit-Unified-7d-Status":    {"allowed"},
+				"Anthropic-Ratelimit-Unified-7d_oi-Status": {"rejected"},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Fable usage window rejected"}}`)),
+			want: false,
+		},
+		{
+			name: "claude fast-mode credits refusal",
+			err:  classifyClaudeUpstreamError(http.StatusTooManyRequests, nil, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode"}}`)),
+			want: false,
+		},
+		{
+			name: "claude fast direct response generic 429",
+			err: newClaudeFastDirectResponseError(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Retry-After": {"7200"}},
+			}, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`)),
+			want: false,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -247,5 +322,73 @@ func TestCodexQuotaErrorsPreserveCredentialExhaustionThroughManager(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+func TestClaudeUnifiedRejectionPreservesCredentialExhaustionThroughManager(t *testing.T) {
+	ctx := context.Background()
+	resetAt := time.Now().Add(2 * time.Hour).Unix()
+	upstreamHeaders := http.Header{
+		"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
+		"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-5h-Reset":  {strconv.FormatInt(resetAt, 10)},
+	}
+	rawErr := classifyClaudeUpstreamError(
+		http.StatusTooManyRequests,
+		upstreamHeaders,
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`),
+	)
+	scoped, ok := errors.AsType[interface {
+		error
+		IsCredentialScoped() bool
+		RetryAfter() *time.Duration
+	}](rawErr)
+	if !ok || !scoped.IsCredentialScoped() || scoped.RetryAfter() == nil {
+		t.Fatalf("Claude unified rejection lost credential scope or retry hint: %v", rawErr)
+	}
+	recorded := cliproxyauth.ResultErrorFromError(rawErr)
+	if recorded.Code != cliproxyauth.ErrorCodeCredentialQuota || !isQuotaExhaustedEvidence(recorded) {
+		t.Fatalf("conversion lost credential quota or exhaustion: %+v", recorded)
+	}
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{})
+	manager.RegisterExecutor(NewClaudeExecutor(&config.Config{}))
+	const reportedModel, siblingModel = "quota-evidence-claude-reported", "quota-evidence-claude-sibling"
+	auth := &cliproxyauth.Auth{
+		ID: t.Name(), Provider: "claude", Status: cliproxyauth.StatusActive,
+		Attributes: map[string]string{"api_key": "test"},
+		ModelStates: map[string]*cliproxyauth.ModelState{
+			reportedModel: {Status: cliproxyauth.StatusActive},
+			siblingModel:  {Status: cliproxyauth.StatusActive},
+		},
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: reportedModel}, {ID: siblingModel}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkResult(ctx, cliproxyauth.Result{
+		AuthID: auth.ID, Provider: auth.Provider, Model: reportedModel,
+		Error: recorded, RetryAfter: scoped.RetryAfter(), CredentialScope: scoped.IsCredentialScoped(),
+	})
+
+	current, ok := manager.GetByID(auth.ID)
+	if !ok || !current.Quota.Exceeded || !current.Quota.Exhausted || current.Quota.Reason != "credential_quota" {
+		t.Fatalf("manager lost credential-wide exhaustion: %+v", current)
+	}
+	for _, model := range []string{reportedModel, siblingModel} {
+		state := current.ModelStates[model]
+		if state == nil || !state.Quota.Exhausted {
+			t.Fatalf("model %s lost propagated exhaustion: %+v", model, state)
+		}
+		_, err := manager.SelectAuth(ctx, auth.Provider, model, cliproxyexecutor.Options{})
+		if !cliproxyauth.IsUsageLimitReachedError(err) {
+			t.Fatalf("model %s selection error = %v, want final usage limit", model, err)
+		}
+		headers := cliproxyauth.SafeResponseHeaders(err)
+		if headers.Get("Retry-After") != "" || headers.Get("X-Should-Retry") != "false" {
+			t.Fatalf("model %s retry headers = %v, want final quota guidance", model, headers)
+		}
 	}
 }

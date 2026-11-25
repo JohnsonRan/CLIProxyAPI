@@ -91,6 +91,7 @@ type claudeFastDirectResponseError struct {
 	response         *cliproxyexecutor.RequestTerminatedError
 	retryAfter       *time.Duration
 	credentialScoped bool
+	quotaExhausted   bool
 }
 
 func (e *claudeFastDirectResponseError) Error() string {
@@ -124,6 +125,13 @@ func (e *claudeFastDirectResponseError) IsCredentialScoped() bool {
 	return e.credentialScoped
 }
 
+func (e *claudeFastDirectResponseError) IsQuotaExhausted() bool {
+	if e == nil {
+		return false
+	}
+	return e.quotaExhausted
+}
+
 func (e *claudeFastDirectResponseError) RetryAfter() *time.Duration {
 	if e == nil {
 		return nil
@@ -154,10 +162,12 @@ func newClaudeFastDirectResponseError(resp *http.Response, body []byte) error {
 
 	var retryAfter *time.Duration
 	credentialScoped := false
+	quotaExhausted := false
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfter = helps.ParseClaudeRateLimitResetForError(resp.Header, body, time.Now())
 		if helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(resp.Header) {
 			credentialScoped = true
+			quotaExhausted = true
 		}
 	}
 
@@ -169,6 +179,7 @@ func newClaudeFastDirectResponseError(resp *http.Response, body []byte) error {
 		},
 		retryAfter:       retryAfter,
 		credentialScoped: credentialScoped,
+		quotaExhausted:   quotaExhausted,
 	}
 }
 
