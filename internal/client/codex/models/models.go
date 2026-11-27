@@ -148,6 +148,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 			applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 			sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 			applyCodexClientVisibilityOverride(entry, id)
+			hideCodexClientNonChatModel(entry, model)
 			if optimizeMultiAgentV2 {
 				entry["multi_agent_version"] = "v2"
 			}
@@ -164,6 +165,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 		applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 		sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 		applyCodexClientVisibilityOverride(entry, id)
+		hideCodexClientNonChatModel(entry, model)
 		applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 		applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
 		result = append(result, entry)
