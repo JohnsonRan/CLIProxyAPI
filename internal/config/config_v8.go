@@ -284,6 +284,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 	if errID != nil {
 		return errID
 	}
+	normalizeLegacyCodexRequestCompression(root)
 	decoded := legacyConfig(*cfg)
 	if err = root.Decode(&decoded); err != nil {
 		return err
