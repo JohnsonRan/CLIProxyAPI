@@ -597,6 +597,7 @@ func run() (exitStatus int) {
 		}
 	}
 	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	redisqueue.SetExcludeEmbeddingUsage(cfg.UsageExcludeEmbeddings)
 	redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
