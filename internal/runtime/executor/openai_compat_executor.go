@@ -593,7 +593,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 				return true
 			}
 			if !isDone {
-				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
+				if streamErr, isError := openAICompatStreamDataErrorValidated(dataPayload, eventName); isError {
 					publishStreamError(streamErr, true)
 					return true
 				}
@@ -1589,6 +1589,17 @@ func openAICompatChunkHasFinishReason(payload []byte) bool {
 
 func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, bool) {
 	if len(payload) == 0 || !json.Valid(payload) {
+		return statusErr{}, false
+	}
+	return openAICompatStreamDataErrorValidated(payload, eventName)
+}
+
+// openAICompatStreamDataErrorValidated checks an already JSON-validated stream
+// payload for an upstream error envelope without re-running json.Valid. Callers
+// must validate payload with json.Valid first; unvalidated callers should use
+// openAICompatStreamDataError.
+func openAICompatStreamDataErrorValidated(payload []byte, eventName string) (statusErr, bool) {
+	if len(payload) == 0 {
 		return statusErr{}, false
 	}
 	payloadType := ojson.GetBytesNoCopy(payload, "type").String()
