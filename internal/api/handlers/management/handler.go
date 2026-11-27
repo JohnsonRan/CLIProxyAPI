@@ -65,6 +65,9 @@ type Handler struct {
 	siwcCommitMu            sync.Mutex
 	v8AuthUploadMu          sync.Mutex
 	pluginLoginSaveMu       sync.Mutex
+	clientUsage             clientUsageCache
+	clientUsageID           string
+	clientUsageIDOnce       sync.Once
 }
 
 type configReloadSnapshot struct {
