@@ -55,3 +55,36 @@ func TestExtractSessionInfoDoesNotRescanLargePayload(t *testing.T) {
 		t.Fatalf("session extraction rescans large payload: extraction %d ns/op, single lookup %d ns/op", extraction.NsPerOp(), singleLookup.NsPerOp())
 	}
 }
+
+func BenchmarkExtractSessionInfoCodexResponsesPayload(b *testing.B) {
+	// ~1 MiB Codex-like payload with large input array and tools, no metadata.
+	padding := strings.Repeat("x", 1024)
+	var sb strings.Builder
+	sb.WriteString(`{"model":"gpt-5","input":[`)
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(`{"type":"message","role":"user","content":[{"type":"input_text","text":"` + padding + `"}]}`)
+	}
+	sb.WriteString(`],"tools":[{"type":"function","name":"exec","description":"execute shell","parameters":{"type":"object"}}]}`)
+	payload := []byte(sb.String())
+
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	for b.Loop() {
+		ExtractSessionInfo(nil, payload, nil)
+	}
+}
+
+func BenchmarkExtractSessionInfoClaudePayload(b *testing.B) {
+	// Claude body with metadata.user_id.
+	padding := strings.Repeat("x", 1<<20)
+	payload := []byte(`{"model":"claude-3-7-sonnet","metadata":{"user_id":"{\"session_id\":\"session_12345\",\"parent_session_id\":\"session_parent\",\"agent_id\":\"agent_sub\"}"},"messages":[{"role":"user","content":"` + padding + `"}]}`)
+
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	for b.Loop() {
+		ExtractSessionInfo(nil, payload, nil)
+	}
+}
