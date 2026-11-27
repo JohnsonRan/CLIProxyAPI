@@ -24,11 +24,12 @@ import (
 
 // OAuth configuration constants for OpenAI Codex
 const (
-	AuthURL             = "https://auth.openai.com/oauth/authorize"
-	TokenURL            = "https://auth.openai.com/oauth/token"
-	ClientID            = "app_EMoamEEZ73f0CkXaXp7hrann"
-	RedirectURI         = "http://localhost:1455/auth/callback"
-	codexRefreshTimeout = 30 * time.Second
+	AuthURL               = "https://auth.openai.com/oauth/authorize"
+	TokenURL              = "https://auth.openai.com/oauth/token"
+	ClientID              = "app_EMoamEEZ73f0CkXaXp7hrann"
+	RedirectURI           = "http://localhost:1455/auth/callback"
+	codexRefreshTimeout   = 30 * time.Second
+	defaultCodexUserAgent = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
 )
 
 // CodexAuth handles the OpenAI OAuth2 authentication flow.
@@ -132,6 +133,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", defaultCodexUserAgent)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -245,6 +247,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", defaultCodexUserAgent)
 
 	resp, errDo := o.doRefreshRequest(req)
 	if errDo != nil {
@@ -386,6 +389,7 @@ func isNonRetryableRefreshErr(err error) bool {
 		"refresh_token_reused",
 		"refresh_token_expired",
 		"refresh_token_invalidated",
+		"token_invalidated",
 		"token_revoked",
 		"invalid_grant",
 		"invalid_client",
