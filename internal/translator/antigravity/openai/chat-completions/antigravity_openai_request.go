@@ -601,8 +601,8 @@ func convertOpenAIRequestToAntigravityChat(modelName string, inputRawJSON []byte
 
 	applyOpenAIToolChoiceToAntigravityDoc(outDoc, rawJSON, functionNameMap, allowed, declaredAllowedNames, hasAllowedNativeTools)
 	common.AttachDefaultSafetySettingsDoc(outDoc, "request.safetySettings")
-	summaryCfg := thinking.ExtractSummaryConfig(rawJSON, "openai")
-	out := thinking.ApplySummaryConfig(outDoc.Bytes(), "antigravity", summaryCfg)
+	thinking.ApplySummaryConfigForModelDoc(outDoc, "antigravity", "", thinking.ExtractSummaryConfig(rawJSON, "openai"))
+	out := outDoc.Bytes()
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		out = gemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
 	}
