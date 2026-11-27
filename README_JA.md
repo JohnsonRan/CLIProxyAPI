@@ -2,6 +2,47 @@
 
 [English](README.md) | [中文](README_CN.md) | 日本語
 
+> **ダウンストリーム Fork**：このリポジトリは [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) から毎日 `main` を再構築し、その上に独立したパッチを重ねています。下記の[この Fork の機能](#この-fork-の機能)と、パッチブランチ・統合順序・メンテナンス規則については [`MAINTAIN.md`](MAINTAIN.md) を参照してください。
+
+## この Fork の機能
+
+上流のすべての機能に加えて、以下を提供します。各機能はそれぞれ独立した `patch/*` ブランチで管理されており、範囲、設定キー、既知の制限、関連する上流の作業は [`MAINTAIN.md`](MAINTAIN.md) に記載しています。
+
+**管理と可観測性**
+
+- この Fork の管理パネル [`JohnsonRan/Cli-Proxy-API-Management-Center`](https://github.com/JohnsonRan/Cli-Proxy-API-Management-Center) をデフォルトで提供し（`remote-management.panel-github-repository` で別のパネルも指定できます）、パネルからオンデマンドで更新できます。このパネルも同じ方法で上流のパネルに追従し、この Fork の機能の UI を追加しています：使用量とフィンガープリントのページ、クライアントキーのモデル規則とプロバイダー範囲、認証ファイルの `allowed_models`、キーごとのクォータ共有と上流クォータ、embeddings/rerank/System One のモデルフラグ。
+- SQLite に永続化される組み込みの使用量統計（`observability.usage.store`）。外部コレクターは不要です：models.dev またはカスタム価格によるコスト計算、レイテンシ/TTFT/出力速度の分析、処理中リクエストのリアルタイム表示、クライアント IP の所在地、Codex と Claude のサブスクリプションのクォータ価値推定、上流のリスク制御イベント、CSV/JSON エクスポート、データベース最適化。`observability.usage.exclude-embeddings` で embedding リクエストを統計から除外できます。
+- モデルフィンガープリント検出（[LM Fingerpoint Detector](https://lm.ikale.io/docs/sdk/)）で、提供しているモデル名の裏で実際に応答しているモデルを確認できます。
+- クライアント向けクォータエンドポイント `GET /v1/usage`：クライアント API キーが、割り当てられた OAuth 認証情報（Codex、Claude、Antigravity、xAI）のクォータを読み取れます。多段プロキシの先にある認証情報も含みます。
+
+**アクセス制御**
+
+- グローバルおよびクライアントキーごとのモデル許可/除外リスト、キーの表示名、削除せずにキーを無効化する機能。
+- クライアントキーが使えるプロバイダーの制限（`client.key-scopes`）。
+- 認証ファイルの `allowed_models` による認証情報ごとのモデル許可リスト。
+
+**エンドポイントとプロバイダー**
+
+- OpenAI 互換および Gemini プロバイダー向けの `/v1/embeddings` と `/v1/rerank`。
+- `/v1/responses/input_tokens`、OpenAI Decisions（`/v1/decisions`）、TypeSafe System One（`/v1/systemone`）。
+- `openai-compatibility` プロバイダーの `auto-discover-models` と `excluded-models`。
+- `/v1/models` でモダリティ、コンテキスト長、最大出力トークン数、推論サポートを提供（OpenRouter 形式）。
+
+**通信と信頼性**
+
+- エンドツーエンド圧縮：リクエストボディと上流レスポンスは `gzip`/`br`/`zstd`/`deflate` を展開し、クライアントへのレスポンスは `zstd` または `gzip`、WebSocket は permessage-deflate をネゴシエートし、Codex のリクエストボディは `zstd` で上流へ送信。
+- HTTP インクリメンタル Responses と、Codex 上流向けの HTTP から WebSocket へのブリッジ。
+- ChatGPT uTLS とプロキシ経由の上流での接続再利用、キャンセル可能な SOCKS5 ダイヤル。
+- 公式 Anthropic API キーはネイティブのリクエスト形式を維持し（デフォルトで偽装しない）、残高不足はその認証情報だけに影響する `402` になります。
+- 起動後、最初のモデル読み込みが終わる前に届いたリクエストが `model_not_found` になりません。
+- 長期的なメモリ使用量の上限：アイドル状態の WebSocket ツール呼び出しリプレイセッションは 1 時間で期限切れになり、保持する Codex 出力アイテムは 16 MiB までです。
+- Codex OAuth リフレッシュの耐障害性（`401 Your IP is not authorized` は強制リフレッシュせず再試行可能な `503` に変換）、認証情報フェイルオーバー後の Claude Web 検索の復旧、すべての認証情報のクォータが尽きたときの即時失敗（`X-Should-Retry: false`）、長時間無音の Codex アプリストリームのキープアライブ、Responses WebSocket の修正。
+
+**パフォーマンスと配布**
+
+- PGO でビルドされたバイナリ、Docker イメージでの `GOGC=200`、ホットなリクエストパスでのメモリ割り当て削減。
+- マルチアーキテクチャ（`linux/amd64`、`linux/arm64`）イメージ：`ghcr.io/johnsonran/cli-proxy-api`。
+
 デスクトップで CLIProxyAPI を利用したい場合は、[EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) デスクトップクライアントをおすすめします。グラフィカルな設定画面、自動更新、システムトレイ連携、CLIProxyAPI サービスのワンクリック起動/停止などの機能を提供します。
 
 CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインターフェースを提供するプロキシサーバーです。
@@ -16,11 +57,11 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimiシリーズモデル（Kimi K3.1 Pro、K3.1 Pro Highspeed、K3、K2.8 Previewなど）。<a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a>は、Moonshot AIの前世代のフラッグシップモデルであり、世界初のオープンな3兆パラメータ級モデルです。2.8兆のパラメータ、ネイティブな視覚機能、100万トークンのコンテキストウィンドウを備え、長期間にわたるコーディング、知識作業、推論向けに構築されています。CLIProxyAPIはOAuthまたは互換APIインターフェース経由でKimiをサポートします。<strong>Kimi Code プラン</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>）を試すか、Kimi Open Platform（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）で<strong>APIキー</strong>を取得してください。CLIProxyAPIとオープンソースコミュニティを支援してくださるKimiに感謝します！</td>
+        <td>Kimiシリーズモデル（Kimi K3、K2.8 Previewなど）。<a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a>は、Moonshot AIで最も高性能なモデルであり、世界初のオープンな3兆パラメータ級モデルです。2.8兆のパラメータ、ネイティブな視覚機能、100万トークンのコンテキストウィンドウを備え、長期間にわたるコーディング、知識作業、推論向けに構築されています。CLIProxyAPIはOAuthまたは互換APIインターフェース経由でKimiをサポートします。<strong>Kimi Code プラン</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>）を試すか、Kimi Open Platform（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）で<strong>APIキー</strong>を取得してください。CLIProxyAPIとオープンソースコミュニティを支援してくださるKimiに感謝します！</td>
     </tr>
     <tr>
         <td align="center"><a href="https://developers.openai.com/api/docs/models"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
-        <td>OpenAI GPT-6シリーズモデル（GPT-6 Astra、GPT-6.1 Sol、GPT-6.1 Terra、GPT-6 Luna）。Codex OAuth経由でも利用できます。Astraは複雑な推論とコーディング、Solは性能とコストのバランス、Terraは視覚的推論とコンピューター操作、Lunaは大量の明確なタスクに適しています。</td>
+        <td>OpenAI GPT-6シリーズモデル（GPT-6 Astra、GPT-6.1 Sol、GPT-6 Luna）。Codex OAuth経由でも利用できます。Astraは複雑な推論とコーディング、Solは性能とコストのバランス、Lunaは大量の明確なタスクに適しています。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
@@ -40,96 +81,8 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
-        <td>Devinのモデル（SWE-2、SWE-2 Flash、GPT-6 Astra、Claude Fable 5.1など）。<code>--devin-login</code>でDevinアカウントに接続し、そのアカウントで利用可能なモデルにリクエストを送れます。</td>
+        <td>Devinのモデル（SWE-2、GPT-6 Astra、Claude Fable 5.1など）。<code>--devin-login</code>でDevinアカウントに接続し、そのアカウントで利用可能なモデルにリクエストを送れます。</td>
     </tr>
-</tbody>
-</table>
-
-## スポンサー
-
-[![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-en.png)](https://www.packyapi.com/register?aff=cliproxyapi)
-
-PackyCodeのスポンサーシップに感謝します！
-
-PackyCodeは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。
-
-PackyCodeは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://www.packyapi.com/register?aff=cliproxyapi">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「cliproxyapi」を入力すると10%割引になります。
-
----
-
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>AICodeMirrorのスポンサーシップに感謝します！AICodeMirrorはClaude Code / Codex / Gemini向けの公式高安定性リレーサービスを提供しており、エンタープライズグレードの同時接続、迅速な請求書発行、24時間365日の専任技術サポートを備えています。Claude Code / Codex / Geminiの公式チャネルが元の価格の38% / 2% / 9%で利用でき、チャージ時にはさらに割引があります！CLIProxyAPIユーザー向けの特別特典：<a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF">こちらのリンク</a>から登録すると、初回チャージが20%割引になり、エンタープライズのお客様は最大25%割引を受けられます！</td>
-</tr>
-<tr>
-<td width="180"><a href="https://apikey.fan/register?aff=CLIProxyAPI"><img src="./assets/apikey.png" alt="APIKEY.FUN" width="150"></a></td>
-<td>APIKEY.FUNのスポンサーシップに感謝します！APIKEY.FUNはプロフェッショナルなエンタープライズ向けAIリレーサービスで、企業および個人開発者に安定・高効率・低コストなAIモデルAPI接続サービスを提供しています。Claude、OpenAI、Geminiなどの主要人気モデルに対応し、価格は公式価格の7%から利用できます。本プロジェクトの<a href="https://apikey.fan/register?aff=CLIProxyAPI">専用リンク</a>から登録すると、さらに<b>チャージが永続的に5%割引</b>となる特別優待を受けられます。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://api.fenno.ai/s/9LRu"><img src="./assets/fennoai.png" alt="Fenno.ai" width="150"></a></td>
-<td>本プロジェクトは <strong>Fenno.ai</strong> にご支援いただいています！Fenno.ai は Codex の中継を主力とする、コーディング向けの API 中継サービスです。GPT、Claude、Grok などのコーディングモデルを1つの API キーで利用でき、OpenAI と Anthropic の両プロトコルに対応しています。Codex、Claude Code、Cline、OpenCode などの主要なコーディングツールに直接接続でき、中国国内外の法人間決済や請求書発行にも対応しています。<strong>新規ユーザーは <a href="https://api.fenno.ai/s/9LRu">1.99 米ドルで 50 米ドル相当のクレジットを試せます</a>。友人の招待で最大 20% の紹介報酬を獲得でき、招待するほど報酬が増えます。</strong></td>
-</tr>
-<tr>
-<td width="180"><a href="https://s.qiniu.com/7zUJri"><img src="./assets/qiniucloud.png" alt="Qiniu Cloud AI" width="150"></a></td>
-<td>本プロジェクトは <strong>七牛雲</strong> にご支援いただいています！七牛雲（02567.HK）の企業向け MaaS プラットフォームでは、世界の主要モデル150以上をワンストップで利用できます。主要モデルプロバイダーのプロトコルに対応し、テキスト、画像、音声、動画、ファイルなどを処理でき、180万人を超える企業の開発者に利用されています。<strong>新規の法人ユーザーは2,000万トークンを無料で受け取れます。年末キャンペーンでは、新規ユーザーは <a href="https://www.qiniu.com/ai/free-models/conatus-2026?utm_source=CLIProxyAPI&amp;utm_medium=oss&amp;utm_campaign=comatus_202611&amp;utm_content=readme">1日最大10億トークンを無料で利用できます</a>。</strong></td>
-</tr>
-<tr>
-<td width="180"><a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa"><img src="./assets/cubence.png" alt="Cubence" width="150"></a></td>
-<td>Cubenceのスポンサーシップに感謝します！Cubenceは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。Cubenceは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://cubence.com/signup?code=CLIPROXYAPI&source=cpa">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「CLIPROXYAPI」を入力すると10%割引になります。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.swiftproxy.net/?code=PR67S9A95"><img src="./assets/swiftproxy.png" alt="Swiftproxy" width="150"></a></td>
-<td>Swiftproxyは、世界220以上の国と地域をカバーする9,000万以上のクリーンな住宅IPを提供し、HTTP(S)/SOCKS5、IPローテーション、Sticky Session、詳細な地域指定に対応しています。AI APIツールや自動化ワークフローが異なる地域からオンラインサービスへ安定してアクセスできるよう支援し、APIリクエスト、Webアクセス、データ収集、地域別テストなどに最適です。住宅プロキシは&#36;0.7/GBから利用でき、無料テストにも対応しています。割引コードPROXY90の使用で10%割引になります。<a href="https://www.swiftproxy.net/?code=PR67S9A95">今すぐSwiftproxyを試す</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://pateway.ai/?ch=jjvdb"><img src="./assets/patewayai.png" alt="PatewayAI" width="150"></a></td>
-<td>PatewayAI は、経験豊富な AI 開発者向けの API リレーサービスプロバイダーで、Claude および Codex シリーズのモデルを完全にサポートしています。すべてのモデルは高品質な公式チャネルから提供され、希釈や偽装は一切なく、課金明細も透明で確認可能です。エコノミーモードは公式価格のわずか5%から利用できます。<a href="https://pateway.ai/?ch=jjvdb">こちらのリンク</a>から登録するとトライアルクレジットを受け取れるほか、不定期のキャンペーンで無料クレジットを獲得できます。また、エンタープライズ級の同時接続、専用管理ダッシュボード、正式な契約書と請求書に対応し、双方に最大150米ドルが付与される紹介特典も提供しています。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://kedaya.ai/register?aff=824X8RAHCYXM"><img src="./assets/kedaya.jpg" alt="kedaya.ai" width="150"></a></td>
-<td>kedaya.ai は、安定性と効率性に優れた AI モデル API 中継サービスプロバイダーです。Claude、GPT、Gemini、Grok、Antigravity、DeepSeek などの主要モデルをカバーし、OpenAI（Responses を含む）、Anthropic、Gemini のネイティブプロトコルに対応しているため、CLIProxyAPI、Claude Code、Codex、Gemini CLI、Grok CLI などのクライアントにシームレスに接続できます。OpenAI および Grok モデルの価格は、最安で公式価格の 0.1% から！専用リンク：<a href="https://kedaya.ai/register?aff=824X8RAHCYXM">https://kedaya.ai/register?aff=824X8RAHCYXM</a></td>
-</tr>
-<tr>
-  <td width="180"><a href="https://apipdx.com"><img src="./assets/paidaxing.gif" alt="派大星" width="150"></a></td>
-  <td>
-    🎁 <b>【登録で 5 クレジット進呈！】</b>クーポンコード <code>CLIPROXYAPI</code> を入力すれば即時到着、チケット申請は不要！<br>
-    🚀 <b>オールインワン AI 中継サービス：</b>Claude、GPT、Gemini、DeepSeek、KIMI、GLM などの主要モデルを一挙に集約。1 つのキーで全部まとめて使えます。<br>
-    💰 <b>安い：</b>GPT は最安 <b>0.06 折</b>（定価の 0.6%）、DeepSeek・KIMI・GLM は最安 <b>4 折</b>（定価の 40%）。たくさん使うほどお得で、日常の高頻度利用も気にならない。<br>
-    🛡️ <b>安定：</b>高可用な回線で長時間オンライン。Claude Code・Codex などの一般的なクライアントに対応し、ここぞという時に落ちません。<br><br>
-    👉 派大星 VIP 専用入口：<a href="https://apipdx.com">https://apipdx.com</a><br>
-    💬 クーポンコード：<code>CLIPROXYAPI</code>（登録時に入力すると 5 クレジットが直接付与）
-  </td>
-</tr>
-<tr>
-<td width="180"><a href="https://origincoder.com/"><img src="./assets/origincoder.png" alt="OriginCoder" width="150"></a></td>
-<td><strong><a href="https://origincoder.com">OriginCoder</a>は、低遅延で安定した接続を提供し、大量の同時リクエストにも対応する企業向けAIゲートウェイです。</strong><strong>Claude MaxとGPT Proのアカウントプールは、構築から運用まですべて自社で管理。モデル本来の性能で利用できるプールを公式料金の30〜40％で提供し、各プールの性能低下の有無もリアルタイムで公開しています。</strong><strong>GPT、Claude、Grok、Gemini-4-Carbon、DeepSeekなど、世界各国の主要AIモデル</strong>に対応し、<strong>Claude CodeやCodex</strong>などの開発ツールからも利用できます。<strong>AIチャット、コーディング支援、画像生成、動画生成</strong>にも対応しています。海外を拠点に現地の法令に従ってサービスを運営しており、<strong>2025年8月のサービス開始以来、15,000を超えるお客様にご利用いただいています</strong>。料金はすべて公開しており、<strong>超過料金はかかりません。10人民元からチャージできます</strong>。<strong>24時間365日の監視、アカウントプールの冗長化、複数ノード間の自動切り替え</strong>により、アクセスが集中する時間帯も安定した接続を維持します。<a href="https://origincoder.com/monitor">サービスの稼働状況はステータスページで公開しています</a>。<strong>会話の内容は保存せず、お客様のプライバシーを守ります</strong>。<strong>法人名義でのお支払いと請求書の発行</strong>にも対応しています。カスタマーサポートへのお問い合わせには<strong>3分以内に返信</strong>し、技術チームは<strong>24時間体制で対応</strong>します。中国本土からご利用の方には、<a href="https://cn.origincoder.com">アクセスを高速化した専用サイト</a>をご用意しています。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://visioncoder.cn/"><img src="./assets/visioncoder.svg" alt="VisionCoder" width="150"></a></td>
-<td><strong><a href="https://visioncoder.cn/">VisionCoder</a>｜中国発の OpenRouter 型サービス。中国・海外の主要 AI モデルを、1つの API で。</strong> <strong>DeepSeek、Qwen、Kimi、GLM、GPT、Claude、Gemini、Grok</strong> に対応。複数サプライヤーから接続先を自動選択し、障害時は別の接続先へ切り替えます。<strong>失敗したリクエストは課金なし。料金を公開し、請求額の計算も確認できます。</strong> Claude Code、Codex などの開発ツールに対応し、<strong><a href="https://visioncoder.cn/me/keys">CC Switch と WorkBuddy へワンクリックでインポート</a></strong>。企業は一括購入したサブスクリプションをメンバーごとに割り当て、回収・再割り当ても可能。法人名義の銀行振込と請求書発行にも対応します。<strong>サプライヤー募集中：モデルの接続先を登録し、品質に応じてトラフィックを獲得。法人向け月次精算・利用明細の確認に対応し、ユーザーへの課金・請求書発行は VisionCoder が担当します。</strong> <a href="https://visioncoder.cn/challenge">VibeCoding チャレンジ</a>も開催。各回の賞品は <strong>合計2,350元相当の追加利用クレジット</strong>、最優秀賞は <strong>1,000元相当の追加利用クレジット</strong>。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://api.10dianai.com/sign-up?aff=M7Gn"><img src="./assets/10dian-api.png" alt="10dian-API" width="150"></a></td>
-<td><strong>10dian-API</strong><br>ひとつのキーで、世界中の AI を呼び出そう！<br>10dian-API は主要な AI モデルとプロトコルをひとつの API にまとめ、一般的なクライアントから利用できます。個人開発者や AI 愛好家もチームと同じ条件で利用でき、多数の同時リクエストでも安定して接続できます。料金は手頃で、課金倍率も公開しています。選んだモデルが別のモデルにすり替わることはありません。複数のチャージ方法に加え、主要な AI サブスクリプションの支払い代行にも対応しています。<br>👉 <a href="https://api.10dianai.com/sign-up?aff=M7Gn">登録はこちら</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://subrouter.ai/register?aff=nP93"><img src="./assets/subrouter-logo.svg" alt="SubRouter" width="150"></a></td>
-<td>
-<strong>SubRouter</strong><br>
-<strong>🚀 主要 AI モデルをひとつに。登録で 100 万トークンを無料プレゼント！</strong>
-<p>🎁 無料トライアル: <a href="https://subrouter.ai/register?aff=nP93">今すぐ登録</a>すると、テストに使える 100 万トークンをすぐに受け取れます！</p>
-<ul>
-<li>主要モデルをひとつの API キーで：Claude、GPT、Gemini、Grok、DeepSeek を自由に切り替えられます。</li>
-<li>スマートルーティングと自動フェイルオーバー：ノードに障害が発生すると、負荷分散システムが正常なノードに自動で切り替え、リクエストの処理を継続します。</li>
-<li>透明な料金体系：API 呼び出しごとに実際のルーティング経路と料金をリアルタイムで確認できます。</li>
-<li>残高に有効期限なし：使った分だけ支払う従量課金制で、クレジットは月をまたいでも失効しません。</li>
-<li>選べるチャージ方法：USDT、Visa、WeChat Pay、Alipay に対応しています。</li>
-</ul>
-👉 無料の 100 万トークンを受け取る: <a href="https://subrouter.ai/register?aff=nP93">https://subrouter.ai/register?aff=nP93</a>
-</td>
-</tr>
 </tbody>
 </table>
 
@@ -174,7 +127,7 @@ CLIProxyAPI 向けのセルフホスト型管理コンソールと可観測性�
 
 ### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
 
-CLIProxyAPI v8+ 向けの Web コンソールです。`shadcn/ui` を基盤に、モダンな UI/UX と滑らかなモーション、デスクトップ・モバイル両対応のレイアウトを備えています。プロバイダー、OAuth、ルーティング、組み込みプラグインを一元管理し、充実したリクエスト記録（レイテンシ、TTFT、トークン、障害診断、モデル置換検知）、リアルタイムルーティング、多次元の料金統計、クォータウィンドウのウォームアップと予測、Agent/MCP を提供。AES-GCM 暗号化と設定自動バックアップを備え、バイナリ直接実行、Docker デプロイ、OMC/CPA のワンクリック更新に対応しています。
+Ant Design を採用した CLIProxyAPI v8+ 向けのモダンな管理コンソール。CPAMC に相当する主要な管理機能と、SQLite に永続化するリクエスト記録・使用量分析を統合し、OAuth アカウント、API プロバイダー、クライアントキー、クォータ、料金設定、CPA 運用を一つの画面で管理できます。リクエストごとのレイテンシ、最初のトークンまでの時間（TTFT）、トークン数、コストを追跡し、多条件フィルター、リアルタイムダッシュボード、トークンヒートマップを提供します。OpenRouter の価格同期、カスタム料金、リクエストごとの価格スナップショットで過去のコストを保持し、組み込み Agent と MCP ツールで分析と日常管理を支援します。
 
 ## SDKドキュメント
 
@@ -316,19 +269,7 @@ Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIP
 
 ### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。コンパニオンプラグインの `/cpa` チャットコマンドで、各プールのアカウント状態と、必要に応じて各アカウントのリアルタイムのクォータを確認できます。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins)に掲載されています：`hermes plugins install cliproxyapi-provider` および `hermes plugins install cpa-status`。
-
-### [Ebb](https://github.com/lucasnsaraujo/ebb)
-
-CLIProxyAPI のアカウントプール向けのネイティブ macOS メニューバーアプリ。プール全体で Claude、Codex などの 5 時間枠と週間枠がどれだけ残っているか、いつ戻るかを表示し、Management API で各ログインのルーティング重みを設定してアカウントを均等に消費させます。
-
-### [Nia Live Demo](https://github.com/nia-teams/nia-live-demo)
-
-話しながらリアルタイムで描画・操作できるインタラクティブな SVG/HTML キャンバスを備えた、全二重音声コンパニオン。CLIProxyAPI の 2 つの機能を組み合わせています：音声対話と即時割り込みを担う Codex GPT-Live 1.1 メディアリレー（`gpt-live-1-codex`、WebRTC + Sideband）と、会話中にキャンバスをリアルタイムで生成・編集する `ultrafast` Responses（`gpt-6.1-sol` / `gpt-6-astra`）です。
-
-### [Hyphantria](https://hyphantria.com)
-
-AI 支援による部品作成、リファレンスデザインの採用、および配置・配線の同時最適化を備えたネイティブ macOS 向け回路図・PCB 設計アプリ。CLIProxyAPI をネイティブサポートしており、AI 支援機能をお使いの AI プロバイダーに接続できます。
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)に掲載されています：`hermes plugins install cliproxyapi-provider`。
 
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
