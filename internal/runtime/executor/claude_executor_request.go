@@ -908,13 +908,16 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 		return err
 	}
 	if statusCode == http.StatusTooManyRequests {
-		if !modelLevelCooling && helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers) {
+		unifiedRejected := helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers)
+		if !modelLevelCooling && unifiedRejected {
+			err.quotaExhausted = true
 			return claudeRateLimitError{statusErr: err, credentialScoped: true}
 		}
 		if claudeBodyIndicatesFastModeCredits(body) {
 			return claudeEntitlementError{err}
 		}
-		// Ordinary model-level Claude 429 (not a unified 5h/7d rejection)
+		// Ordinary model-level Claude 429 (or unified 5h/7d rejection with model-level cooling)
+		err.quotaExhausted = unifiedRejected
 		return claudeRateLimitError{statusErr: err, credentialScoped: false}
 	}
 	return err

@@ -577,7 +577,7 @@ func TestSelectionLoops_ExcludeStatusDisabledWithoutDisabledFlag_Issue7756(t *te
 			t.Fatal("HasAlternativeTargetForModel = true, want false when only alternative is StatusDisabled")
 		}
 
-		earliest, hasUnblocked, okCooldown := manager.earliestPoolCooldownForModelAt(ctx, []string{provider}, model, cliproxyexecutor.Options{}, now)
+		earliest, hasUnblocked, okCooldown, _ := manager.earliestPoolCooldownForModelAt(ctx, []string{provider}, model, cliproxyexecutor.Options{}, now)
 		if !okCooldown || hasUnblocked || !earliest.Equal(recoverAt) {
 			t.Fatalf("earliestPoolCooldownForModelAt = (%v, %v, %v), want (%v, false, true)", earliest, hasUnblocked, okCooldown, recoverAt)
 		}
