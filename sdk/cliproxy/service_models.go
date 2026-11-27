@@ -345,12 +345,13 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = appendDistinctModels(models, s.copilotPublicPluginModels(a, staticModels))
 		staticModels = nil
 	}
-	models = applyExcludedModels(models, excluded)
+	allowed := authAllowedModels(a)
+	models = applyAllowedModels(applyExcludedModels(models, excluded), allowed)
 	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return true
 	}
-	models = appendDistinctModels(models, applyExcludedModels(staticModels, excluded))
+	models = appendDistinctModels(models, applyAllowedModels(applyExcludedModels(staticModels, excluded), allowed))
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(cfg, provider, authKind, models)
 		published = s.registerResolvedModelsForAuthFenced(a, fence, key, applyModelPrefixes(models, a.Prefix, cfg != nil && cfg.ForceModelPrefix))
@@ -806,12 +807,36 @@ func (s *Service) copilotPublicPluginModels(auth *coreauth.Auth, models []*Model
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
-	if len(models) == 0 || len(excluded) == 0 {
+	return filterModelsByRules(models, excluded, false)
+}
+
+// applyAllowedModels keeps only the models matching at least one allowed rule.
+// An empty rule list leaves the models unrestricted.
+func applyAllowedModels(models []*ModelInfo, allowed []string) []*ModelInfo {
+	return filterModelsByRules(models, allowed, true)
+}
+
+// authAllowedModels returns the credential's own allowed-model rules, or nil
+// when the credential is unrestricted.
+func authAllowedModels(a *coreauth.Auth) []string {
+	if a == nil || a.Attributes == nil {
+		return nil
+	}
+	if val := strings.TrimSpace(a.Attributes["allowed_models"]); val != "" {
+		return strings.Split(val, ",")
+	}
+	return nil
+}
+
+// filterModelsByRules drops models matching a rule, or with keepMatches keeps
+// only those. Rules are case-insensitive wildcard patterns.
+func filterModelsByRules(models []*ModelInfo, rules []string, keepMatches bool) []*ModelInfo {
+	if len(models) == 0 || len(rules) == 0 {
 		return models
 	}
 
-	patterns := make([]string, 0, len(excluded))
-	for _, item := range excluded {
+	patterns := make([]string, 0, len(rules))
+	for _, item := range rules {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			patterns = append(patterns, strings.ToLower(trimmed))
 		}
@@ -826,15 +851,19 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 			continue
 		}
 		modelID := strings.ToLower(strings.TrimSpace(model.ID))
-		sourceID := strings.ToLower(strings.TrimSpace(model.SourceModelID))
-		blocked := false
+		// An exclusion also blocks derived routes; an allowance only admits the matched route.
+		var sourceID string
+		if !keepMatches {
+			sourceID = strings.ToLower(strings.TrimSpace(model.SourceModelID))
+		}
+		matched := false
 		for _, pattern := range patterns {
 			if modelconfig.MatchExcludedModelPattern(pattern, modelID) || (sourceID != "" && sourceID != modelID && modelconfig.MatchExcludedModelPattern(pattern, sourceID)) {
-				blocked = true
+				matched = true
 				break
 			}
 		}
-		if !blocked {
+		if matched == keepMatches {
 			filtered = append(filtered, model)
 		}
 	}
